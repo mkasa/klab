@@ -1,0 +1,108 @@
+#!/usr/bin/env perl
+
+use strict;
+
+use Bio::SeqIO;
+use Bio::DB::GenBank;
+use Getopt::Long;
+
+my $inputfile    = '';
+my $inputformat  = 'fasta';
+my $outputfile   = '';
+my $outputformat = 'fasta';
+my $neededhelp   = 0;
+my @idstrings    = ();
+
+my $genbank_query = 0;
+my $genbank_id    = 0;
+my $genbank_acc   = 0;
+my $genbank_gi    = 0;
+
+GetOptions('help'             => \$neededhelp,
+	   'inputfilename=s'  => \$inputfile,
+	   'inputformat=s'    => \$inputformat,
+	   'outputfilename=s' => \$outputfile,
+	   'outputformat=s'   => \$outputformat,
+	   'query=s'          => \@idstrings,
+	   'massive'          => \$genbank_query,
+	   'id'               => \$genbank_id,
+	   'accession'        => \$genbank_acc,
+	   'gi'               => \$genbank_gi 
+	   );
+
+if($inputfile eq '') {
+    $inputfile = shift;
+}
+
+if($neededhelp || ($inputfile eq '' && !$genbank_gi && !$genbank_acc && !$ genbank_id && !$genbank_id) || (@idstrings > 0 && $inputfile ne '') ) {
+    print STDERR "To convert sequence file\n";
+    print STDERR "   usage: convertsequence.pl --inputfilename <inputfilename> [--inputformat <inputformat>]";
+    print STDERR " [--outputfilename <outputfilename>] [--outputformat <outputformat>]\n";
+    print STDERR "To get a sequence(s) from genbank\n";
+    print STDERR "   usage: convertsequence.pl [--id|--accession|--gi|--massive] --query <query string1> [--query <query string2> ...]";
+    print STDERR " [--outputfilename <outputfilename>] [--outputformat <outputformat>]\n";
+    exit 1;
+}
+
+my $inseq;
+
+if(@idstrings) {
+    my $genbank = new Bio::DB::GenBank();
+    $inseq   =  $genbank->get_Stream_by_id([@idstrings]);
+} else {
+    $inseq   = Bio::SeqIO->new('-file'   => "<$inputfile",
+				  '-format' => $inputformat );
+}
+
+my $seq_out = Bio::SeqIO->new('-file'   => ">$outputfile",
+                              '-format' => $outputformat);
+
+my $numprocessedsequences = 0;
+
+while (my $seq = $inseq->next_seq) {
+    $seq_out->write_seq($seq);
+    $numprocessedsequences++;
+}
+
+print STDERR "$numprocessedsequences processed\n";
+
+=pod
+
+=head1 NAME
+
+convertsequence.pl - Convert sequence file into another format
+
+=head1 SYNOPSYS
+
+To convert a sequence into a file of another format,
+
+B<convertsequence.pl> --inputfile E<lt>input fileE<gt> --inputformat E<lt>format of input fileE<gt> --outputfile E<lt>output fileE<gt> --outputformat E<lt>format of output fileE<gt>
+
+To get a sequence(s) from genbank,
+ 
+B<convertsequence.pl> [--id|--accession|--gi|--massive] --query E<lt>query string1E<gt> [--query E<lt>query string2E<gt> ...] [--outputfilename E<lt>outputfilenameE<gt>] [--outputformat E<lt>outputformatE<gt>]
+
+=head1 DESCRIPTION
+
+This utility is to convert a sequence file into a file of another format,
+or to get a sequence(s) from GenBank remotely.
+
+=head1 OPTIONS
+
+No options available.
+
+=head1 EXAMPLES
+
+Inputs 'hoge.gb' in GenBank format and convert it into 'hoge.fasta' in FASTA format.
+
+	B<convertsequence.pl> --inputfile hoge.gb --inputformat genbank --outputfile hoge.fasta --outputformat fasta
+
+Get a sequence by accession numbers from remote GenBank.
+You can give multiple queries by simply repeating --query option as many as you want.
+
+        B<convertsequence.pl> --accession --query AB090307 --query AB090308 --outputfile hoge.fasta --outputformat fasta
+
+If you need to know vailable formats, see BioPerl documentation for details.
+Even author doesn't know well about it.
+
+=cut
