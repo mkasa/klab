@@ -15,5 +15,5 @@ def configure(conf):
 
 def build(bld):
     bld(features = 'cxx cprogram', source = 'fatt.cc', target = 'fatt')
-    executables = ['convertsequence.pl']
+    executables = ['convertsequence', 'fixshebang', 'icc-color']
     bld.install_files('${PREFIX}/scripts', ['script/' + x for x in executables], chmod=0755)

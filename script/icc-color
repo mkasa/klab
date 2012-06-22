@@ -1,0 +1,31 @@
+#!/usr/bin/env perl
+
+# @author Masahiro Kasahara (masahiro@kasahara.ws)
+
+use strict;
+use Term::ANSIColor;
+
+while(<>) {
+	chomp;
+	if(/remark \#\d+:/) {
+		print color('blue') . $_ . color('reset') . "\n";
+	} elsif(/: warning(\s+\#\d+)?:/) {
+		print color('green') . $_ . color('reset') . "\n";
+	} elsif(/In function/) {
+		print color('yellow') . $_ . color('reset') . "\n";
+	} elsif(/undefined reference/) {
+		s|undefined reference to \`(.*?)'|color('red') . 'undefined reference to ' . $1 . color('reset')|e;
+		print $_ . "\n";
+	} elsif(/^(icpc|icc)\s+/) {
+		print color('cyan') . $_ . color('reset') . "\n";
+	} elsif(/:( catastrophic)? error(\s+\#\d+)?:/) {
+		print color('red') . $_ . color('reset') . "\n";
+	} elsif(/^$/) {
+		# skip
+	} else {
+		print $_ . "\n";
+	}
+}
+
+
+

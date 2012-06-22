@@ -1,0 +1,147 @@
+#!/usr/bin/env perl
+
+# @author Masahiro Kasahara (masahiro@kasahara.ws)
+
+use strict;
+
+use Pod::Usage;
+use Getopt::Long;
+use Term::ANSIColor;
+
+my $flag_debug   = 0;
+my $flag_help    = 0;
+my $flag_man     = 0;
+my $flag_interactive = 0;
+my $flag_env     = 0;
+
+GetOptions("debug"   => \$flag_debug,
+		   "help"    => \$flag_help,
+           "man"     => \$flag_man,
+           "e|env"   => \$flag_env,
+           "i|interactive" => \$flag_interactive,
+	);
+
+pod2usage(-verbose => 1) if($flag_help);
+pod2usage(-verbose => 2) if($flag_man);
+
+my $has_any_error = 0;
+while(my $file = shift) {
+	print STDERR "$file " if($flag_debug);
+	my $file_res = `file -b $file`;
+	unless($file_res =~ /executable/ && $file_res =~ /text/ && $file_res =~ /script/) {
+		print STDERR "was not a script.\n" if($flag_debug);
+		next;
+	}
+	my $fh;
+	unless(open $fh, "<", $file) {
+		print STDERR "Cannot open '$file'.\n";
+		$has_any_error = 1;
+		next;
+	}
+	my $shebang = <$fh>;
+	unless($shebang =~ m|#!(\S+)(.*)|) {
+		print STDERR "It does not seem like scripts. Could not find shebang.\n";
+		$has_any_error = 1;
+		close $fh;
+		next;
+	}
+	my $orig_bin = $1;
+	my $rest = $2;
+
+	print "Detected [$orig_bin]\n" if($flag_debug);
+	my $base_name = $orig_bin;
+	$base_name =~ s|.*/||;
+	print "Base name [$base_name]\n" if($flag_debug);
+	if($base_name eq 'env') {
+		unless($rest =~ m|^\s*(\S+)(.*)|) {
+			print STDERR "lacks a valid interpreter?\n";
+			close $fh;
+			next;
+		}
+		$base_name = $1;
+	}
+	print "Final base name [$base_name]\n" if($flag_debug);
+	my $abs_path_intpret = `which $base_name`; chomp $abs_path_intpret;
+	print "The absolute path [$abs_path_intpret]\n" if($flag_debug);
+
+	if($orig_bin eq $abs_path_intpret) {
+		print "no need to modify\n";
+		close $fh;
+		next;
+	}
+
+	if($flag_interactive) {
+		print "filename: $file\n";
+		print "OLD shebang: $shebang";
+		print "NEW shebang: #!$abs_path_intpret\n";
+		my $doit = 0;
+		while(1) {
+			print "Modify it (Y/n)?";
+			my $r = <>;
+			if($r =~ m|^y|i) { $doit = 1; last; }
+			if($r =~ m|^n|i) { last; }
+			print "\nPlease use 'y' or 'n':";
+		}
+		next unless($doit);
+	}
+
+	my $tmp_file_name = "$file.tmp";
+	my $ofh;
+	unless(open $ofh, ">", $tmp_file_name) {
+		print STDERR "Cannot open '$tmp_file_name' for output.\n";
+		$has_any_error = 1;
+		close $fh;
+		next;
+	}
+	print $ofh "#!$abs_path_intpret\n";
+	while(<$fh>) {
+		chomp;
+		chop if(/^r$/);
+		print $ofh "$_\n";
+	}
+	close $ofh;
+	close $fh;
+	print "Renaming '$tmp_file_name' to '$file'\n" if($flag_debug);
+	unless(rename($tmp_file_name, $file)) {
+		print STDERR "Could not rename '$tmp_file_name' to '$file'. Maybe permission denied?\n";
+		$has_any_error = 1;
+		next;
+	}
+}
+
+if($has_any_error) {
+	print STDERR "Error.\n";
+	exit 1;
+}
+exit 0;
+
+=pod
+
+=head1 NAME
+
+fixshebang - fix shebang
+
+=head1 SYNOPSIS
+
+fixshebang [options] <files>
+
+Options:
+   -help                brief help message
+   -man                 see the manual
+   -i, --interactive    modify interactively
+
+=over 8
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+Shebang lines usually have a machine-specific settings; the full path to a specific interpereter may vary system to system.
+Therefore we cannot simply copy scripts to other systems where the absolute path to the interpreter differs.
+fixshebang fixes such scripts so that the interpreter path is correctly modified.
+
+=cut

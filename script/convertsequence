@@ -1,5 +1,7 @@
 #!/usr/bin/env perl
 
+# @author Masahiro Kasahara (masahiro@kasahara.ws)
+
 use strict;
 
 use Bio::SeqIO;
