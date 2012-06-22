@@ -41,7 +41,7 @@ if($neededhelp || ($inputfile eq '' && !$genbank_gi && !$genbank_acc && !$ genba
     print STDERR "   usage: convertsequence.pl --inputfilename <inputfilename> [--inputformat <inputformat>]";
     print STDERR " [--outputfilename <outputfilename>] [--outputformat <outputformat>]\n";
     print STDERR "To get a sequence(s) from genbank\n";
-    print STDERR "   usage: convertsequence.pl [--id|--accession|--gi|--massive] --query <query string1> [--query <query string2> ...]";
+    print STDERR "   usage: convertsequence [--id|--accession|--gi|--massive] --query <query string1> [--query <query string2> ...]";
     print STDERR " [--outputfilename <outputfilename>] [--outputformat <outputformat>]\n";
     exit 1;
 }
@@ -72,17 +72,17 @@ print STDERR "$numprocessedsequences processed\n";
 
 =head1 NAME
 
-convertsequence.pl - Convert sequence file into another format
+convertsequence - Convert sequence file into another format
 
 =head1 SYNOPSYS
 
 To convert a sequence into a file of another format,
 
-B<convertsequence.pl> --inputfile E<lt>input fileE<gt> --inputformat E<lt>format of input fileE<gt> --outputfile E<lt>output fileE<gt> --outputformat E<lt>format of output fileE<gt>
+B<convertsequence> --inputfile E<lt>input fileE<gt> --inputformat E<lt>format of input fileE<gt> --outputfile E<lt>output fileE<gt> --outputformat E<lt>format of output fileE<gt>
 
 To get a sequence(s) from genbank,
  
-B<convertsequence.pl> [--id|--accession|--gi|--massive] --query E<lt>query string1E<gt> [--query E<lt>query string2E<gt> ...] [--outputfilename E<lt>outputfilenameE<gt>] [--outputformat E<lt>outputformatE<gt>]
+B<convertsequence> [--id|--accession|--gi|--massive] --query E<lt>query string1E<gt> [--query E<lt>query string2E<gt> ...] [--outputfilename E<lt>outputfilenameE<gt>] [--outputformat E<lt>outputformatE<gt>]
 
 =head1 DESCRIPTION
 
@@ -97,12 +97,12 @@ No options available.
 
 Inputs 'hoge.gb' in GenBank format and convert it into 'hoge.fasta' in FASTA format.
 
-	B<convertsequence.pl> --inputfile hoge.gb --inputformat genbank --outputfile hoge.fasta --outputformat fasta
+	B<convertsequence> --inputfile hoge.gb --inputformat genbank --outputfile hoge.fasta --outputformat fasta
 
 Get a sequence by accession numbers from remote GenBank.
 You can give multiple queries by simply repeating --query option as many as you want.
 
-        B<convertsequence.pl> --accession --query AB090307 --query AB090308 --outputfile hoge.fasta --outputformat fasta
+        B<convertsequence> --accession --query AB090307 --query AB090308 --outputfile hoge.fasta --outputformat fasta
 
 If you need to know vailable formats, see BioPerl documentation for details.
 Even author doesn't know well about it.
