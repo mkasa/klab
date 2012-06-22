@@ -16,5 +16,5 @@ def configure(conf):
 def build(bld):
     bld(features = 'cxx cprogram', source = 'src/fatt.cc', target = 'fatt')
     bld(features = 'cxx cprogram', source = 'src/sieve.cc', target = 'sieve')
-    executables = ['convertsequence', 'fixshebang', 'icc-color', 'mydaemon', 'rep', 'sql', 'mddoc']
+    executables = ['convertsequence', 'fixshebang', 'icc-color', 'gcc-color', 'mydaemon', 'rep', 'sql', 'mddoc']
     bld.install_files('${PREFIX}/bin', ['script/' + x for x in executables], chmod=0755)
