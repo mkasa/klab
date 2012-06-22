@@ -13,4 +13,7 @@
 
 .cpas
 *~
+.lock-waf*
+.waf*
+build
 

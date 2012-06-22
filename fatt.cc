@@ -1,6 +1,6 @@
-#!/home/mkasa/lcl/bin/cpas
+//
+//
 // -*- mode:C++; c-basic-offset:4; tab-width:4 -*-
-//opt: -g
 //
 // @author Masahiro Kasahara <masahiro.kasahara.ws>
 //
