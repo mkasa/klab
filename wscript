@@ -1,7 +1,7 @@
 
 # -*- python -*-
 APPNAME = 'kalab'
-VERSION = '1.00'
+VERSION = '1.01'
 
 def options(opt):
     opt.load('compiler_cxx python')
@@ -15,5 +15,6 @@ def configure(conf):
 
 def build(bld):
     bld(features = 'cxx cprogram', source = 'src/fatt.cc', target = 'fatt')
-    executables = ['convertsequence', 'fixshebang', 'icc-color']
+    bld(features = 'cxx cprogram', source = 'src/sieve.cc', target = 'sieve')
+    executables = ['convertsequence', 'fixshebang', 'icc-color', 'mydaemon', 'rep', 'sql']
     bld.install_files('${PREFIX}/scripts', ['script/' + x for x in executables], chmod=0755)

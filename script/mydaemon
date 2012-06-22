@@ -1,0 +1,162 @@
+#!/usr/bin/env perl
+
+#
+# @author Masahiro Kasahara (masahiro@kasahara.ws)
+#
+
+use strict;
+use Pod::Usage;
+use Getopt::Long;
+use File::Temp qw/ :mktemp /;
+use Proc::PID::File;
+use Cwd;
+
+my $param_mydaemon_dir = "~/.mydaemon";
+my $flag_debug   = 0;
+my $flag_man     = 0;
+my $flag_help    = 0;
+my $flag_crontab = 0;
+my $flag_init    = 0;
+my $param_repository_spec_file = "repositories";
+
+GetOptions("debug"   => \$flag_debug,
+           "help"    => \$flag_help,
+           "man"     => \$flag_man,
+	   "init"    => \$flag_init,
+	   "crontab" => \$flag_crontab
+);
+
+pod2usage(1) if($flag_help);
+pod2usage(-verbose => 2) if($flag_man);
+
+if($flag_init) {
+    my $file_name = mktemp("/tmp/tmpfileXXXXX");
+    my $r = `crontab -l > $file_name`;
+    open my $fh, "<", $file_name or die;
+    my @lines = <$fh>;
+    if(scalar(grep {/mydaemon/i} @lines) > 0) {
+	print STDERR "It seems that mydaemon is already registered on crontab.\n";
+	print STDERR "Abort for safety, so please manually edit the crontab by\n\n";
+	print STDERR "  \$ crontab -l\n\n";
+	exit 1;
+    }
+    close $fh;
+    open my $ofh, ">>", $file_name or die;
+    print $ofh "MAILTO=\"\"\n";
+    print $ofh "0,5,10,15,20,25,30,35,40,45,50,55\t"; # min
+    print $ofh "*\t"; # hour
+    print $ofh "*\t"; # day of month
+    print $ofh "*\t"; # month
+    print $ofh "*\t"; # day of week
+    print $ofh "/usr/bin/env PERL5LIB=" . $ENV{'PERL5LIB'} . " " if(exists $ENV{'PERL5LIB'});
+    print $ofh "$^X " . Cwd::abs_path($0) . " -crontab\n"; # command
+    close $ofh;
+    my $r2 = `crontab $file_name`;
+    if($?) {
+	print STDERR "Failed to register mydaemon to crontab.\n";
+	print STDERR "Look into $file_name, and test 'crontab $file_name'\n";
+	print STDERR "to see what is happening.\n";
+	exit 2;
+    }
+    unless(-x $param_mydaemon_dir) {
+	print STDERR "Creating directory '$param_mydaemon_dir'\n";
+	my $r3 = `mkdir -p $param_mydaemon_dir`;
+	print STDERR "$r3\n";
+    }
+    print STDERR "Registered.\n";
+    exit 0;
+}
+
+if($flag_crontab) {
+    my @subdirs = <$param_mydaemon_dir/*>;
+    for my $subdir (@subdirs) {
+	print STDERR "Checking '$subdir' ... ";
+	my $check_script = "$subdir/check";
+	my $run_script   = "$subdir/run";
+	unless(-x $check_script) {
+	    print STDERR "$check_script was not found. Skip.\n";
+	    next;
+	}
+	unless(-x $run_script) {
+	    print STDERR "$run_script was not found. Skip.\n";
+	    next;
+	}
+	my $rr = system "$check_script 2>&1 > /dev/null";
+	if($rr >> 8) {
+	    print STDERR "not running. ";
+	    my $rr2 = system "$run_script";
+	    if($?) {
+		print STDERR "Failed.\n";
+	    } else {
+		print STDERR "Succeeded.\n";
+	    }
+	} else {
+	    print STDERR " already running.\n";
+	}
+    }
+    exit 0;
+}
+
+if(Proc::PID::File->running(dir => "/var/tmp/")) {
+    print STDERR "Already running!\n";
+    exit 0;
+}
+
+
+=pod
+
+=head1 NAME
+
+mydaemon - manage daemon-like processes without root
+
+=head1 SYNOPSIS
+
+mydaemon [options] 
+
+Options:
+   -help            brief help message
+   -man             full documentation
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-man>
+
+Prints the manual page and exits.
+
+=item B<-init>
+
+Initializes the crontab of the user to periodically run B<mydaemon>.
+
+=item B<-crontab>
+
+This option is given when B<mydaemon> is run from the crontab.
+Users will not need this option except for debugging.
+
+=back
+
+=head1 DESCRIPTION
+
+B<mydaemon> manages processes that must be resident on system but works without root.
+
+You may sometimes feel that it is convenient if you could run your daemon when a system
+starts up. B<mydaemon> is a tool for that.
+
+First, B<mydaemon> registers itself to crontab. The use of the crontab must be available;
+if your system admin does not allow you to use crontab, B<mydaemon> would not work at all.
+The registered B<mydaemon> checks periodically whether your daemons are running and up.
+If B<mydaemon> finds that your daemons are not running, it starts them up.
+
+Next, you create a directory under '~/.mydaemon'. One directory corresponds to one daemon.
+Suppose if you created '~/.mydaemon/test'.
+There must be two files, 'check' and 'run', under that directory.
+The former file, 'check', checks if the daemon is running, and returns non-zero if not.
+The latter file is run when the daemon is not running.
+
+=cut
+
