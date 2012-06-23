@@ -13,6 +13,8 @@
 #include <map>
 #include <set>
 #include <getopt.h>
+#include <unistd.h>
+#include "sqdb.h"
 //#include <stackdump.h>
 //#include <debug.h>
 
@@ -266,6 +268,86 @@ void do_check_same_names(int argc, char** argv)
     delete b;
 }
 
+void create_index(const char* fname)
+{
+    string index_file_name = fname; index_file_name += ".index";
+    if(access(index_file_name.c_str(), F_OK) == 0) {
+        cerr << "'" << index_file_name << "' already exists!" << endl;
+        return;
+    }
+    cerr << "Creating index" << flush;
+    try {
+    	sqdb::Db db(index_file_name.c_str());
+    	db.MakeItFasterAndDangerous();
+    	db.Do("create table seqpos(name text primary key, pos integer)");
+    	db.Do("begin");
+    	cerr << "." << flush;
+        sqdb::Statement stmt = db.Query("insert into seqpos values(?, ?)");
+        ifstream ist(fname);
+        if(!ist) {
+            cerr << "Cannot open '" << fname << "'" << endl;
+            return;
+        }
+        char* b = new char[BUFFER_SIZE];
+        size_t line_count = 0;
+        iostream::pos_type last_pos = ist.tellg();
+        if(ist.getline(b, BUFFER_SIZE)) {
+            ++line_count;
+            #define INSERT_NAME_INTO_TABLE() { stmt.Bind(1, get_read_name_from_header(b)); stmt.Bind(2, static_cast<long long>(last_pos)); stmt.Next(); }
+            INSERT_NAME_INTO_TABLE();
+            size_t number_of_nucleotides_in_read = 0;
+            if(b[0] != '@') { 
+                // This should be FASTA
+                last_pos = ist.tellg();
+                while(ist.getline(b, BUFFER_SIZE)) {
+                    ++line_count;
+                    if(b[0] == '>') {
+                        INSERT_NAME_INTO_TABLE();
+                        number_of_nucleotides_in_read = 0;
+                    } else {
+                        number_of_nucleotides_in_read += strlen(b);
+                    }
+                }
+            } else {
+                // This should be FASTQ
+                last_pos = ist.tellg();
+                while(ist.getline(b, BUFFER_SIZE)) {
+                    ++line_count;
+                    if(b[0] == '+' && b[1] == '\0') { // EOS
+                        long long n = number_of_nucleotides_in_read;
+                        while(ist.getline(b, BUFFER_SIZE)) {
+                            ++line_count;
+                            const size_t number_of_qvchars_in_line = strlen(b);
+                            n -= number_of_qvchars_in_line;
+                            if(n <= 0) break;
+                        }
+                        if(ist.peek() != '@' && !ist.eof()) {
+                            cerr << "WARNING: bad file format? at line " << line_count << endl;
+                        }
+                        last_pos = ist.tellg();
+                        if(!ist.getline(b, BUFFER_SIZE)) break;
+                        ++line_count;
+                        INSERT_NAME_INTO_TABLE();
+                        number_of_nucleotides_in_read = 0;
+                    } else {
+                        const size_t number_of_nucleotides_in_line = strlen(b);
+                        number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                    }
+                }
+            }
+        }
+        delete b;
+    	db.Do("end");
+    	cerr << "." << flush;
+    	db.Do("create index seqpos_name on seqpos(name);");
+    	cerr << endl;
+    } catch(size_t line_num) {
+        cerr << "DB Creation Error. (insert) at line " << line_num << endl;
+    } catch(const sqdb::Exception& e) {
+		cerr << "DB Creation Error. " << e.GetErrorMsg() << endl;
+	}
+}
+
 void do_count(int argc, char** argv)
 {
 	cout << "FILE\tNUM_READS\tNUM_NUCLS\tAVG_READ_LEN\tMIN_READ_LEN\tMAX_READ_LEN\n";
@@ -285,6 +367,13 @@ void do_len(int argc, char** argv)
 {
 	for(int i = 2; i < argc; ++i) {
 		show_read_names_in_file(argv[i], false);
+	}
+}
+
+void do_index(int argc, char** argv)
+{
+	for(int i = 2; i < argc; ++i) {
+		create_index(argv[i]);
 	}
 }
 
@@ -434,17 +523,21 @@ void show_help(const char* subcommand)
 	const string subcmd = subcommand;
 	if(subcmd == "count") {
         cerr << "Usage: fatt count [options...] <FAST(A|Q) files>\n\n";
-        cerr << "Currently, no options available." << endl;
+        cerr << "Currently, no options available.\n\n";
+        cerr << "It counts the number of the sequences in each given file.\n";
         return;
 	}
     if(subcmd == "name") {
         cerr << "Usage: fatt name [options...] <FAST(A|Q) files>\n\n";
-        cerr << "Currently, no options available." << endl;
+        cerr << "Currently, no options available.\n\n";
+        cerr << "It outputs the name of the sequences in each given file.\n";
         return;
 	}
     if(subcmd == "chksamename") {
         cerr << "Usage: fatt chksamename [options...] <FAST(A|Q) files>\n\n";
-        cerr << "--read\tOutput only read names. (Omit file names)\n";
+        cerr << "--read\tOutput only read names. (Omit file names)\n\n";
+        cerr << "It outputs the name of the sequences that appear more than\n";
+        cerr << "once in the given files. Note that it looks only names.\n";
         return;
     }
     if(subcmd == "extract") {
@@ -458,7 +551,16 @@ void show_help(const char* subcommand)
     }
     if(subcmd == "len") {
         cerr << "Usage: fatt len [options...] <FAST(A|Q) files>\n\n";
-        cerr << "Currently, no options available." << endl;
+        cerr << "Currently, no options available.\n\n";
+        cerr << "It outputs the length of the sequences in given files.\n";
+        return;
+    }
+    if(subcmd == "index") {
+        cerr << "Usage: fatt index [options...] <FAST(A|Q) files>\n\n";
+        cerr << "Currently, no options available.\n\n";
+        cerr << "It creates an index on the name of the sequences in each given file.\n";
+        cerr << "Subsequent access may get faster if the file is very large and you\n";
+        cerr << "retrieve only a few sequences.\n";
         return;
     }
     if(subcmd == "help") {
@@ -472,6 +574,7 @@ void show_help(const char* subcommand)
 	cerr << "\tname\toutput the names of reads\n";
     cerr << "\tchksamename\toutput the names of reads if the read name is duplicated\n";
 	cerr << "\textract\textract a set of reads with condition\n";
+    cerr << "\tindex\tcreate an index on read names\n";
     cerr << "\thelp\tshow help message\n";
     cerr << "\nType 'fatt help <command>' to show the detail of the command.\n";
 }
@@ -496,6 +599,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
 	}
     if(commandString == "len") {
         do_len(argc, argv);
+        return;
+    }
+    if(commandString == "index") {
+        do_index(argc, argv);
         return;
     }
     // Help or error.

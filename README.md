@@ -2,7 +2,7 @@ kalab
 =====
 
 This public repository contains a suite of programs that are
-used in daily research in Kasahara lab.
+used in research in Kasahara lab.
 
 The programs include various codes such as small utilities
 or tools for bioinformatics.
@@ -21,7 +21,7 @@ If you like GNU-style configure, you can instead do like this::
 	$ make
 	$ make install
 
-although these commands are just a wrapper for the formar commands.
+although these commands are just a wrapper for the former commands.
 
 List
 ----
@@ -48,5 +48,7 @@ unless otherwise stated in source code.
 
 The princple is that 3rd party libraries and their derivatives
 are basically licensed under their original licenses, while
-what we developed are licensed under the modified BSD.
+what we developed are licensed under the modified BSD. Such
+libraries include SQLite3 (http://www.sqlite.org/), sqdbcpp
+(http://code.google.com/p/sqdbcpp/).
 
