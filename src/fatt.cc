@@ -1,4 +1,4 @@
-//
+// fatt: FASTA/FASTQ manipulation tool.
 //
 // -*- mode:C++; c-basic-offset:4; tab-width:4 -*-
 //
@@ -27,6 +27,18 @@ static void output_read_name(const char* header)
 	if(*header++ == '\0') return;
 	while(*header != '\0' && *header != ' ') cout << *header++;
 	cout << '\n';
+}
+
+string get_index_file_name(const char* fastq_file_name)
+{
+    string index_file_name = fastq_file_name;
+    index_file_name += ".index";
+    return index_file_name;
+}
+
+bool doesIndexExist(const char* fastq_file_name)
+{
+    return access(get_index_file_name(fastq_file_name).c_str(), F_OK) == 0;
 }
 
 void show_read_names_in_file(const char* fname, bool show_name) // if show_name is false, output read length
@@ -270,8 +282,8 @@ void do_check_same_names(int argc, char** argv)
 
 void create_index(const char* fname)
 {
-    string index_file_name = fname; index_file_name += ".index";
-    if(access(index_file_name.c_str(), F_OK) == 0) {
+    const string index_file_name = get_index_file_name(fname);
+    if(doesIndexExist(fname)) {
         cerr << "'" << index_file_name << "' already exists!" << endl;
         return;
     }
