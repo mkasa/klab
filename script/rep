@@ -21,7 +21,23 @@ GetOptions("debug"   => \$flag_debug,
 
 my $command = shift;
 
-pod2usage(-verbose => 1) if($flag_help || $command =~ /^help$/i);
+if($flag_help || $command =~ /^help$/i) {
+	my $is_in_synopsis = 0;
+	while(<DATA>) {
+		if($is_in_synopsis) {
+			if(m|^=|) {
+				$is_in_synopsis = 0;
+			} else {
+				print STDERR;
+			}
+		} else {
+			if(m|SYNOPSIS|) {
+				$is_in_synopsis = 1;
+			}
+		}
+	}
+	exit 2;
+}
 pod2usage(-verbose => 2) if($flag_man  || $command =~ /^man$/i);
 
 unless(defined $command) {
@@ -314,6 +330,17 @@ sub cmd_outgoingall
 								}
 							}
 						}
+					} elsif ($type eq 'svn') {
+						my @s = `svn status -u`;
+						if($?) {
+							print cl('red') . "X" . cl('reset');
+						} else {
+							if(scalar(@s) > 1) {
+								print cl('green') . "O" . cl('reset');
+							} else {
+								print " ";
+							}
+						}
 					} else {
 						print cl('red') . "U" . cl('reset');
 					}
@@ -485,6 +512,7 @@ EOF
     } 
 }
 
+__DATA__
 =pod
 
 =head1 NAME
