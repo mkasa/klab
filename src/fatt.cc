@@ -291,10 +291,10 @@ void create_index(const char* fname)
     try {
     	sqdb::Db db(index_file_name.c_str());
     	db.MakeItFasterAndDangerous();
-    	db.Do("create table seqpos(name text primary key, pos integer)");
+    	db.Do("create table seqpos(name text primary key, pos integer, readindex integer)");
     	db.Do("begin");
     	cerr << "." << flush;
-        sqdb::Statement stmt = db.Query("insert into seqpos values(?, ?)");
+        sqdb::Statement stmt = db.Query("insert into seqpos values(?, ?, ?)");
         ifstream ist(fname);
         if(!ist) {
             cerr << "Cannot open '" << fname << "'" << endl;
@@ -302,11 +302,13 @@ void create_index(const char* fname)
         }
         char* b = new char[BUFFER_SIZE];
         size_t line_count = 0;
+		long long sequence_count = 0;
         iostream::pos_type last_pos = ist.tellg();
         if(ist.getline(b, BUFFER_SIZE)) {
             ++line_count;
-            #define INSERT_NAME_INTO_TABLE() { stmt.Bind(1, get_read_name_from_header(b)); stmt.Bind(2, static_cast<long long>(last_pos)); stmt.Next(); }
+            #define INSERT_NAME_INTO_TABLE() { stmt.Bind(1, get_read_name_from_header(b)); stmt.Bind(2, static_cast<long long>(last_pos)); stmt.Bind(3, sequence_count); stmt.Next(); }
             INSERT_NAME_INTO_TABLE();
+			++sequence_count;
             size_t number_of_nucleotides_in_read = 0;
             if(b[0] != '@') { 
                 // This should be FASTA
@@ -315,6 +317,7 @@ void create_index(const char* fname)
                     ++line_count;
                     if(b[0] == '>') {
                         INSERT_NAME_INTO_TABLE();
+						++sequence_count;
                         number_of_nucleotides_in_read = 0;
                     } else {
                         number_of_nucleotides_in_read += strlen(b);
@@ -340,6 +343,7 @@ void create_index(const char* fname)
                         if(!ist.getline(b, BUFFER_SIZE)) break;
                         ++line_count;
                         INSERT_NAME_INTO_TABLE();
+						++sequence_count;
                         number_of_nucleotides_in_read = 0;
                     } else {
                         const size_t number_of_nucleotides_in_line = strlen(b);
@@ -351,7 +355,9 @@ void create_index(const char* fname)
         delete b;
     	db.Do("end");
     	cerr << "." << flush;
-    	db.Do("create index seqpos_name on seqpos(name);");
+    	db.Do("create index seqpos_name_index on seqpos(name);");
+    	cerr << "." << flush;
+    	db.Do("create index read_index_index on seqpos(readindex);");
     	cerr << endl;
     } catch(size_t line_num) {
         cerr << "DB Creation Error. (insert) at line " << line_num << endl;

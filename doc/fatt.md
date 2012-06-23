@@ -67,10 +67,10 @@ retrieve only a few sequences.
 
     fatt index foo.fasta
 
-Index files are SQLite3 database that contains the name and position of the sequences
-in each given file. The file name of the index is the original FASTA/FASTQ file name
-plus '.index'. For example, the above example creates foo.fasta.index. Therefore,
-the directory must be writable. It does not overwrite if there is any existing file.
+Index files are SQLite3 database that contains the name, the position, and the rank
+of the sequences in each given file. The file name of the index is the original
+FASTA/FASTQ file name plus '.index'. For example, the above example creates foo.fasta.index.
+Therefore, the directory must be writable. It does not overwrite if there is any existing file.
 This command accesses storage quite randomly, so avoid using remote file systems 
 for performance where possible.
 
