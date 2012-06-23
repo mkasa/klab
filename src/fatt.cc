@@ -29,16 +29,26 @@ static void output_read_name(const char* header)
 	cout << '\n';
 }
 
-string get_index_file_name(const char* fastq_file_name)
+static string get_index_file_name(const char* fastq_file_name)
 {
     string index_file_name = fastq_file_name;
     index_file_name += ".index";
     return index_file_name;
 }
 
-bool doesIndexExist(const char* fastq_file_name)
+static bool doesIndexExist(const char* fastq_file_name)
 {
     return access(get_index_file_name(fastq_file_name).c_str(), F_OK) == 0;
+}
+
+static bool is_file_fastq(const char* fastq_file_name)
+{
+    ifstream ist(fastq_file_name);
+    if(!ist) return false;
+    string line;
+    if(!getline(ist, line)) return false;
+    if(line.empty() || line[0] != '@') return false;
+    return true;
 }
 
 void show_read_names_in_file(const char* fname, bool show_name) // if show_name is false, output read length
@@ -280,6 +290,18 @@ void do_check_same_names(int argc, char** argv)
     delete b;
 }
 
+struct DeleteOnFailure {
+	const string filename;
+	bool hasToDelete;
+	DeleteOnFailure(const string& filename) : filename(filename), hasToDelete(true) {}
+	void doNotDelete() { hasToDelete = false; }
+	~DeleteOnFailure() {
+		if(hasToDelete) {
+			unlink(filename.c_str());
+		}
+	}
+};
+
 void create_index(const char* fname)
 {
     const string index_file_name = get_index_file_name(fname);
@@ -290,6 +312,7 @@ void create_index(const char* fname)
     cerr << "Creating index" << flush;
     try {
     	sqdb::Db db(index_file_name.c_str());
+		DeleteOnFailure dof(index_file_name);
     	db.MakeItFasterAndDangerous();
     	db.Do("create table seqpos(name text primary key, pos integer, readindex integer)");
     	db.Do("begin");
@@ -359,6 +382,7 @@ void create_index(const char* fname)
     	cerr << "." << flush;
     	db.Do("create index read_index_index on seqpos(readindex);");
     	cerr << endl;
+		dof.doNotDelete();
     } catch(size_t line_num) {
         cerr << "DB Creation Error. (insert) at line " << line_num << endl;
     } catch(const sqdb::Exception& e) {
@@ -400,6 +424,8 @@ void do_extract(int argc, char** argv)
     bool flag_reverse_condition = false;
     bool flag_read_from_stdin = false;
     bool flag_output_unique = false;
+	bool flag_noindex = false;
+	bool flag_index = false;
 
     static struct option long_options[] = {
         {"reverse", no_argument , 0, 'r'},
@@ -407,6 +433,8 @@ void do_extract(int argc, char** argv)
         {"file", required_argument, 0, 'f'},
         {"stdin", no_argument, 0, 'c'},
         {"unique", no_argument, 0, 'u'},
+		{"index", no_argument, 0, 'i'},
+		{"noindex", no_argument, 0, 'n'},
         {0, 0, 0, 0} // end of long options
     };
 
@@ -436,7 +464,17 @@ void do_extract(int argc, char** argv)
         case 'u':
             flag_output_unique = true;
             break;
+		case 'n':
+			flag_noindex = true;
+			break;
+		case 'i':
+			flag_index = true;
+			break;
 		}
+	}
+	if(flag_index && flag_noindex) {
+		cerr << "ERROR: do not specify --index and --noindex at once" << endl;
+		return;
 	}
     if(flag_output_unique) {
         flag_reverse_condition = !flag_reverse_condition;
@@ -463,66 +501,123 @@ void do_extract(int argc, char** argv)
     char* b = new char[BUFFER_SIZE];
     for(int findex = optind + 1; findex < argc; ++findex) {
         const char* file_name = argv[findex];
+		if(flag_index && !doesIndexExist(file_name)) {
+			create_index(file_name);
+		}
+		const bool use_index = (flag_index || (!flag_noindex && doesIndexExist(file_name))) && !flag_reverse_condition;
         ifstream ist(file_name);
         if(!ist) {
             cerr << "Cannot open '" << file_name << "'" << endl;
+            continue;
         }
-        size_t number_of_sequences = 0;
-        size_t number_of_nucleotides = 0;
-        size_t line_count = 0;
-        bool current_read_has_been_taken = false;
-        if(ist.getline(b, BUFFER_SIZE)) {
-            ++line_count;
-            number_of_sequences++;
-            size_t number_of_nucleotides_in_read = 0;
-            current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
-            if(current_read_has_been_taken) cout << b << endl;
-            if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(b));
-            if(b[0] != '@') { 
-                // This should be FASTA
-                while(ist.getline(b, BUFFER_SIZE)) {
-                    ++line_count;
-                    if(b[0] == '>') {
-                        number_of_sequences++;
-                        current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
-                        if(current_read_has_been_taken) cout << b << endl;
-                        if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(b));
-                        number_of_nucleotides_in_read = 0;
+        if(use_index) {
+            const bool is_fastq = is_file_fastq(file_name);
+            const string index_file_name = get_index_file_name(file_name);
+            try {
+                sqdb::Db db(index_file_name.c_str());
+                sqdb::Statement stmt = db.Query("select pos from seqpos where name=?");
+                for(set<string>::const_iterator it = readNamesToTake.begin(); it != readNamesToTake.end(); ++it) {
+                    const string& read_name = *it;
+                    stmt.Bind(1, read_name);
+                    if(stmt.Next()) {
+                        const long long pos = stmt.GetField(0);
+                        ist.seekg(pos);
+                        if(ist.fail() || !ist.getline(b, BUFFER_SIZE)) {
+                            cerr << "WARNING: " << read_name << " is missing in the file. Maybe the index is old?\n";
+                            continue;
+                        }
+                        cout << b << "\n";
+                        if(is_fastq) {
+                            size_t number_of_nucleotides_in_read = 0;
+                            while(ist.getline(b, BUFFER_SIZE)) {
+                                if(b[0] == '+' && b[1] == '\0') { // EOS
+                                    long long n = number_of_nucleotides_in_read;
+                                    cout << b << endl;
+                                    while(ist.getline(b, BUFFER_SIZE)) {
+                                        const size_t number_of_qvchars_in_line = strlen(b);
+                                        n -= number_of_qvchars_in_line;
+                                        cout << b << endl;
+                                        if(n <= 0) break;
+                                    }
+									break;
+                                } else {
+                                    const size_t number_of_nucleotides_in_line = strlen(b);
+                                    number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                                    cout << b << endl;
+                                }
+                            }
+                        } else {
+                            while(ist.getline(b, BUFFER_SIZE)) {
+                                if(b[0] == '>') break;
+                                cout << b << "\n";
+                            }
+                        }
                     } else {
-                        if(current_read_has_been_taken) cout << b << endl;
-                        number_of_nucleotides += strlen(b);
+                        cerr << "WARNING: " << read_name << " was not found.\n";
                     }
                 }
-            } else {
-                // This is FASTQ
-                while(ist.getline(b, BUFFER_SIZE)) {
-                    ++line_count;
-                    if(b[0] == '+' && b[1] == '\0') { // EOS
-                        long long n = number_of_nucleotides_in_read;
-                        if(current_read_has_been_taken) cout << b << endl;
-                        while(ist.getline(b, BUFFER_SIZE)) {
-                            ++line_count;
-                            const size_t number_of_qvchars_in_line = strlen(b);
-                            n -= number_of_qvchars_in_line;
-                            if(current_read_has_been_taken) cout << b << endl;
-                            if(n <= 0) break;
-                        }
-                        if(ist.peek() != '@' && !ist.eof()) {
-                            cerr << "WARNING: bad file format? at line " << line_count << endl;
-                        }
-                        number_of_nucleotides_in_read = 0;
-                        if(!ist.getline(b, BUFFER_SIZE))
-                            break;
+            } catch (const sqdb::Exception& e) {
+                cerr << "ERROR: db error. " << e.GetErrorMsg() << endl;
+                return;
+            }
+        } else {
+            size_t number_of_sequences = 0;
+            size_t number_of_nucleotides = 0;
+            size_t line_count = 0;
+            bool current_read_has_been_taken = false;
+            if(ist.getline(b, BUFFER_SIZE)) {
+                ++line_count;
+                number_of_sequences++;
+                size_t number_of_nucleotides_in_read = 0;
+                current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
+                if(current_read_has_been_taken) cout << b << endl;
+                if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(b));
+                if(b[0] != '@') { 
+                    // This should be FASTA
+                    while(ist.getline(b, BUFFER_SIZE)) {
                         ++line_count;
-                        ++number_of_sequences;
-                        current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
-                        if(current_read_has_been_taken) cout << b << endl;
-                        if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(b));
-                    } else {
-                        const size_t number_of_nucleotides_in_line = strlen(b);
-                        number_of_nucleotides += number_of_nucleotides_in_line;
-                        number_of_nucleotides_in_read += number_of_nucleotides_in_line;
-                        if(current_read_has_been_taken) cout << b << endl;
+                        if(b[0] == '>') {
+                            number_of_sequences++;
+                            current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
+                            if(current_read_has_been_taken) cout << b << endl;
+                            if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(b));
+                            number_of_nucleotides_in_read = 0;
+                        } else {
+                            if(current_read_has_been_taken) cout << b << endl;
+                            number_of_nucleotides += strlen(b);
+                        }
+                    }
+                } else {
+                    // This is FASTQ
+                    while(ist.getline(b, BUFFER_SIZE)) {
+                        ++line_count;
+                        if(b[0] == '+' && b[1] == '\0') { // EOS
+                            long long n = number_of_nucleotides_in_read;
+                            if(current_read_has_been_taken) cout << b << endl;
+                            while(ist.getline(b, BUFFER_SIZE)) {
+                                ++line_count;
+                                const size_t number_of_qvchars_in_line = strlen(b);
+                                n -= number_of_qvchars_in_line;
+                                if(current_read_has_been_taken) cout << b << endl;
+                                if(n <= 0) break;
+                            }
+                            if(ist.peek() != '@' && !ist.eof()) {
+                                cerr << "WARNING: bad file format? at line " << line_count << endl;
+                            }
+                            number_of_nucleotides_in_read = 0;
+                            if(!ist.getline(b, BUFFER_SIZE))
+                                break;
+                            ++line_count;
+                            ++number_of_sequences;
+                            current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
+                            if(current_read_has_been_taken) cout << b << endl;
+                            if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(b));
+                        } else {
+                            const size_t number_of_nucleotides_in_line = strlen(b);
+                            number_of_nucleotides += number_of_nucleotides_in_line;
+                            number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                            if(current_read_has_been_taken) cout << b << endl;
+                        }
                     }
                 }
             }
