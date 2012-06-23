@@ -311,8 +311,8 @@ void create_index(const char* fname)
     }
     cerr << "Creating index" << flush;
     try {
-    	sqdb::Db db(index_file_name.c_str());
 		DeleteOnFailure dof(index_file_name);
+    	sqdb::Db db(index_file_name.c_str());
     	db.MakeItFasterAndDangerous();
     	db.Do("create table seqpos(name text primary key, pos integer, readindex integer)");
     	db.Do("begin");
