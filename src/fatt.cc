@@ -426,6 +426,9 @@ void do_extract(int argc, char** argv)
     bool flag_output_unique = false;
 	bool flag_noindex = false;
 	bool flag_index = false;
+	long long param_start = -1;
+	long long param_end = -1;
+	long long param_num = -1;
 
     static struct option long_options[] = {
         {"reverse", no_argument , 0, 'r'},
@@ -435,6 +438,9 @@ void do_extract(int argc, char** argv)
         {"unique", no_argument, 0, 'u'},
 		{"index", no_argument, 0, 'i'},
 		{"noindex", no_argument, 0, 'n'},
+    	{"start", required_argument, 0, 'a'},
+    	{"end", required_argument, 0, 'e'},
+    	{"num", required_argument, 0, 'n'},
         {0, 0, 0, 0} // end of long options
     };
 
@@ -470,10 +476,23 @@ void do_extract(int argc, char** argv)
 		case 'i':
 			flag_index = true;
 			break;
+		case 'a':
+			param_start = atoll(optarg);
+			break;
+		case 'e':
+			param_end = atoll(optarg);
+			break;
+		case 'n':
+			param_num = atoll(optarg);
+			break;
 		}
 	}
 	if(flag_index && flag_noindex) {
 		cerr << "ERROR: do not specify --index and --noindex at once" << endl;
+		return;
+	}
+	if(param_end != -1 && param_num != -1) {
+		cerr << "ERROR: you cannot specify --end and --num at once" << endl;
 		return;
 	}
     if(flag_output_unique) {

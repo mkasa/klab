@@ -30,6 +30,13 @@ If a file contains some duplicated sequences and you want to eliminate them::
 
     fatt extract --unique sequences_with_lots_of_duplication.fastq > uniqueseqs.fastq
 
+If both --start=x and --end=y options are specified, you can obtain sequences ranging from x-th (inclusive) to y-th (exclusive)::
+
+    fatt extract --start=200 --end=300 foo.fastq > foo_200_to_300.fastq
+
+This feature might be useful especially for n-fold cross-validation.
+
+
 count
 -----
 You can count the number of the sequences in each given file.
