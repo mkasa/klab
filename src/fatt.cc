@@ -734,6 +734,90 @@ void do_extract(int argc, char** argv)
     delete b;
 }
 
+void do_guess_qv_type(int argc, char** argv)
+{
+    char* b = new char[BUFFER_SIZE];
+
+
+    for(int findex = 2; findex < argc; ++findex) {
+        const char* file_name = argv[findex];
+        ifstream ist(file_name);
+        if(!ist) {
+            cerr << "Cannot open '" << file_name << "'" << endl;
+        }
+        size_t histogram[256];
+        for(int i = 0; i < 256; ++i) histogram[i] = 0;
+        size_t number_of_sequences = 0;
+        size_t number_of_nucleotides = 0;
+        size_t line_count = 0;
+        if(ist.getline(b, BUFFER_SIZE)) {
+            ++line_count;
+            number_of_sequences++;
+            size_t number_of_nucleotides_in_read = 0;
+            if(b[0] != '@') { 
+                cerr << "ERROR: the input file '" << file_name << "' does not seem to be a FASTQ file at line " << line_count << endl;
+                return;
+            }
+            while(ist.getline(b, BUFFER_SIZE)) {
+                ++line_count;
+                if(b[0] == '+' && b[1] == '\0') { // EOS
+                    long long n = number_of_nucleotides_in_read;
+                    while(ist.getline(b, BUFFER_SIZE)) {
+                        ++line_count;
+                        const size_t number_of_qvchars_in_line = strlen(b);
+                        for(unsigned char* p = reinterpret_cast<unsigned char*>(b); *p; ++p) histogram[*p]++;
+                        n -= number_of_qvchars_in_line;
+                        if(n <= 0) break;
+                    }
+                    if(ist.peek() != '@' && !ist.eof()) {
+                        cerr << "WARNING: bad file format? at line " << line_count << endl;
+                    }
+                    number_of_nucleotides_in_read = 0;
+                    if(!ist.getline(b, BUFFER_SIZE))
+                        break;
+                    ++line_count;
+                    ++number_of_sequences;
+                } else {
+                    const size_t number_of_nucleotides_in_line = strlen(b);
+                    number_of_nucleotides += number_of_nucleotides_in_line;
+                    number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                }
+            }
+        }
+        {
+            size_t numBadQVchars = 0;
+            for(int i = 0; i < 32; ++i)    numBadQVchars += histogram[i];
+            for(int i = 127; i < 256; ++i) numBadQVchars += histogram[i];
+            if(0 < numBadQVchars) {
+                cout << file_name << '\t' << "bad\tthe QV strings have " << numBadQVchars << " characters that do not look like QV chars.\n";
+                continue;
+            }
+        }
+        {
+            size_t numSangerOnlyQVchars = 0;
+            for(int i = 33; i <= 58; ++i)  numSangerOnlyQVchars += histogram[i];
+            if(0 < numSangerOnlyQVchars) {
+                cout << file_name << '\t' << "sanger\tIt must be Sanger FASTQ or Illumina 1.8+.\n";
+                continue;
+            }
+        }
+        {
+            size_t numSolexaOnlyQVchars = 0;
+            for(int i = 59; i <= 63; ++i)  numSolexaOnlyQVchars += histogram[i];
+            if(0 < numSolexaOnlyQVchars) {
+                cout << file_name << '\t' << "solexa\tIt must be Solexa FASTQ.\n";
+                continue;
+            }
+        }
+        if(0 < histogram[64] + histogram[65]) {
+            cout << file_name << '\t' << "illumina13\tIt must be Illumina 1.3+\n";
+            continue;
+        }
+        cout << file_name << '\t' << "illumina15\tIt looks like Illumina 1.5+\n";
+    }
+    delete b;
+}
+
 void show_usage()
 {
     cerr << "Usage: fatt <command> [options...]" << endl;
@@ -784,6 +868,11 @@ void show_help(const char* subcommand)
         cerr << "retrieve only a few sequences.\n";
         return;
     }
+    if(subcmd == "guessqvtype") {
+        cerr << "Usage: fatt guessqvtype [options...] <FAST(A|Q) files>\n\n";
+        cerr << "Currently, no options available.\n\n";
+        return;
+    }
     if(subcmd == "help") {
         cerr << "Uh? No detailed help for help.\n";
         cerr << "Read the manual, or ask the author.\n";
@@ -824,6 +913,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     }
     if(commandString == "index") {
         do_index(argc, argv);
+        return;
+    }
+    if(commandString == "guessqvtype") {
+        do_guess_qv_type(argc, argv);
         return;
     }
     // Help or error.

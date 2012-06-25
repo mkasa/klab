@@ -84,6 +84,13 @@ Therefore, the directory must be writable. It does not overwrite if there is any
 This command accesses storage quite randomly, so avoid using remote file systems 
 for performance where possible.
 
+guessqvtype
+----------
+There are several types of FASTQ formats. They differ in the base of Quality Value.
+This command takes FASTQ files and guesses the base of QV.
+
+    fatt guessqvtype foo.fastq
+
 help
 ----
 You can see the description of a subcommand. For example, if you do not remember
