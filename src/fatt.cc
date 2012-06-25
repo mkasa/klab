@@ -927,6 +927,112 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
     delete b;
 }
 
+void fold_fastx(const char* file_name, int length_of_line)
+{
+    char* b = new char[BUFFER_SIZE];
+    ifstream ist(file_name);
+    if(!ist) {
+        cerr << "Cannot open '" << file_name << "'" << endl;
+    }
+    size_t line_count = 0;
+    if(ist.getline(b, BUFFER_SIZE)) {
+        ++line_count;
+        size_t number_of_nucleotides_in_output_line = 0;
+        cout << b << '\n';
+        if(b[0] != '@') { 
+            // This should be FASTA
+            while(ist.getline(b, BUFFER_SIZE)) {
+                ++line_count;
+                if(b[0] == '>') {
+                    if(0 < number_of_nucleotides_in_output_line)
+                        cout << '\n';
+                    number_of_nucleotides_in_output_line = 0;
+                    cout << b << '\n';
+                } else {
+                    const int number_of_chars_in_line = strlen(b);
+                    int off = 0;
+                    while(off < number_of_chars_in_line) {
+                        int s = number_of_chars_in_line - off;
+                        if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
+                        for(int i = 0; i < s; ++i) cout << b[off + i];
+                        off += s;
+                        number_of_nucleotides_in_output_line += s;
+                        if(length_of_line <= number_of_nucleotides_in_output_line) {
+                            cout << '\n';
+                            number_of_nucleotides_in_output_line = 0;
+                        }
+                    }
+                }
+            }
+            if(0 < number_of_nucleotides_in_output_line)
+                cout << '\n';
+        } else {
+            size_t number_of_nucleotides_in_read = 0;
+            // This is FASTQ
+            while(ist.getline(b, BUFFER_SIZE)) {
+                ++line_count;
+                if(b[0] == '+' && b[1] == '\0') { // EOS
+                    if(0 < number_of_nucleotides_in_output_line) {
+                        cout << '\n';
+                        number_of_nucleotides_in_output_line = 0;
+                    }
+					cout << "+\n";
+                    long long n = number_of_nucleotides_in_read;
+                    while(ist.getline(b, BUFFER_SIZE)) {
+                        ++line_count;
+                        const size_t number_of_qvchars_in_line = strlen(b);
+                        int off = 0;
+                        while(off < number_of_qvchars_in_line) {
+                            int s = number_of_qvchars_in_line - off;
+                            if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
+                            for(int i = 0; i < s; ++i) cout << b[off + i];
+                            off += s;
+                            number_of_nucleotides_in_output_line += s;
+                            if(length_of_line <= number_of_nucleotides_in_output_line) {
+                                cout << '\n';
+                                number_of_nucleotides_in_output_line = 0;
+                            }
+                        }
+                        n -= number_of_qvchars_in_line;
+                        if(n <= 0) break;
+                    }
+                    if(ist.peek() != '@' && !ist.eof()) {
+                        cerr << "WARNING: bad file format? at line " << line_count << endl;
+                    }
+                    number_of_nucleotides_in_read = 0;
+                    if(!ist.getline(b, BUFFER_SIZE))
+                        break;
+                    if(0 < number_of_nucleotides_in_output_line) {
+                        cout << '\n';
+                        number_of_nucleotides_in_output_line = 0;
+                    }
+                    cout << b << '\n';
+                    ++line_count;
+                } else {
+                    const size_t number_of_nucleotides_in_line = strlen(b);
+                    number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                    const int number_of_chars_in_line = strlen(b);
+                    int off = 0;
+                    while(off < number_of_chars_in_line) {
+                        int s = number_of_chars_in_line - off;
+                        if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
+                        for(int i = 0; i < s; ++i) cout << b[off + i];
+                        off += s;
+                        number_of_nucleotides_in_output_line += s;
+                        if(length_of_line <= number_of_nucleotides_in_output_line) {
+                            cout << '\n';
+                            number_of_nucleotides_in_output_line = 0;
+                        }
+                    }
+                }
+            }
+            if(0 < number_of_nucleotides_in_output_line)
+                cout << '\n';
+        }
+    }
+    delete b;
+}
+
 void do_to_csv(int argc, char** argv)
 {
     static struct option long_options[] = {
@@ -955,6 +1061,32 @@ void do_to_csv(int argc, char** argv)
 	}
     for(int i = optind + 1; i < argc; ++i) {
         to_csv(argv[i], flag_no_header, flag_output_in_tsv);
+    }
+}
+
+void do_fold(int argc, char** argv)
+{
+    static struct option long_options[] = {
+        {"len", required_argument, 0, 'l'},
+        {0, 0, 0, 0} // end of long options
+    };
+    int length_of_line = 70;
+
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+		case 'l':
+            length_of_line = atoi(optarg);
+			break;
+		}
+	}
+    for(int i = optind + 1; i < argc; ++i) {
+        fold_fastx(argv[i], length_of_line);
     }
 }
 
@@ -1015,7 +1147,13 @@ void show_help(const char* subcommand)
     }
     if(subcmd == "tocsv") {
         cerr << "Usage: fatt tocsv [options...] <FAST(A|Q) files>\n\n";
-        cerr << "Currently, no options available.\n\n";
+        cerr << "--noheader\tSuppress header output.\n";
+        cerr << "--tsv\tUse TSV instead of CSV.\n";
+        return;
+    }
+    if(subcmd == "fold") {
+        cerr << "Usage: fatt fold [options...] <FAST(A|Q) files>\n\n";
+        cerr << "--len=n\tFold lines at n characters. n is 70 by default.\n";
         return;
     }
     if(subcmd == "help") {
@@ -1032,6 +1170,7 @@ void show_help(const char* subcommand)
     cerr << "\tindex\tcreate an index on read names\n";
     cerr << "\tguessqvtype\tguess the type of FASTQ (Sanger/Illumina1.3/Illumina1.5/...)\n";
     cerr << "\ttocsv\tconvert sequences into CSV format\n";
+    cerr << "\tfold\tfold sequences\n";
     cerr << "\thelp\tshow help message\n";
     cerr << "\nType 'fatt help <command>' to show the detail of the command.\n";
 }
@@ -1068,6 +1207,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     }
     if(commandString == "tocsv") {
         do_to_csv(argc, argv);
+        return;
+    }
+    if(commandString == "fold") {
+        do_fold(argc, argv);
         return;
     }
     // Help or error.
