@@ -1,5 +1,5 @@
-kalab
-=====
+klab
+====
 
 This public repository contains a suite of programs that are
 used in research in Kasahara lab.
