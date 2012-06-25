@@ -91,6 +91,18 @@ This command takes FASTQ files and guesses the base of QV.
 
     fatt guessqvtype foo.fastq
 
+tocsv
+-----
+It converts input FASTA/FASTQ files into CSV files.
+
+    fatt tocsv foo.fastq > foo.csv
+
+If you like TSV instead of CSV, give --tsv.
+
+    fatt tocsv --tsv foo.fastq > foo.tsv
+
+In the both cases, you can specify --noheader to suppress the header output.
+
 help
 ----
 You can see the description of a subcommand. For example, if you do not remember

@@ -23,6 +23,21 @@ using namespace std;
 
 static const size_t BUFFER_SIZE = 16 * 1024 * 1024u;
 
+struct CSVEscape
+{
+	const char* p;
+	CSVEscape(const char* p) : p(p) {}
+};
+
+static ostream& operator << (ostream& os, const CSVEscape& c)
+{
+	for(const char* p = c.p; *p; ++p) {
+		if(*p == '"') os << '"';
+		os << *p;
+	}
+	return os;
+}
+
 static void output_read_name(const char* header)
 {
 	if(*header++ == '\0') return;
@@ -375,6 +390,7 @@ void create_index(const char* fname)
                     }
                 }
             }
+            #undef INSERT_NAME_INTO_TABLE
         }
         delete b;
     	db.Do("end");
@@ -738,7 +754,6 @@ void do_guess_qv_type(int argc, char** argv)
 {
     char* b = new char[BUFFER_SIZE];
 
-
     for(int findex = 2; findex < argc; ++findex) {
         const char* file_name = argv[findex];
         ifstream ist(file_name);
@@ -818,6 +833,131 @@ void do_guess_qv_type(int argc, char** argv)
     delete b;
 }
 
+void to_csv(const char* file_name, bool does_not_output_header, bool output_in_tsv)
+{
+    char* b = new char[BUFFER_SIZE];
+    ifstream ist(file_name);
+    if(!ist) {
+        cerr << "Cannot open '" << file_name << "'" << endl;
+    }
+    size_t number_of_sequences = 0;
+    size_t number_of_nucleotides = 0;
+    size_t line_count = 0;
+    if(ist.getline(b, BUFFER_SIZE)) {
+        ++line_count;
+        number_of_sequences++;
+        size_t number_of_nucleotides_in_read = 0;
+        if(b[0] != '@') { 
+            // This should be FASTA
+            if(!does_not_output_header) {
+                if(output_in_tsv) {
+                    cout << "id\tdesc\tseq\n";
+                } else {
+                    cout << "id,desc,seq\n";
+                }
+            }
+            #define OUTPUT_HEADER() {                                           \
+                const string& idstr = get_read_name_from_header(b);\
+                cout << idstr << (output_in_tsv ? "\t" : ",\"");\
+                const char* descp = b + 1 + idstr.size();\
+                if(*descp != '\0') descp++;\
+                if(output_in_tsv) cout << descp; else cout << CSVEscape(descp);\
+                cout << (output_in_tsv ? "\t" : "\",");\
+            }
+            OUTPUT_HEADER();
+            while(ist.getline(b, BUFFER_SIZE)) {
+                ++line_count;
+                if(b[0] == '>') {
+                    number_of_sequences++;
+                    number_of_nucleotides_in_read = 0;
+                    cout << '\n';
+                    OUTPUT_HEADER();
+                } else {
+                    cout << b;
+                    number_of_nucleotides += strlen(b);
+                }
+            }
+            cout << '\n';
+        } else {
+            // This is FASTQ
+            if(!does_not_output_header) {
+                if(output_in_tsv) {
+                    cout << "id\tdesc\tseq\tqv\n";
+                } else {
+                    cout << "id,desc,seq,qv\n";
+                }
+            }
+            OUTPUT_HEADER();
+            while(ist.getline(b, BUFFER_SIZE)) {
+                ++line_count;
+                if(b[0] == '+' && b[1] == '\0') { // EOS
+                    cout << (output_in_tsv ? '\t' : ',') << '"';
+                    long long n = number_of_nucleotides_in_read;
+                    while(ist.getline(b, BUFFER_SIZE)) {
+                        ++line_count;
+                        const size_t number_of_qvchars_in_line = strlen(b);
+						if(output_in_tsv)
+                        	cout << b;
+						else
+							cout << CSVEscape(b);
+                        n -= number_of_qvchars_in_line;
+                        if(n <= 0) break;
+                    }
+                    if(ist.peek() != '@' && !ist.eof()) {
+                        cerr << "WARNING: bad file format? at line " << line_count << endl;
+                    }
+                    number_of_nucleotides_in_read = 0;
+                    if(!ist.getline(b, BUFFER_SIZE))
+                        break;
+                    cout << '"' << '\n';
+                    OUTPUT_HEADER();
+                    ++line_count;
+                    ++number_of_sequences;
+                } else {
+                    const size_t number_of_nucleotides_in_line = strlen(b);
+                    number_of_nucleotides += number_of_nucleotides_in_line;
+                    number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                    cout << b;
+                }
+            }
+            cout << '"' << '\n';
+            #undef OUTPUT_HEADER
+        }
+    }
+    delete b;
+}
+
+void do_to_csv(int argc, char** argv)
+{
+    static struct option long_options[] = {
+        {"noheader", no_argument , 0, 'n'},
+        {"tsv", no_argument, 0, 't'},
+        {0, 0, 0, 0} // end of long options
+    };
+    bool flag_no_header = false;
+    bool flag_output_in_tsv = false;
+
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+		case 'n':
+            flag_no_header = true;
+			break;
+        case 't':
+            flag_output_in_tsv = true;
+            break;
+		}
+	}
+    for(int i = optind + 1; i < argc; ++i) {
+        to_csv(argv[i], flag_no_header, flag_output_in_tsv);
+    }
+}
+
 void show_usage()
 {
     cerr << "Usage: fatt <command> [options...]" << endl;
@@ -873,6 +1013,11 @@ void show_help(const char* subcommand)
         cerr << "Currently, no options available.\n\n";
         return;
     }
+    if(subcmd == "tocsv") {
+        cerr << "Usage: fatt tocsv [options...] <FAST(A|Q) files>\n\n";
+        cerr << "Currently, no options available.\n\n";
+        return;
+    }
     if(subcmd == "help") {
         cerr << "Uh? No detailed help for help.\n";
         cerr << "Read the manual, or ask the author.\n";
@@ -885,6 +1030,8 @@ void show_help(const char* subcommand)
     cerr << "\tchksamename\toutput the names of reads if the read name is duplicated\n";
 	cerr << "\textract\textract a set of reads with condition\n";
     cerr << "\tindex\tcreate an index on read names\n";
+    cerr << "\tguessqvtype\tguess the type of FASTQ (Sanger/Illumina1.3/Illumina1.5/...)\n";
+    cerr << "\ttocsv\tconvert sequences into CSV format\n";
     cerr << "\thelp\tshow help message\n";
     cerr << "\nType 'fatt help <command>' to show the detail of the command.\n";
 }
@@ -917,6 +1064,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     }
     if(commandString == "guessqvtype") {
         do_guess_qv_type(argc, argv);
+        return;
+    }
+    if(commandString == "tocsv") {
+        do_to_csv(argc, argv);
         return;
     }
     // Help or error.
