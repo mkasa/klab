@@ -927,7 +927,7 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
     delete b;
 }
 
-void fold_fastx(const char* file_name, int length_of_line)
+void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
 {
     char* b = new char[BUFFER_SIZE];
     ifstream ist(file_name);
@@ -944,23 +944,29 @@ void fold_fastx(const char* file_name, int length_of_line)
             while(ist.getline(b, BUFFER_SIZE)) {
                 ++line_count;
                 if(b[0] == '>') {
-                    if(0 < number_of_nucleotides_in_output_line)
+                    if(0 < number_of_nucleotides_in_output_line) {
                         cout << '\n';
-                    number_of_nucleotides_in_output_line = 0;
+                        number_of_nucleotides_in_output_line = 0;
+                    }
                     cout << b << '\n';
                 } else {
                     const int number_of_chars_in_line = strlen(b);
-                    int off = 0;
-                    while(off < number_of_chars_in_line) {
-                        int s = number_of_chars_in_line - off;
-                        if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
-                        for(int i = 0; i < s; ++i) cout << b[off + i];
-                        off += s;
-                        number_of_nucleotides_in_output_line += s;
-                        if(length_of_line <= number_of_nucleotides_in_output_line) {
-                            cout << '\n';
-                            number_of_nucleotides_in_output_line = 0;
+                    if(is_folding) {
+                        int off = 0;
+                        while(off < number_of_chars_in_line) {
+                            int s = number_of_chars_in_line - off;
+                            if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
+                            for(int i = 0; i < s; ++i) cout << b[off + i];
+                            off += s;
+                            number_of_nucleotides_in_output_line += s;
+                            if(length_of_line <= number_of_nucleotides_in_output_line) {
+                                cout << '\n';
+                                number_of_nucleotides_in_output_line = 0;
+                            }
                         }
+                    } else {
+                        cout << b;
+                        number_of_nucleotides_in_output_line += number_of_chars_in_line;
                     }
                 }
             }
@@ -981,17 +987,22 @@ void fold_fastx(const char* file_name, int length_of_line)
                     while(ist.getline(b, BUFFER_SIZE)) {
                         ++line_count;
                         const size_t number_of_qvchars_in_line = strlen(b);
-                        int off = 0;
-                        while(off < number_of_qvchars_in_line) {
-                            int s = number_of_qvchars_in_line - off;
-                            if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
-                            for(int i = 0; i < s; ++i) cout << b[off + i];
-                            off += s;
-                            number_of_nucleotides_in_output_line += s;
-                            if(length_of_line <= number_of_nucleotides_in_output_line) {
-                                cout << '\n';
-                                number_of_nucleotides_in_output_line = 0;
+                        if(is_folding) {
+                            int off = 0;
+                            while(off < number_of_qvchars_in_line) {
+                                int s = number_of_qvchars_in_line - off;
+                                if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
+                                for(int i = 0; i < s; ++i) cout << b[off + i];
+                                off += s;
+                                number_of_nucleotides_in_output_line += s;
+                                if(length_of_line <= number_of_nucleotides_in_output_line) {
+                                    cout << '\n';
+                                    number_of_nucleotides_in_output_line = 0;
+                                }
                             }
+                        } else {
+                            cout << b;
+                            number_of_nucleotides_in_output_line += number_of_qvchars_in_line;
                         }
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
@@ -1009,20 +1020,24 @@ void fold_fastx(const char* file_name, int length_of_line)
                     cout << b << '\n';
                     ++line_count;
                 } else {
-                    const size_t number_of_nucleotides_in_line = strlen(b);
-                    number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                     const int number_of_chars_in_line = strlen(b);
-                    int off = 0;
-                    while(off < number_of_chars_in_line) {
-                        int s = number_of_chars_in_line - off;
-                        if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
-                        for(int i = 0; i < s; ++i) cout << b[off + i];
-                        off += s;
-                        number_of_nucleotides_in_output_line += s;
-                        if(length_of_line <= number_of_nucleotides_in_output_line) {
-                            cout << '\n';
-                            number_of_nucleotides_in_output_line = 0;
+                    number_of_nucleotides_in_read += number_of_chars_in_line;
+                    if(is_folding) {
+                        int off = 0;
+                        while(off < number_of_chars_in_line) {
+                            int s = number_of_chars_in_line - off;
+                            if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
+                            for(int i = 0; i < s; ++i) cout << b[off + i];
+                            off += s;
+                            number_of_nucleotides_in_output_line += s;
+                            if(length_of_line <= number_of_nucleotides_in_output_line) {
+                                cout << '\n';
+                                number_of_nucleotides_in_output_line = 0;
+                            }
                         }
+                    } else {
+                        cout << b;
+                        number_of_nucleotides_in_output_line += number_of_chars_in_line;
                     }
                 }
             }
@@ -1086,7 +1101,14 @@ void do_fold(int argc, char** argv)
 		}
 	}
     for(int i = optind + 1; i < argc; ++i) {
-        fold_fastx(argv[i], length_of_line);
+        fold_fastx(argv[i], length_of_line, true);
+    }
+}
+
+void do_unfold(int argc, char** argv)
+{
+    for(int i = 2; i < argc; ++i) {
+        fold_fastx(argv[i], 0, false);
     }
 }
 
@@ -1156,6 +1178,11 @@ void show_help(const char* subcommand)
         cerr << "--len=n\tFold lines at n characters. n is 70 by default.\n";
         return;
     }
+    if(subcmd == "unfold") {
+        cerr << "Usage: fatt unfold [options...] <FAST(A|Q) files>\n\n";
+        cerr << "Currently, no options available.\n\n";
+        return;
+    }
     if(subcmd == "help") {
         cerr << "Uh? No detailed help for help.\n";
         cerr << "Read the manual, or ask the author.\n";
@@ -1171,6 +1198,7 @@ void show_help(const char* subcommand)
     cerr << "\tguessqvtype\tguess the type of FASTQ (Sanger/Illumina1.3/Illumina1.5/...)\n";
     cerr << "\ttocsv\tconvert sequences into CSV format\n";
     cerr << "\tfold\tfold sequences\n";
+    cerr << "\tunfold\tunfold sequences\n";
     cerr << "\thelp\tshow help message\n";
     cerr << "\nType 'fatt help <command>' to show the detail of the command.\n";
 }
@@ -1211,6 +1239,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     }
     if(commandString == "fold") {
         do_fold(argc, argv);
+        return;
+    }
+    if(commandString == "unfold") {
+        do_unfold(argc, argv);
         return;
     }
     // Help or error.

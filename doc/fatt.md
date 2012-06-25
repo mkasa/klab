@@ -103,6 +103,25 @@ If you like TSV instead of CSV, give --tsv.
 
 In the both cases, you can specify --noheader to suppress the header output.
 
+
+fold
+----
+If the sequences or the QVs are too long in a single line, you can fold at
+the specified length (70 chars by default).
+
+    fatt fold foo_long_lines.fastq > foo_folded.fastq
+
+Give --len=n to fold at n characters.
+
+    fatt fold --len=50 foo_long_lines.fastq > foo_folded.fastq
+
+unfold
+------
+It collects nucleotide characters into a single line. Most Illumina reads are already in this format.
+
+    fatt unfold foo.fastq > foo_unfolded.fastq
+
+
 help
 ----
 You can see the description of a subcommand. For example, if you do not remember
