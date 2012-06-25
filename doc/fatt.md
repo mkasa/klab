@@ -34,8 +34,11 @@ If both --start=x and --end=y options are specified, you can obtain sequences ra
 
     fatt extract --start=200 --end=300 foo.fastq > foo_200_to_300.fastq
 
-This feature might be useful especially for n-fold cross-validation.
+This feature might be useful especially for n-fold cross-validation. Alternatively, you can do the same thing by::
 
+    fatt extract --start=200 --num=100 foo.fastq > foo_200_to_300.fastq
+
+Note that --start and --end take 0-origin numbers.
 
 count
 -----

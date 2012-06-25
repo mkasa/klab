@@ -12,6 +12,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <cstdlib>
 #include <getopt.h>
 #include <unistd.h>
 #include "sqdb.h"
@@ -440,7 +441,7 @@ void do_extract(int argc, char** argv)
 		{"noindex", no_argument, 0, 'n'},
     	{"start", required_argument, 0, 'a'},
     	{"end", required_argument, 0, 'e'},
-    	{"num", required_argument, 0, 'n'},
+    	{"num", required_argument, 0, 'q'},
         {0, 0, 0, 0} // end of long options
     };
 
@@ -482,7 +483,7 @@ void do_extract(int argc, char** argv)
 		case 'e':
 			param_end = atoll(optarg);
 			break;
-		case 'n':
+		case 'q':
 			param_num = atoll(optarg);
 			break;
 		}
@@ -495,6 +496,14 @@ void do_extract(int argc, char** argv)
 		cerr << "ERROR: you cannot specify --end and --num at once" << endl;
 		return;
 	}
+    if(param_num != -1) {
+        if(param_start == -1) {
+            param_start = 0;
+            param_end = param_num;
+        } else {
+            param_end = param_start + param_num;
+        }
+    }
     if(flag_output_unique) {
         flag_reverse_condition = !flag_reverse_condition;
     }
@@ -517,6 +526,10 @@ void do_extract(int argc, char** argv)
             }
         }
     }
+    if(!readNamesToTake.empty() && param_start != -1) {
+        cerr << "ERROR: you can either select the range or the sequence names, but not both." << endl;
+        return;
+    }
     char* b = new char[BUFFER_SIZE];
     for(int findex = optind + 1; findex < argc; ++findex) {
         const char* file_name = argv[findex];
@@ -534,15 +547,57 @@ void do_extract(int argc, char** argv)
             const string index_file_name = get_index_file_name(file_name);
             try {
                 sqdb::Db db(index_file_name.c_str());
-                sqdb::Statement stmt = db.Query("select pos from seqpos where name=?");
-                for(set<string>::const_iterator it = readNamesToTake.begin(); it != readNamesToTake.end(); ++it) {
-                    const string& read_name = *it;
-                    stmt.Bind(1, read_name);
+                if(param_start == -1) {
+                    sqdb::Statement stmt = db.Query("select pos from seqpos where name=?");
+                    for(set<string>::const_iterator it = readNamesToTake.begin(); it != readNamesToTake.end(); ++it) {
+                        const string& read_name = *it;
+                        stmt.Bind(1, read_name);
+                        if(stmt.Next()) {
+                            const long long pos = stmt.GetField(0);
+                            ist.seekg(pos);
+                            if(ist.fail() || !ist.getline(b, BUFFER_SIZE)) {
+                                cerr << "WARNING: " << read_name << " is missing in the file. Maybe the index is old?\n";
+                                continue;
+                            }
+                            cout << b << "\n";
+                            if(is_fastq) {
+                                size_t number_of_nucleotides_in_read = 0;
+                                while(ist.getline(b, BUFFER_SIZE)) {
+                                    if(b[0] == '+' && b[1] == '\0') { // EOS
+                                        long long n = number_of_nucleotides_in_read;
+                                        cout << b << endl;
+                                        while(ist.getline(b, BUFFER_SIZE)) {
+                                            const size_t number_of_qvchars_in_line = strlen(b);
+                                            n -= number_of_qvchars_in_line;
+                                            cout << b << endl;
+                                            if(n <= 0) break;
+                                        }
+                                        break;
+                                    } else {
+                                        const size_t number_of_nucleotides_in_line = strlen(b);
+                                        number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                                        cout << b << endl;
+                                    }
+                                }
+                            } else {
+                                while(ist.getline(b, BUFFER_SIZE)) {
+                                    if(b[0] == '>') break;
+                                    cout << b << "\n";
+                                }
+                            }
+                        } else {
+                            cerr << "WARNING: " << read_name << " was not found.\n";
+                        }
+                    }
+                } else {
+                    sqdb::Statement stmt = db.Query("select pos from seqpos limit 1 offset ?");
+                    long long sequence_index = param_start;
+                    stmt.Bind(1, param_start);
                     if(stmt.Next()) {
                         const long long pos = stmt.GetField(0);
                         ist.seekg(pos);
                         if(ist.fail() || !ist.getline(b, BUFFER_SIZE)) {
-                            cerr << "WARNING: " << read_name << " is missing in the file. Maybe the index is old?\n";
+                            cerr << "WARNING: Cannot seek to that far. Maybe the index is old?\n";
                             continue;
                         }
                         cout << b << "\n";
@@ -558,7 +613,20 @@ void do_extract(int argc, char** argv)
                                         cout << b << endl;
                                         if(n <= 0) break;
                                     }
-									break;
+                                    sequence_index++;
+                                    if(param_end <= sequence_index)
+                                        break;
+                                    const long long line_start_pos = ist.tellg();
+                                    if(!ist.getline(b, BUFFER_SIZE)) {
+                                        cerr << "WARNING: reached the end of file.\n";
+                                        return;
+                                    }
+                                    if(b[0] != '@') {
+                                        cerr << "ERROR: bad file format. The line does not start with '@' at pos " << line_start_pos << endl;
+                                        return;
+                                    }
+                                    cout << b << "\n";
+									number_of_nucleotides_in_read = 0;
                                 } else {
                                     const size_t number_of_nucleotides_in_line = strlen(b);
                                     number_of_nucleotides_in_read += number_of_nucleotides_in_line;
@@ -567,12 +635,16 @@ void do_extract(int argc, char** argv)
                             }
                         } else {
                             while(ist.getline(b, BUFFER_SIZE)) {
-                                if(b[0] == '>') break;
+                                if(b[0] == '>') {
+                                    sequence_index++;
+                                    if(param_end <= sequence_index)
+                                        break;
+                                }
                                 cout << b << "\n";
                             }
                         }
                     } else {
-                        cerr << "WARNING: " << read_name << " was not found.\n";
+                        cerr << "WARNING: the start index (" << param_start << ") is larger than the number of sequences in the file." << endl;
                     }
                 }
             } catch (const sqdb::Exception& e) {
@@ -588,7 +660,12 @@ void do_extract(int argc, char** argv)
                 ++line_count;
                 number_of_sequences++;
                 size_t number_of_nucleotides_in_read = 0;
-                current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
+                if(param_start == -1) {
+                    current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
+                } else {
+                    current_read_has_been_taken = param_start + 1 <= number_of_sequences && number_of_sequences <= param_end;
+                    // NOTE: the latter condition never hold, if I properly implemented.
+                }
                 if(current_read_has_been_taken) cout << b << endl;
                 if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(b));
                 if(b[0] != '@') { 
@@ -597,7 +674,12 @@ void do_extract(int argc, char** argv)
                         ++line_count;
                         if(b[0] == '>') {
                             number_of_sequences++;
-                            current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
+                            if(param_start == -1) {
+                                current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
+                            } else {
+                                current_read_has_been_taken = param_start + 1 <= number_of_sequences && number_of_sequences <= param_end;
+                                // NOTE: the latter condition never hold, if I properly implemented.
+                            }
                             if(current_read_has_been_taken) cout << b << endl;
                             if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(b));
                             number_of_nucleotides_in_read = 0;
@@ -628,7 +710,14 @@ void do_extract(int argc, char** argv)
                                 break;
                             ++line_count;
                             ++number_of_sequences;
-                            current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
+                            if(param_start == -1) {
+                                current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(b)) != 0) ^ flag_reverse_condition;
+                            } else {
+                                current_read_has_been_taken = param_start + 1 <= number_of_sequences && number_of_sequences <= param_end;
+                                // NOTE: the latter condition never hold, if I properly implemented.
+                            }
+                            if(param_end < number_of_sequences) // NOTE: param_end is 0-origin, number_of_sequences is 1-origin.
+                                break;
                             if(current_read_has_been_taken) cout << b << endl;
                             if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(b));
                         } else {
