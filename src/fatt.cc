@@ -252,6 +252,7 @@ void do_check_same_names(int argc, char** argv)
         ifstream ist(file_name);
         if(!ist) {
             cerr << "Cannot open '" << file_name << "'" << endl;
+            continue;
         }
         size_t number_of_sequences = 0;
         size_t number_of_nucleotides = 0;
@@ -759,6 +760,7 @@ void do_guess_qv_type(int argc, char** argv)
         ifstream ist(file_name);
         if(!ist) {
             cerr << "Cannot open '" << file_name << "'" << endl;
+            continue;
         }
         size_t histogram[256];
         for(int i = 0; i < 256; ++i) histogram[i] = 0;
@@ -835,11 +837,12 @@ void do_guess_qv_type(int argc, char** argv)
 
 void to_csv(const char* file_name, bool does_not_output_header, bool output_in_tsv)
 {
-    char* b = new char[BUFFER_SIZE];
     ifstream ist(file_name);
     if(!ist) {
         cerr << "Cannot open '" << file_name << "'" << endl;
+        return;
     }
+    char* b = new char[BUFFER_SIZE];
     size_t number_of_sequences = 0;
     size_t number_of_nucleotides = 0;
     size_t line_count = 0;
@@ -929,11 +932,12 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
 
 void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
 {
-    char* b = new char[BUFFER_SIZE];
     ifstream ist(file_name);
     if(!ist) {
         cerr << "Cannot open '" << file_name << "'" << endl;
+        return;
     }
+    char* b = new char[BUFFER_SIZE];
     size_t line_count = 0;
     if(ist.getline(b, BUFFER_SIZE)) {
         ++line_count;
@@ -1048,6 +1052,63 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
     delete b;
 }
 
+void fastq_to_fasta(const char* file_name)
+{
+    ifstream ist(file_name);
+    if(!ist) {
+        cerr << "Cannot open '" << file_name << "'" << endl;
+        return;
+    }
+    char* b = new char[BUFFER_SIZE];
+    size_t line_count = 0;
+    if(ist.getline(b, BUFFER_SIZE)) {
+        ++line_count;
+        size_t number_of_nucleotides_in_output_line = 0;
+        if(b[0] != '@') { 
+            if(b[0] == '>') {
+                cerr << "Input is already FASTA." << endl;
+            } else {
+                cerr << "Input does not look like FASTA/FASTQ." << endl;
+            }
+            delete b;
+            return;
+        }
+        // This is FASTQ
+        b[0] = '>';
+        cout << b << '\n';
+        size_t number_of_nucleotides_in_read = 0;
+        while(ist.getline(b, BUFFER_SIZE)) {
+            ++line_count;
+            if(b[0] == '+' && b[1] == '\0') { // EOS
+                long long n = number_of_nucleotides_in_read;
+                while(ist.getline(b, BUFFER_SIZE)) {
+                    ++line_count;
+                    const size_t number_of_qvchars_in_line = strlen(b);
+                    number_of_nucleotides_in_output_line += number_of_qvchars_in_line;
+                    n -= number_of_qvchars_in_line;
+                    if(n <= 0) break;
+                }
+                if(ist.peek() != '@' && !ist.eof()) {
+                    cerr << "WARNING: bad file format? at line " << line_count << endl;
+                    delete b;
+                    return;
+                }
+                number_of_nucleotides_in_read = 0;
+                if(!ist.getline(b, BUFFER_SIZE))
+                    break;
+                b[0] = '>';
+                cout << b << '\n';
+                ++line_count;
+            } else {
+                const int number_of_chars_in_line = strlen(b);
+                number_of_nucleotides_in_read += number_of_chars_in_line;
+                cout << b << '\n';
+            }
+        }
+    }
+    delete b;
+}
+
 void do_to_csv(int argc, char** argv)
 {
     static struct option long_options[] = {
@@ -1109,6 +1170,13 @@ void do_unfold(int argc, char** argv)
 {
     for(int i = 2; i < argc; ++i) {
         fold_fastx(argv[i], 0, false);
+    }
+}
+
+void do_tofasta(int argc, char** argv)
+{
+    for(int i = 2; i < argc; ++i) {
+        fastq_to_fasta(argv[i]);
     }
 }
 
@@ -1183,6 +1251,10 @@ void show_help(const char* subcommand)
         cerr << "Currently, no options available.\n\n";
         return;
     }
+    if(subcmd == "tofasta") {
+        cerr << "Usage: fatt tofasta [options...] <FASTQ> files>\n\n";
+        cerr << "Currently, no options available.\n\n";
+    }
     if(subcmd == "help") {
         cerr << "Uh? No detailed help for help.\n";
         cerr << "Read the manual, or ask the author.\n";
@@ -1199,6 +1271,7 @@ void show_help(const char* subcommand)
     cerr << "\ttocsv\tconvert sequences into CSV format\n";
     cerr << "\tfold\tfold sequences\n";
     cerr << "\tunfold\tunfold sequences\n";
+    cerr << "\ttofasta\tconvert a FASTQ file into a FASTA file\n";
     cerr << "\thelp\tshow help message\n";
     cerr << "\nType 'fatt help <command>' to show the detail of the command.\n";
 }
@@ -1243,6 +1316,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     }
     if(commandString == "unfold") {
         do_unfold(argc, argv);
+        return;
+    }
+    if(commandString == "tofasta") {
+        do_tofasta(argc, argv);
         return;
     }
     // Help or error.

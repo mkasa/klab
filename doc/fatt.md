@@ -103,6 +103,13 @@ If you like TSV instead of CSV, give --tsv.
 
 In the both cases, you can specify --noheader to suppress the header output.
 
+tofasta
+-------
+It converts input FASTQ files into FASTA files.
+
+    fatt tofastq foo.fastq > foo.fasta
+
+If the input is not in FASTQ format, it aborts with an error message.
 
 fold
 ----
