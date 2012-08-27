@@ -1266,6 +1266,7 @@ void show_help(const char* subcommand)
 	cerr << "\tname\toutput the names of reads\n";
     cerr << "\tchksamename\toutput the names of reads if the read name is duplicated\n";
 	cerr << "\textract\textract a set of reads with condition\n";
+	cerr << "\tlen\toutput the lengths of reads\n";
     cerr << "\tindex\tcreate an index on read names\n";
     cerr << "\tguessqvtype\tguess the type of FASTQ (Sanger/Illumina1.3/Illumina1.5/...)\n";
     cerr << "\ttocsv\tconvert sequences into CSV format\n";
