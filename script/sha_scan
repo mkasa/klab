@@ -11,10 +11,12 @@ use File::Find;
 my $debug = 0;
 my $flag_add = 0;
 my $flag_search = 0;
+my $flag_summary = 0;
 
 GetOptions(
 	'a|add' => \$flag_add,
 	's'     => \$flag_search,
+	'h'     => \$flag_summary,
 	'debug' => \$debug
 );
 
@@ -71,6 +73,9 @@ sub add_wanted
 	}
 }
 
+our $count_of_found_files = 0;
+our $count_of_notfound_files = 0;
+
 sub scan_wanted
 {
 	my $f = $_;
@@ -82,10 +87,12 @@ sub scan_wanted
 	    my $dgst = $ctx->hexdigest();
 	    if($db_select->execute($dgst)) {
 	        my $ft = $db_select->fetch();
-	        if(undef) {
-	            print "$f\tnot found\n";
+	        unless(defined $ft) {
+	            print "$f\tnot found\n" unless($flag_summary);
+	            $count_of_notfound_files++;
 	        } else {
-	            print "$f\tfound\t$ft->[0]\n";
+	            print "$f\tfound\t$ft->[0]\n" unless($flag_summary);
+	            $count_of_found_files++;
 	        }
 	    } else {
 		    print "Skipped $f (error)\n";
@@ -93,9 +100,66 @@ sub scan_wanted
 	}
 }
 
+unless(-x $dirname) {
+	print STDERR "ERROR: '$dirname' does not exist\n";
+	exit 1;
+}
+
 if($flag_add) {
 	finddepth(\&add_wanted, $dirname);
 } else {
 	finddepth(\&scan_wanted, $dirname);
+	if($flag_summary) {
+		print "$count_of_found_files files found, $count_of_notfound_files not found.\n";
+	}
 }
 
+=pod
+
+=head1 NAME
+
+sha_scan - Calculate SHA1 hashes of files, and find duplicated files.
+
+=head1 SYNOPSYS
+
+Scan (files in) a directory:
+
+B<sha_scan> -a E<lt>DB fileE<gt> E<lt>input directoryE<gt>
+
+Check (files in) a directory:
+
+B<sha_scan> -s E<lt>DB fileE<gt> E<lt>input directoryE<gt>
+
+=head1 DESCRIPTION
+
+First, you scan through a directory to create database of SHA1 hashes of files in a directory.
+
+B<sha_scan> -a E<lt>DB fileE<gt> E<lt>input directoryE<gt>
+
+The database is in SQLite3 format so you can view it using any SQLite3 clients.
+If the database file already exists, it simply adds new hashes into the database, so you can
+put hashes from different directories together in a single database file.
+
+Next, you want to see whether files in a specified directory match to the already-scanned files
+in the database.
+ 
+B<sha_scan> -s E<lt>DB fileE<gt> E<lt>checking directoryE<gt>
+
+For each file, it outputs whether a file of the same contents exists.
+If such a file exists, it also outputs the path of the file in the database.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-h>
+This option is valid only if -s is given.
+When you want to see if a specified directory contains any new files
+(i.e., any files whose hash do not match with the files registered in the databases),
+you just do not want to see a long list of results.
+You just need whether all files in the directory are known or not.
+When this option is given, sha_scan outputs only the number of known/unknown files.
+
+=back
+
+=cut
