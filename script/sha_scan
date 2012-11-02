@@ -69,6 +69,7 @@ sub add_wanted
 	    unless(open FH, "<", $f) {
  	        print STDERR "Could not open '$f'";
 	        die unless($flag_skip_error);
+	        return;
         }
 	    $ctx->addfile(*FH);
 	    close FH;
@@ -89,6 +90,7 @@ sub scan_wanted
 	    unless(open FH, "<", $f) {
  	        print STDERR "Could not open '$f'";
 	        die unless($flag_skip_error);
+	        return;
         }
 	    $ctx->addfile(*FH);
 	    close FH;
