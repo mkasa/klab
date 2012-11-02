@@ -1,0 +1,100 @@
+#!/usr/local/bin/perl
+
+use strict;
+
+use Getopt::Long;
+use Digest::SHA1;
+use DBI;
+use DBD::SQLite;
+use File::Find;
+
+my $debug = 0;
+my $flag_add = 0;
+my $flag_search = 0;
+
+GetOptions(
+	'a|add' => \$flag_add,
+	's'     => \$flag_search,
+	'debug' => \$debug
+);
+
+my $dbname = shift;
+my $dirname = shift;
+
+my $flag_show_usage = 0;
+$flag_show_usage = 1 unless(defined $dirname);
+$flag_show_usage = 1 unless(defined $dbname);
+$flag_show_usage = 1 if($flag_add && $flag_search);
+$flag_show_usage = 1 unless($flag_add || $flag_search);
+
+if($flag_show_usage) {
+	print STDERR "usage: sha_scan -a <DB name> <directory to scan>   (This is for the first scan phase)\n";
+	print STDERR "       sha_scan -s <DB name> <directory to scan>   (This is to check files)\n";
+	exit 1;
+}
+
+my $data_source = "dbi:SQLite:dbname=$dbname";
+
+if($flag_add) {
+	unless(-e $dbname) {
+	    print STDERR "Creating db '$dbname'\n";
+	    my $h = DBI->connect($data_source);
+	    $h->do("create table files(name text primary key, hash text);");
+	    $h->do("create index files_hash_index on files(hash);");
+	    $h->disconnect();
+	} else {
+	    print STDERR "Using existing db '$dbname'\n";
+	}
+} else {
+	unless(-e $dbname) {
+		die "Cannot find '$dbname'";
+	}
+}
+
+print STDERR "Connecting to db '$dbname'\n";
+our $dbh = DBI->connect($data_source);
+our $db_insert = $dbh->prepare("insert into files values(?, ?)");
+our $db_select = $dbh->prepare("select * from files where hash=?");
+
+sub add_wanted
+{
+	my $f = $File::Find::name;
+	my $ctx = Digest::SHA1->new;
+	unless(-d $f) {
+	    open FH, "<", $f or die "Could not open '$f'";
+	    $ctx->addfile(*FH);
+	    close FH;
+	    my $dgst = $ctx->hexdigest();
+	    print "$f\t$dgst\n";
+	    $db_insert->execute($f, $dgst);
+	}
+}
+
+sub scan_wanted
+{
+	my $f = $File::Find::name;
+	my $ctx = Digest::SHA1->new;
+	unless(-d $f) {
+	    open FH, "<", $f or die "Could not open '$f'";
+	    $ctx->addfile(*FH);
+	    close FH;
+	    my $dgst = $ctx->hexdigest();
+	    if($db_select->execute($dgst)) {
+	        my $ft = $db_select->fetch();
+	        if(undef) {
+	            print "$f\tnot found\n";
+	        } else {
+	            print "$f\tfound\t$ft->[0]\n";
+	        }
+	    } else {
+		    print "Skipped $f (error)\n";
+	    }
+	}
+}
+
+if($flag_add) {
+	finddepth(\&add_wanted, $dirname);
+} else {
+	finddepth(\&scan_wanted, $dirname);
+}
+

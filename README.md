@@ -38,6 +38,7 @@ List
     <tr><td>rep</td><td>general</td><td>Simple wrapper for different VCS such as svn/git/hg.</td><td>see also perldoc</td></tr>
     <tr><td>sql</td><td>general</td><td>Execute SQL queries over CSV files.</td><td>see also perldoc. requires a bunch of Perl modules. DBD::CSV is required.</td></tr>
     <tr><td>mddoc</td><td>general</td><td>Simple wrapper to view formatted Markdown texts via text browser</td><td>Requires Markdown.pl or pandoc.</td></tr>
+    <tr><td>sha_scan</td><td>general</td><td>Find duplicated files by collecting SHA1 hashes of files in a given directory.</td><td></td></tr>
     <tr><td></td><td></td><td></td><td></td></tr>
 </table>
 
