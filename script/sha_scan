@@ -11,10 +11,12 @@ use File::Find;
 my $debug = 0;
 my $flag_add = 0;
 my $flag_search = 0;
+my $flag_skip_error = 0;
 
 GetOptions(
 	'a|add' => \$flag_add,
 	's'     => \$flag_search,
+    'eskip' => \$flag_skip_error,
 	'debug' => \$debug
 );
 
@@ -62,7 +64,10 @@ sub add_wanted
 	my $fp = $File::Find::name;
 	my $ctx = Digest::SHA1->new;
 	unless(-d $f) {
-	    open FH, "<", $f or die "Could not open '$f'";
+	    unless(open FH, "<", $f) {
+ 	        print STDERR "Could not open '$f'";
+	        die unless($flag_skip_error);
+        }
 	    $ctx->addfile(*FH);
 	    close FH;
 	    my $dgst = $ctx->hexdigest();
@@ -76,7 +81,10 @@ sub scan_wanted
 	my $f = $_;
 	my $ctx = Digest::SHA1->new;
 	unless(-d $f) {
-	    open FH, "<", $f or die "Could not open '$f'";
+	    unless(open FH, "<", $f) {
+ 	        print STDERR "Could not open '$f'";
+	        die unless($flag_skip_error);
+        }
 	    $ctx->addfile(*FH);
 	    close FH;
 	    my $dgst = $ctx->hexdigest();
