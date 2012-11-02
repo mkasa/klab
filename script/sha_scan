@@ -1,4 +1,4 @@
-#!/usr/local/bin/perl
+#!/usr/bin/env perl
 
 use strict;
 
@@ -24,8 +24,8 @@ my $dirname = shift;
 my $flag_show_usage = 0;
 $flag_show_usage = 1 unless(defined $dirname);
 $flag_show_usage = 1 unless(defined $dbname);
-$flag_show_usage = 1 if($flag_add && $flag_search);
-$flag_show_usage = 1 unless($flag_add || $flag_search);
+$flag_show_usage = 1 unless(defined $flag_add && defined $flag_search);
+$flag_show_usage = 1 unless(defined $dbname && defined $dirname);
 
 if($flag_show_usage) {
 	print STDERR "usage: sha_scan -a <DB name> <directory to scan>   (This is for the first scan phase)\n";
@@ -58,21 +58,22 @@ our $db_select = $dbh->prepare("select * from files where hash=?");
 
 sub add_wanted
 {
-	my $f = $File::Find::name;
+	my $f = $_;
+	my $fp = $File::Find::name;
 	my $ctx = Digest::SHA1->new;
 	unless(-d $f) {
 	    open FH, "<", $f or die "Could not open '$f'";
 	    $ctx->addfile(*FH);
 	    close FH;
 	    my $dgst = $ctx->hexdigest();
-	    print "$f\t$dgst\n";
-	    $db_insert->execute($f, $dgst);
+	    print "$fp\t$dgst\n";
+	    $db_insert->execute($fp, $dgst);
 	}
 }
 
 sub scan_wanted
 {
-	my $f = $File::Find::name;
+	my $f = $_;
 	my $ctx = Digest::SHA1->new;
 	unless(-d $f) {
 	    open FH, "<", $f or die "Could not open '$f'";
