@@ -1,7 +1,7 @@
 
 # -*- python -*-
 APPNAME = 'kalab'
-VERSION = '1.07'
+VERSION = '1.08'
 
 def options(opt):
     opt.load(['compiler_c', 'compiler_cxx', 'python'])

@@ -80,6 +80,10 @@ When you give --html option, the output is formatted in HTML.
 
     fatt stat --html foo.fasta
 
+In addition, you may use --json to output in JSON format.
+
+    fatt stat --json foo.fasta
+
 index
 -----
 It creates an index on the name of the sequences in each given file.
