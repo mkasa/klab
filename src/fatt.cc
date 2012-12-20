@@ -40,6 +40,13 @@ static ostream& operator << (ostream& os, const CSVEscape& c)
 	return os;
 }
 
+static size_t strlen_without_n(const char * p)
+{
+    size_t retval = 0;
+    for(; *p; p++){ if(!(*p == 'N' || *p == 'n')) retval++; }
+    return retval;
+}
+
 static void output_read_name(const char* header)
 {
 	if(*header++ == '\0') return;
@@ -69,7 +76,10 @@ static bool is_file_fastq(const char* fastq_file_name)
     return true;
 }
 
-void calculate_n50_statistics(const char* fname, vector<size_t>& length_of_sequences)
+void calculate_n50_statistics(const char* fname,
+                              vector<size_t>& length_of_scaffolds_wgap,
+                              vector<size_t>& length_of_scaffolds_wogap,
+                              vector<size_t>& length_of_contigs)
 {
     ifstream ist(fname);
     if(!ist) {
@@ -80,7 +90,9 @@ void calculate_n50_statistics(const char* fname, vector<size_t>& length_of_seque
 	size_t line_count = 0;
     if(ist.getline(b, BUFFER_SIZE)) {
 		++line_count;
-        size_t number_of_nucleotides_in_read = 0;
+        size_t length_as_scaffolds_wgap = 0;
+        size_t length_as_scaffolds_wogap = 0;
+        size_t length_as_contigs = 0;
         if(b[0] != '@') { 
             if(b[0] != '>') { // NOTE: this check must be copied to other functions.
                 cerr << fname << " does not look like FASTA/FASTQ!\n";
@@ -90,19 +102,40 @@ void calculate_n50_statistics(const char* fname, vector<size_t>& length_of_seque
             while(ist.getline(b, BUFFER_SIZE)) {
 				++line_count;
                 if(b[0] == '>') {
-                    length_of_sequences.push_back(number_of_nucleotides_in_read);
-                    number_of_nucleotides_in_read = 0;
+                    length_of_scaffolds_wgap.push_back(length_as_scaffolds_wgap);
+                    length_of_scaffolds_wogap.push_back(length_as_scaffolds_wogap);
+                    length_as_scaffolds_wgap = 0;
+                    length_as_scaffolds_wogap = 0;
+                    if(0 < length_as_contigs) {
+                        length_of_contigs.push_back(length_as_contigs);
+                        length_as_contigs = 0;
+                    }
                 } else {
-                    number_of_nucleotides_in_read += strlen(b);
+                    length_as_scaffolds_wgap += strlen(b);
+                    length_as_scaffolds_wogap += strlen_without_n(b);
+                    for(const char* p = b; *p != '\0'; p++) {
+                        if(*p == 'N' || *p == 'n') {
+                            if(0 < length_as_contigs) {
+                                length_of_contigs.push_back(length_as_contigs);
+                                length_as_contigs = 0;
+                            }
+                        } else {
+                            length_as_contigs++;
+                        }
+                    }
                 }
 			}
-            length_of_sequences.push_back(number_of_nucleotides_in_read);
+            length_of_scaffolds_wgap.push_back(length_as_scaffolds_wgap);
+            length_of_scaffolds_wogap.push_back(length_as_scaffolds_wogap);
+            if(0 < length_as_contigs) {
+                length_of_contigs.push_back(length_as_contigs);
+            }
 		} else {
 			// This should be FASTQ
             while(ist.getline(b, BUFFER_SIZE)) {
 				++line_count;
                 if(b[0] == '+' && b[1] == '\0') { // EOS
-                    long long n = number_of_nucleotides_in_read;
+                    long long n = length_as_scaffolds_wgap;
                     while(ist.getline(b, BUFFER_SIZE)) {
                         ++line_count;
                         const size_t number_of_qvchars_in_line = strlen(b);
@@ -114,14 +147,35 @@ void calculate_n50_statistics(const char* fname, vector<size_t>& length_of_seque
                     }
                     if(!ist.getline(b, BUFFER_SIZE)) break;
                     ++line_count;
-                    length_of_sequences.push_back(number_of_nucleotides_in_read);
-                    number_of_nucleotides_in_read = 0;
+                    length_of_scaffolds_wgap.push_back(length_as_scaffolds_wgap);
+                    length_of_scaffolds_wogap.push_back(length_as_scaffolds_wogap);
+                    length_as_scaffolds_wgap = 0;
+                    length_as_scaffolds_wogap = 0;
+                    if(0 < length_as_contigs) {
+                        length_of_contigs.push_back(length_as_contigs);
+                        length_as_contigs = 0;
+                    }
                 } else {
                     const size_t number_of_nucleotides_in_line = strlen(b);
-                    number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                    length_as_scaffolds_wgap += number_of_nucleotides_in_line;
+                    length_as_scaffolds_wogap += strlen_without_n(b);
+                    for(const char* p = b; *p != '\0'; p++) {
+                        if(*p == 'N' || *p == 'n') {
+                            if(0 < length_as_contigs) {
+                                length_of_contigs.push_back(length_as_contigs);
+                                length_as_contigs = 0;
+                            }
+                        } else {
+                            length_as_contigs++;
+                        }
+                    }
                 }
             }
-            length_of_sequences.push_back(number_of_nucleotides_in_read);
+            length_of_scaffolds_wgap.push_back(length_as_scaffolds_wgap);
+            length_of_scaffolds_wogap.push_back(length_as_scaffolds_wogap);
+            if(0 < length_as_contigs) {
+                length_of_contigs.push_back(length_as_contigs);
+            }
 		}
 	}
     delete b;
@@ -490,28 +544,44 @@ void do_len(int argc, char** argv)
 	}
 }
 
+void print_n50(vector<size_t>& lengths)
+{
+    sort(lengths.rbegin(), lengths.rend());
+    const size_t total_length = accumulate(lengths.begin(), lengths.end(), 0ull);
+    size_t sequence_index = (size_t)-1;
+    size_t n50_length = 0;
+    if(!lengths.empty()) {
+        size_t sum = 0;
+        const size_t n50_total_length = (total_length + 1ull) / 2;
+        for(sequence_index = 0; sequence_index < lengths.size(); sequence_index++) {
+            sum += lengths[sequence_index];
+            if(n50_total_length <= sum) break;
+        }
+        n50_length = lengths[sequence_index];
+    }
+    cout << "Total # of bases = " << total_length << "\n";
+    cout << "N50 scaffold size = " << n50_length << "\n";
+    cout << "N50 scaffold # = " << (sequence_index + 1) << endl;
+}
+
 void do_stat(int argc, char** argv)
 {
-    vector<size_t> length_of_sequences;
+    vector<size_t> length_of_scaffolds_wgap;
+    vector<size_t> length_of_scaffolds_wogap;
+    vector<size_t> length_of_contigs;
 	for(int i = 2; i < argc; ++i) {
-		calculate_n50_statistics(argv[i], length_of_sequences);
+		calculate_n50_statistics(argv[i], length_of_scaffolds_wgap, length_of_scaffolds_wogap, length_of_contigs);
 	}
-    sort(length_of_sequences.rbegin(), length_of_sequences.rend());
-    const size_t total_length_of_sequences = accumulate(length_of_sequences.begin(), length_of_sequences.end(), 0ull);
-    const size_t n50_length_of_sequenes = (total_length_of_sequences + 1ull) / 2;
-    if(length_of_sequences.empty()) {
-        cerr << "ERROR: no sequences in input" << endl;
+    if(!(length_of_scaffolds_wgap.size() == length_of_scaffolds_wogap.size())) {
+        cerr << "Assertion failed. Maybe you found a bug! Please report to the author.\n";
         return;
     }
-    size_t sum = 0;
-    size_t i;
-    for(i = 0; i < length_of_sequences.size(); i++) {
-        sum += length_of_sequences[i];
-        if(n50_length_of_sequenes <= sum) break;
-    }
-    cout << "Total # of bases = " << total_length_of_sequences << "\n";
-    cout << "N50 scaffold size = " << length_of_sequences[i] << "\n";
-    cout << "N50 scaffold # = " << (i + 1) << endl;
+    cout << "Scaffold (w/gap) statistics\n";
+    print_n50(length_of_scaffolds_wgap);
+    cout << "\nScaffold (wo/gap) statistics\n";
+    print_n50(length_of_scaffolds_wogap);
+    cout << "\nContig statistics\n";
+    print_n50(length_of_contigs);
 }
 
 void do_index(int argc, char** argv)
