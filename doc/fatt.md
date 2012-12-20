@@ -76,6 +76,9 @@ You can show the statistics of input sequences by the following command.
     fatt stat foo.fasta foo2.fastq
 
 If you give multiple input files, the input files are considered as a single (large) file.
+When you give --html option, the output is formatted in HTML.
+
+    fatt stat --html foo.fasta
 
 index
 -----

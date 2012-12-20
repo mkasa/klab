@@ -1429,7 +1429,7 @@ void show_help(const char* subcommand)
     }
     if(subcmd == "stat") {
         cerr << "Usage: fatt stat [options...] <FAST(A|Q) files>\n\n";
-        cerr << "Currently no options are available.\n\n";
+        cerr << "--html\tOutput in HTML format.\n";
         return;
     }
     if(subcmd == "index") {
