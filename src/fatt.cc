@@ -550,6 +550,9 @@ void print_n50(vector<size_t>& lengths)
     const size_t total_length = accumulate(lengths.begin(), lengths.end(), 0ull);
     size_t sequence_index = (size_t)-1;
     size_t n50_length = 0;
+    size_t max_length = 0;
+    size_t min_length = 0;
+    size_t avg_length = 0;
     if(!lengths.empty()) {
         size_t sum = 0;
         const size_t n50_total_length = (total_length + 1ull) / 2;
@@ -557,11 +560,17 @@ void print_n50(vector<size_t>& lengths)
             sum += lengths[sequence_index];
             if(n50_total_length <= sum) break;
         }
+        max_length = lengths.front();
         n50_length = lengths[sequence_index];
+        min_length = lengths.back();
+        avg_length = (total_length + lengths.size() / 2) / lengths.size();
     }
     cout << "Total # of bases = " << total_length << "\n";
+    cout << "Max size = " << max_length << "\n";
     cout << "N50 scaffold size = " << n50_length << "\n";
-    cout << "N50 scaffold # = " << (sequence_index + 1) << endl;
+    cout << "N50 scaffold # = " << (sequence_index + 1) << "\n";
+    cout << "Avg size = " << avg_length << "\n";
+    cout << "Min size = " << min_length << "\n";
 }
 
 void do_stat(int argc, char** argv)
