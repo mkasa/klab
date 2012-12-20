@@ -544,7 +544,7 @@ void do_len(int argc, char** argv)
 	}
 }
 
-void print_n50(vector<size_t>& lengths)
+void print_n50(vector<size_t>& lengths, const bool flag_html)
 {
     sort(lengths.rbegin(), lengths.rend());
     const size_t total_length = accumulate(lengths.begin(), lengths.end(), 0ull);
@@ -565,32 +565,74 @@ void print_n50(vector<size_t>& lengths)
         min_length = lengths.back();
         avg_length = (total_length + lengths.size() / 2) / lengths.size();
     }
-    cout << "Total # of bases = " << total_length << "\n";
-    cout << "Max size = " << max_length << "\n";
-    cout << "N50 scaffold size = " << n50_length << "\n";
-    cout << "N50 scaffold # = " << (sequence_index + 1) << "\n";
-    cout << "Avg size = " << avg_length << "\n";
-    cout << "Min size = " << min_length << "\n";
+    if(flag_html) {
+        cout << "<tr><td></td><td>size (bp)</td><td>number</td></tr>\n";
+        cout << "<tr><td>max</td><td>" << max_length << "</td><td>1</td></tr>\n";
+        cout << "<tr><td>N50</td><td>" << n50_length << "</td><td>" << (sequence_index + 1) << "</td></tr>\n";
+        cout << "<tr><td>min</td><td>" << min_length << "</td><td>" << lengths.size() << "</td></tr>\n";
+        cout << "<tr><td>avg</td><td>" << avg_length << "</td><td></td></tr>\n";
+    } else {
+        cout << "Total # of bases = " << total_length << "\n";
+        cout << "Max size = " << max_length << "\n";
+        cout << "N50 scaffold size = " << n50_length << "\n";
+        cout << "N50 scaffold # = " << (sequence_index + 1) << "\n";
+        cout << "Avg size = " << avg_length << "\n";
+        cout << "Min size = " << min_length << "\n";
+    }
 }
 
 void do_stat(int argc, char** argv)
 {
+	bool flag_html = false;
+    static struct option long_options[] = {
+        {"html", no_argument , 0, 'h'},
+        {0, 0, 0, 0} // end of long options
+    };
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+		case 'h':
+            flag_html = true;
+			break;
+        }
+	}
     vector<size_t> length_of_scaffolds_wgap;
     vector<size_t> length_of_scaffolds_wogap;
     vector<size_t> length_of_contigs;
-	for(int i = 2; i < argc; ++i) {
+	for(int i = optind + 1; i < argc; ++i) {
 		calculate_n50_statistics(argv[i], length_of_scaffolds_wgap, length_of_scaffolds_wogap, length_of_contigs);
 	}
     if(!(length_of_scaffolds_wgap.size() == length_of_scaffolds_wogap.size())) {
         cerr << "Assertion failed. Maybe you found a bug! Please report to the author.\n";
         return;
     }
-    cout << "Scaffold (w/gap) statistics\n";
-    print_n50(length_of_scaffolds_wgap);
-    cout << "\nScaffold (wo/gap) statistics\n";
-    print_n50(length_of_scaffolds_wogap);
-    cout << "\nContig statistics\n";
-    print_n50(length_of_contigs);
+    if(flag_html) {
+        cout << "<table border=\"2\" bgcolor=\"#ffffff\">\n";
+        cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (w/gap) statistics</th></tr>\n";
+    } else {
+        cout << "Scaffold (w/gap) statistics\n";
+    }
+    print_n50(length_of_scaffolds_wgap, flag_html);
+    if(flag_html) {
+        cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (wo/gap) statistics</th></tr>\n";
+    } else {
+        cout << "\nScaffold (wo/gap) statistics\n";
+    }
+    print_n50(length_of_scaffolds_wogap, flag_html);
+    if(flag_html) {
+        cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Contig statistics</th></tr>\n";
+    } else {
+        cout << "\nContig statistics\n";
+    }
+    print_n50(length_of_contigs, flag_html);
+    if(flag_html) {
+        cout << "</table>\n";
+    }
 }
 
 void do_index(int argc, char** argv)
