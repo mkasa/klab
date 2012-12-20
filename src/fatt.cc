@@ -13,6 +13,8 @@
 #include <map>
 #include <set>
 #include <cstdlib>
+#include <algorithm>
+#include <numeric>
 #include <getopt.h>
 #include <unistd.h>
 #include "sqdb.h"
@@ -65,6 +67,64 @@ static bool is_file_fastq(const char* fastq_file_name)
     if(!getline(ist, line)) return false;
     if(line.empty() || line[0] != '@') return false;
     return true;
+}
+
+void calculate_n50_statistics(const char* fname, vector<size_t>& length_of_sequences)
+{
+    ifstream ist(fname);
+    if(!ist) {
+        cerr << "Cannot open '" << fname << "'" << endl;
+        return;
+    }
+    char* b = new char[BUFFER_SIZE];
+	size_t line_count = 0;
+    if(ist.getline(b, BUFFER_SIZE)) {
+		++line_count;
+        size_t number_of_nucleotides_in_read = 0;
+        if(b[0] != '@') { 
+            if(b[0] != '>') { // NOTE: this check must be copied to other functions.
+                cerr << fname << " does not look like FASTA/FASTQ!\n";
+                return;
+            }
+			// This should be FASTA
+            while(ist.getline(b, BUFFER_SIZE)) {
+				++line_count;
+                if(b[0] == '>') {
+                    length_of_sequences.push_back(number_of_nucleotides_in_read);
+                    number_of_nucleotides_in_read = 0;
+                } else {
+                    number_of_nucleotides_in_read += strlen(b);
+                }
+			}
+            length_of_sequences.push_back(number_of_nucleotides_in_read);
+		} else {
+			// This should be FASTQ
+            while(ist.getline(b, BUFFER_SIZE)) {
+				++line_count;
+                if(b[0] == '+' && b[1] == '\0') { // EOS
+                    long long n = number_of_nucleotides_in_read;
+                    while(ist.getline(b, BUFFER_SIZE)) {
+                        ++line_count;
+                        const size_t number_of_qvchars_in_line = strlen(b);
+                        n -= number_of_qvchars_in_line;
+                        if(n <= 0) break;
+                    }
+                    if(ist.peek() != '@' && !ist.eof()) {
+                        cerr << "WARNING: bad file format? at line " << line_count << endl;
+                    }
+                    if(!ist.getline(b, BUFFER_SIZE)) break;
+                    ++line_count;
+                    length_of_sequences.push_back(number_of_nucleotides_in_read);
+                    number_of_nucleotides_in_read = 0;
+                } else {
+                    const size_t number_of_nucleotides_in_line = strlen(b);
+                    number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                }
+            }
+            length_of_sequences.push_back(number_of_nucleotides_in_read);
+		}
+	}
+    delete b;
 }
 
 void show_read_names_in_file(const char* fname, bool show_name) // if show_name is false, output read length
@@ -428,6 +488,30 @@ void do_len(int argc, char** argv)
 	for(int i = 2; i < argc; ++i) {
 		show_read_names_in_file(argv[i], false);
 	}
+}
+
+void do_stat(int argc, char** argv)
+{
+    vector<size_t> length_of_sequences;
+	for(int i = 2; i < argc; ++i) {
+		calculate_n50_statistics(argv[i], length_of_sequences);
+	}
+    sort(length_of_sequences.rbegin(), length_of_sequences.rend());
+    const size_t total_length_of_sequences = accumulate(length_of_sequences.begin(), length_of_sequences.end(), 0ull);
+    const size_t n50_length_of_sequenes = (total_length_of_sequences + 1ull) / 2;
+    if(length_of_sequences.empty()) {
+        cerr << "ERROR: no sequences in input" << endl;
+        return;
+    }
+    size_t sum = 0;
+    size_t i;
+    for(i = 0; i < length_of_sequences.size(); i++) {
+        sum += length_of_sequences[i];
+        if(n50_length_of_sequenes <= sum) break;
+    }
+    cout << "Total # of bases = " << total_length_of_sequences << "\n";
+    cout << "N50 scaffold size = " << length_of_sequences[i] << "\n";
+    cout << "N50 scaffold # = " << (i + 1) << endl;
 }
 
 void do_index(int argc, char** argv)
@@ -1222,6 +1306,11 @@ void show_help(const char* subcommand)
         cerr << "It outputs the length of the sequences in given files.\n";
         return;
     }
+    if(subcmd == "stat") {
+        cerr << "Usage: fatt stat [options...] <FAST(A|Q) files>\n\n";
+        cerr << "Currently no options are available.\n\n";
+        return;
+    }
     if(subcmd == "index") {
         cerr << "Usage: fatt index [options...] <FAST(A|Q) files>\n\n";
         cerr << "Currently, no options available.\n\n";
@@ -1254,6 +1343,7 @@ void show_help(const char* subcommand)
     if(subcmd == "tofasta") {
         cerr << "Usage: fatt tofasta [options...] <FASTQ> files>\n\n";
         cerr << "Currently, no options available.\n\n";
+        return;
     }
     if(subcmd == "help") {
         cerr << "Uh? No detailed help for help.\n";
@@ -1267,6 +1357,7 @@ void show_help(const char* subcommand)
     cerr << "\tchksamename\toutput the names of reads if the read name is duplicated\n";
 	cerr << "\textract\textract a set of reads with condition\n";
 	cerr << "\tlen\toutput the lengths of reads\n";
+    cerr << "\tstat\tshow the statistics of input sequences\n";
     cerr << "\tindex\tcreate an index on read names\n";
     cerr << "\tguessqvtype\tguess the type of FASTQ (Sanger/Illumina1.3/Illumina1.5/...)\n";
     cerr << "\ttocsv\tconvert sequences into CSV format\n";
@@ -1297,6 +1388,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
 	}
     if(commandString == "len") {
         do_len(argc, argv);
+        return;
+    }
+    if(commandString == "stat") {
+        do_stat(argc, argv);
         return;
     }
     if(commandString == "index") {

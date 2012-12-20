@@ -69,6 +69,14 @@ You can calculate the length of the sequences in given files.
 
     fatt len foo.fasta
 
+stat
+----
+You can show the statistics of input sequences by the following command.
+
+    fatt stat foo.fasta foo2.fastq
+
+If you give multiple input files, the input files are considered as a single (large) file.
+
 index
 -----
 It creates an index on the name of the sequences in each given file.
