@@ -1,0 +1,283 @@
+#!/usr/bin/env perl
+
+use strict;
+use Getopt::Long;
+use Pod::Usage;
+use Cwd 'getcwd';
+use Term::ANSIColor;
+# use Data::Dump qw(dump); # I used it only for debugging, so I commented out this here.
+
+my $debug = 0;
+my $param_left_column_size = 10;
+my $flag_man = 0;
+my $flag_help = 0;
+my $flag_omit_consistent = 0;
+my $flag_show_detail = 0;
+my $flag_fix = 0;
+my $flag_clean = 0;
+
+GetOptions(
+    "debug" => \$debug,
+    "help"  => \$flag_help,
+    "man"   => \$flag_man,
+    "l=i"   => \$param_left_column_size,
+    "i"     => \$flag_omit_consistent,
+    "d"     => \$flag_show_detail,
+    "f"     => \$flag_fix,
+    "clean" => \$flag_clean
+);
+
+my $param_fix_file;
+my $param_fix_host;
+
+if($flag_fix) {
+	$param_fix_file = shift;
+    $param_fix_host = shift;
+    $flag_help = 1 if(!defined $param_fix_file || !defined $param_fix_host);
+}
+
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man; 
+
+sub read_config
+{
+    my $brick_info_file = $ENV{'HOME'} . "/.gfinfo";
+    open my $fh, "<", $brick_info_file or die "Cannot open ~/.gfinfo. Read the manual (gfwhich -man).";
+    my @retval;
+    my $gpath = <$fh>; chomp $gpath;
+    while(<$fh>) {
+        chomp;
+        next if(m|^\s*$|);
+        unless(m|^(.*?):(.*)$|) {
+            print "A line in ~/.gfinfo is not valid. It should look like 'host:path'.\n";
+            print "Line: $_\n";
+            exit 1;
+        }
+        push(@retval, {"host" => $1, "path" => $2});
+    }
+    close $fh;
+    return {"gluster_path" => $gpath, "bricks" => \@retval};
+}
+
+sub print_and_do
+{
+    my $cmd = shift;
+    print STDERR color('yellow') . "\$ $cmd" . color('reset') . "\n";
+    system $cmd;
+    if($?) {
+        my $exit_status = $? >> 8;
+        print STDERR "An error occurred (exited with $exit_status).\n";
+        exit 2;
+    }
+}
+
+sub fix_file
+{
+    my ($gpath, $cwd, $file, $host, @bricks) = @_;
+    my $remote_path;
+    for(@bricks) {
+        if($_->{"host"} eq $host) {
+            $remote_path = "$host:" . $_->{"path"} . "/" . $cwd . "/" . $file;
+            last;
+        }
+    }
+    unless(defined $remote_path) {
+        print STDERR "Could not find a remote host '$host' in the brick list.\n";
+        exit 1;
+    }
+    my $local_path = "$file.tmp.$$";
+    print_and_do("scp $remote_path $local_path");
+    print_and_do("mv $file $file.orig");
+    print_and_do("mv $local_path $file");
+}
+
+
+my $ini = read_config();
+my $gluster_path = $ini->{"gluster_path"};
+my @bricks = @{$ini->{"bricks"}};
+my $cwd = getcwd();
+unless($cwd =~ m|^$gluster_path/(.*)$|) {
+    print "The current directory '$cwd' does not seem like a GlusterFS directory.\n";
+    print "Check the first line of ~/.gfinfo\n";
+    print "It should contain the mount point of GlusterFS.\n";
+    exit 1;
+}
+$cwd = $1;
+
+if($flag_fix) {
+    fix_file($gluster_path, $cwd, $param_fix_file, $param_fix_host, @bricks);
+    exit 0;
+}
+
+if($debug) {
+    print "Bricks:\n  " . join("\n  ", @bricks) . "\n";
+}
+
+my %file_name_2_infos = ();
+
+for my $brick (@bricks) {
+    my $host = $brick->{"host"};
+    my $path = $brick->{"path"};
+    my $cmd = "ssh $host ls -al $path/$cwd";
+    print "\$ $cmd\n" if($debug);
+    my @results = `$cmd`;
+    if(0 < @results) {
+        shift @results;
+        shift @results;
+        shift @results;
+        for(@results) {
+            # -rw-r--r-- 2 mkasa users 1329004544 Mar 18 16:11 CEPdaoD.sspace.scafSeq.fill.fa.sp2
+            if(m|[rwxst-]{10}?\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:\d+\s+(.*)$|i) {
+                my $fsize = $1;
+                my $fname = $2;
+                print "$host: $fname = $fsize\n" if($debug);
+                push(@{$file_name_2_infos{$fname}}, {"host" => $host, "size" => $fsize});
+            } else {
+                print STDERR "WARNING: SSH to $host yielded a unparsable result\n";
+                print STDERR "   LINE: $_\n";
+            }
+        }
+    } else {
+        print STDERR "WARNING: SSH to $host did not yield a result\n";
+    }
+}
+
+my @ls_results = `ls -al`;
+my $line_num = 0;
+for my $line (@ls_results) {
+    chomp $line;
+    $line_num++;
+    if($line_num <= 3) {
+        print " "x$param_left_column_size;
+        print "$line\n";
+        next;
+    }
+    if($line =~ m|[rwxst-]{10}?\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:\d+\s+(.*)$|i) {
+        my $fsize = $1;
+        my $fname = $2;
+        my $remaining_columns = $param_left_column_size;
+        my $has_found_inconsistency = 0;
+        for my $o (@{$file_name_2_infos{$fname}}) {
+            $has_found_inconsistency = 1 if($fsize != $o->{"size"});
+        }
+        next if($flag_omit_consistent && !$has_found_inconsistency);
+        for my $o (@{$file_name_2_infos{$fname}}) {
+            my $host = $o->{"host"};
+            if($fsize != $o->{"size"}) {
+                if($fsize > $o->{"size"}) {
+                    print color('red'), $host, color('reset'), " ";
+                } else {
+                    print color('green'), $host, color('reset'), " ";
+                }
+            } else {
+                print "$host ";
+            }
+            $remaining_columns -= 1 + length($host);
+        }
+        $remaining_columns = 1 if($remaining_columns < 1);
+        print " "x$remaining_columns, "$line\n";
+        if($flag_show_detail && $has_found_inconsistency) {
+            print "        ";
+            my $largest_file_size = 0;
+            for my $o (@{$file_name_2_infos{$fname}}) {
+                $largest_file_size = $o->{"size"} if($o->{"size"} > $largest_file_size);
+            }
+            for my $o (@{$file_name_2_infos{$fname}}) {
+                my $host = $o->{"host"};
+                print "$host: ";
+                if($largest_file_size > $o->{"size"}) {
+                    print color('red'), "$o->{size}", color('reset'), " ";
+                } else {
+                    print color('green'), "$o->{size}", color('reset'), " ";
+                }
+            }
+            print "\n";
+        }
+        # print dump($file_name_2_infos{$fname}) . "\n";
+    } else {
+        print STDERR "WARNING: local ls yielded a unparsable result\n";
+        print STDERR "   LINE: $line\n";
+    }
+}
+
+=head1 NAME
+
+gfwhich - Checking the hostnames in which files in the current directory are stored. (GlusterFS only)
+
+=head1 SYNOPSIS
+
+gfwhich [options]
+gfwhich -f <filename> <host>
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-i>
+Show only inconsistent files.
+
+=item B<-d>
+Show details (hostnames and sizes) when inconsistencies are found.
+
+=item B<-l=d>
+When the host names you use are too long to fit in the default column size,
+you can use -l option to change the length of the columns for hostnames.
+For example, the longest hostnames you have is 12 bytes, and the number of
+replicas in GlusterFS is 3, then you need (12 + 1) x 3 = 39 columns to
+fit them in, so you will give -l=39.
+
+=item B<-debug>
+This is for debugging.
+
+=item B<-f>
+You give B<-f> option when you wish to fix an inconsistent file.
+This option also requires a file name and a host name.
+B<gfwhich> copies the file on the specified host, thus fixing the split-brain
+problem. This copying occurs as "copy to a temporary file" and subsequent
+"rename to the original file", so that you can consider the copying as
+nearly atomic.
+
+=item B<-clean>
+B<-clean> can be used with B<-f>. B<-f> fixes an inconsistent file
+and it still preserves the original file like "foo.txt.orig".
+If you trust the script and you wish not to leave the original files,
+then please give B<-clean>. The original (split-brain and possibly
+corrupted) file will be removed, and never gets back. You should be
+careful when you use this option. You can just type "rm *.orig" to
+do similar things even after running it with B<-f> and without B<-clean>.
+
+=back
+
+=head1 DESCRIPTION
+GlusterFS can be configured to mirror files into different hosts.
+Mirroring improves the availability of data, but we see sometimes a so-called "split-brain" situation,
+in which mirrored files contain different contents. B<gfwhich> might help you dignose what happened
+and what to do in such a situation.
+
+First, B<gfwhich> searches files in the current directory, and shows which hosts the files are
+actually stored in. When you give -d options, it shows the file sizes for "split-brain" files,
+which will help you diganose which one is the correct one (or sadly both corrupted).
+
+=head1 HOW TO SET UP
+B<gfwhich> requires a config file to detect GlusterFS configuration.
+Since the configuration files are not always readable by user, B<gfwhich> requires
+users to describe the configuration of GlusterFS in ~/.gfinfo
+
+The first line of ~/.gfinfo contains the path to the GlusterFS mount point.
+The following lines are pairs of host and the path of the brick(s) on it.
+The example will look like this::
+
+    /gluster
+    host00:/export/gluster
+    host01:/export/gluster
+    host02:/export/gluster
+    host03:/export/gluster
+    host04:/export/gluster
+    host05:/export/gluster
+
+You also need to have a priviledge to directly SSH into those hosts on which
+the bricks are available. This does not always hold, but users (without admin
+priviledge) cannot diagnose a split-brain problem in this case by design (of
+GlusterFS); so B<gfwhich> does not consider this case.
+
+=cut
