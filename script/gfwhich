@@ -118,7 +118,7 @@ my %file_name_2_infos = ();
 for my $brick (@bricks) {
     my $host = $brick->{"host"};
     my $path = $brick->{"path"};
-    my $cmd = "ssh $host ls -al $path/$cwd";
+    my $cmd = "ssh $host env LANG=C ls -al $path/$cwd";
     print "\$ $cmd\n" if($debug);
     my @results = `$cmd`;
     if(0 < @results) {
@@ -127,7 +127,7 @@ for my $brick (@bricks) {
         shift @results;
         for(@results) {
             # -rw-r--r-- 2 mkasa users 1329004544 Mar 18 16:11 CEPdaoD.sspace.scafSeq.fill.fa.sp2
-            if(m|[rwxst-]{10}?\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:\d+\s+(.*)$|i) {
+            if(m|[drwxst-]{10}?\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:?\d+\s+(.*)$|i) {
                 my $fsize = $1;
                 my $fname = $2;
                 print "$host: $fname = $fsize\n" if($debug);
@@ -142,7 +142,7 @@ for my $brick (@bricks) {
     }
 }
 
-my @ls_results = `ls -al`;
+my @ls_results = `env LANG=C ls -al`;
 my $line_num = 0;
 for my $line (@ls_results) {
     chomp $line;
@@ -152,7 +152,7 @@ for my $line (@ls_results) {
         print "$line\n";
         next;
     }
-    if($line =~ m|[rwxst-]{10}?\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:\d+\s+(.*)$|i) {
+    if($line =~ m|[drwxst-]{10}?\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:?\d+\s+(.*)$|i) {
         my $fsize = $1;
         my $fname = $2;
         my $remaining_columns = $param_left_column_size;
