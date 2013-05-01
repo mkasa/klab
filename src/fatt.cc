@@ -544,7 +544,7 @@ void do_len(int argc, char** argv)
 	}
 }
 
-void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_json)
+void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_json, const bool is_contig = false)
 {
     sort(lengths.rbegin(), lengths.rend());
     const size_t total_length = accumulate(lengths.begin(), lengths.end(), 0ull);
@@ -582,8 +582,9 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
     } else {
         cout << "Total # of bases = " << total_length << "\n";
         cout << "Max size = " << max_length << "\n";
-        cout << "N50 scaffold size = " << n50_length << "\n";
-        cout << "N50 scaffold # = " << (sequence_index + 1) << "\n";
+        const string scaffold_str = is_contig ? "contig" : "scaffold";
+        cout << "N50 " << scaffold_str << " size = " << n50_length << "\n";
+        cout << "N50 " << scaffold_str << " # = " << (sequence_index + 1) << "\n";
         cout << "Avg size = " << avg_length << "\n";
         cout << "Min size = " << min_length << "\n";
     }
@@ -636,7 +637,7 @@ void do_stat(int argc, char** argv)
     } else {
         cout << "Scaffold (w/gap) statistics\n";
     }
-    print_n50(length_of_scaffolds_wgap, flag_html, flag_json);
+    print_n50(length_of_scaffolds_wgap, flag_html, flag_json, false);
     if(flag_html) {
         cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (wo/gap) statistics</th></tr>\n";
     } else if(flag_json) {
@@ -644,7 +645,7 @@ void do_stat(int argc, char** argv)
     } else {
         cout << "\nScaffold (wo/gap) statistics\n";
     }
-    print_n50(length_of_scaffolds_wogap, flag_html, flag_json);
+    print_n50(length_of_scaffolds_wogap, flag_html, flag_json, false);
     if(flag_html) {
         cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Contig statistics</th></tr>\n";
     } else if(flag_json) {
@@ -652,7 +653,7 @@ void do_stat(int argc, char** argv)
     } else {
         cout << "\nContig statistics\n";
     }
-    print_n50(length_of_contigs, flag_html, flag_json);
+    print_n50(length_of_contigs, flag_html, flag_json, true);
     if(flag_html) {
         cout << "</table>\n";
     } else if(flag_json) {
