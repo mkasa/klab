@@ -21,11 +21,23 @@ This utility heavily depends on jq, so you must have jq installed on your system
 
 """
 
-version_string = "1.00"
+version_string = "1.01"
 
 import os,sys,subprocess,csv,json,argparse
 
-def convert_json_to_csv(jsonobj, array_of_keys, csv_writer, line_no):
+def write_tsv_row(cols):
+    print "\t".join(cols);
+
+def convert_json_to_csv_or_tsv(jsonobj, array_of_keys, csv_writer, line_no):
+    """
+        convert_json_to_csv_or_tsv takes a JSON object, an array of keys and csv_writer,
+        and outputs in CSV format the values in the order of the keys in the array.
+        (e.g., jsonobj = { "name": "bob", "age": "23" } and array_of_keys = [ "age", "name" ]
+         will give "23", "bob")
+
+        When csv_writer is None, it outputs in Tab-separated value (TSV) format.
+        line_no is the line number (only used for error messages).
+    """
     csv_array = []
     try:
         for key in array_of_keys:
@@ -37,11 +49,14 @@ def convert_json_to_csv(jsonobj, array_of_keys, csv_writer, line_no):
     except Exception, e:
         print >>sys.stderr, "ERROR: ", e, "at line %d" % line_no
         sys.exit(2)
-    try:
-        csv_writer.writerow(csv_array)
-    except:
-        print >>sys.stderr, "ERROR: CSV output error at line %d" % line_no
-        sys.exit(2)
+    if csv_writer != None:
+        try:
+            csv_writer.writerow(csv_array)
+        except:
+            print >>sys.stderr, "ERROR: CSV output error at line %d" % line_no
+            sys.exit(2)
+    else:
+        write_tsv_row(csv_array)
 
 def main():
 
@@ -49,6 +64,7 @@ def main():
     parser = argparse.ArgumentParser(description='Convert JSON (one JSON object, one line) into CSV')
     parser.add_argument('-n', '--noheader', action='store_true', help="Suppress a header")
     parser.add_argument('-v', '--version',  action='store_true', help="Show version string")
+    parser.add_argument('-t', '--tsv',  action='store_true', help="Output in Tab-Separated Values (TSV)")
     args = parser.parse_args()
 
     if args.version:
@@ -88,16 +104,19 @@ def main():
     # Output the header (if needed)
     csv_writer = csv.writer(sys.stdout)
     if not args.noheader:
-        try:
-            csv_writer.writerow(array_of_keys)
-        except:
-            print >>sys.stderr, "ERROR: CSV writing error (header)"
-            sys.exit(1)
+        if args.tsv:
+            write_tsv_row(array_of_keys)
+        else:
+            try:
+                csv_writer.writerow(array_of_keys)
+            except:
+                print >>sys.stderr, "ERROR: CSV writing error (header)"
+                sys.exit(1)
     # Output the CSV lines
     line_number = 1
     try:
         json_object_of_first_line = json.loads(first_line)
-        convert_json_to_csv(json_object_of_first_line, array_of_keys, csv_writer, line_number)
+        convert_json_to_csv_or_tsv(json_object_of_first_line, array_of_keys, None if args.tsv else csv_writer, line_number)
     except Exception, e:
         print >>sys.stderr, "ERROR: JSON parsing error at line %d" % line_number
         sys.exit(1)
@@ -105,7 +124,7 @@ def main():
         for line in sys.stdin:
             line_number += 1
             json_object = json.loads(line.strip())
-            convert_json_to_csv(json_object, array_of_keys, csv_writer, line_number)
+            convert_json_to_csv_or_tsv(json_object, array_of_keys, None if args.tsv else csv_writer, line_number)
     except:
         print >>sys.stderr, "ERROR: JSON parsing error at line %d" % line_number
         sys.exit(1)
