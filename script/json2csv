@@ -66,6 +66,7 @@ def main():
     parser.add_argument('-n', '--noheader', action='store_true', help="Suppress a header")
     parser.add_argument('-v', '--version',  action='store_true', help="Show version string")
     parser.add_argument('-t', '--tsv',  action='store_true', help="Output in Tab-Separated Values (TSV)")
+    parser.add_argument('-c', '--columns', action='store', help="Specify the order of columns")
     args = parser.parse_args()
 
     if args.version:
@@ -80,27 +81,30 @@ def main():
     if first_line[0] != '{' or first_line[-1] != '}':
         print >>sys.stderr, "ERROR: The first line of the input does not look like a JSON (hash) object."
         sys.exit(1)
-    try:
-        p = subprocess.Popen(["jq", "-c", "keys"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, close_fds=True)
-    except:
-        print >>sys.stderr, "ERROR: jq did not run. Probably you do not have jq installed properly?"
-        print >>sys.stderr, "       Please type jq [enter] to check if jq can be executed from command line."
-        print >>sys.stderr, "       If it does not help, please ask your system administrator."
-        sys.exit(1)
-    print >>p.stdin, first_line
-    p.stdin.close()
-    processed = p.stdout.readline().strip()
-    if len(processed) < 2:
-        print >>sys.stderr, "ERROR: jq error. The output of jq contains less than two characters."
-        sys.exit(1)
-    if processed[0] != '[' or processed[-1] != ']':
-        print >>sys.stderr, "ERROR: jq error. The output of jq does not contain an array of keys."
-        sys.exit(1)
-    try:
-        array_of_keys = list(csv.reader([processed[1:-1]]))[0]
-    except:
-        print >>sys.stderr, "ERROR: csv module (of Python) could not parse the output of jq (keys)"
-        sys.exit(1)
+    if args.columns != None:
+        array_of_keys = args.columns.split(",")
+    else:
+        try:
+            p = subprocess.Popen(["jq", "-c", "keys"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, close_fds=True)
+        except:
+            print >>sys.stderr, "ERROR: jq did not run. Probably you do not have jq installed properly?"
+            print >>sys.stderr, "       Please type jq [enter] to check if jq can be executed from command line."
+            print >>sys.stderr, "       If it does not help, please ask your system administrator."
+            sys.exit(1)
+        print >>p.stdin, first_line
+        p.stdin.close()
+        processed = p.stdout.readline().strip()
+        if len(processed) < 2:
+            print >>sys.stderr, "ERROR: jq error. The output of jq contains less than two characters."
+            sys.exit(1)
+        if processed[0] != '[' or processed[-1] != ']':
+            print >>sys.stderr, "ERROR: jq error. The output of jq does not contain an array of keys."
+            sys.exit(1)
+        try:
+            array_of_keys = list(csv.reader([processed[1:-1]]))[0]
+        except:
+            print >>sys.stderr, "ERROR: csv module (of Python) could not parse the output of jq (keys)"
+            sys.exit(1)
 
     # Output the header (if needed)
     csv_writer = csv.writer(sys.stdout)
