@@ -26,6 +26,7 @@ version_string = "1.01"
 import os,sys,subprocess,csv,json,argparse
 
 def write_tsv_row(cols):
+    cols = [str(x) for x in cols]
     print "\t".join(cols);
 
 def convert_json_to_csv_or_tsv(jsonobj, array_of_keys, csv_writer, line_no):
