@@ -1,0 +1,116 @@
+#!/usr/bin/python
+"""
+jsoncsv: a standalone utility to convert JSON objects into CSV
+
+usage: cat example.json | jsoncsv [options...]
+
+This utility converts JSON objects into CSV format (using jq).
+However, as you know, JSON format is more flexible then CSV, which means that JSON objects cannot be directly converted into CSV lines.
+Here we assume that the input contains a series of lines, each of which contains a JSON hash in which all values for keys are simple.
+
+Here is an example:
+    {"name": "John", "age": 23}
+    {"name": "Bob", "age": 45}
+In this example, each line contains exactly one JSON hash. This would be converted into the following:
+    name, age
+    John, 23
+    Bob, 45
+If you wish to suppress the header, please add --noheader or -n.
+
+This utility heavily depends on jq, so you must have jq installed on your system.
+
+"""
+
+version_string = "1.00"
+
+import os,sys,subprocess,csv,json,argparse
+
+def convert_json_to_csv(jsonobj, array_of_keys, csv_writer, line_no):
+    csv_array = []
+    try:
+        for key in array_of_keys:
+            if not key in jsonobj:
+                print >>sys.stderr, "ERROR: does not contain a key '%s' at line %d" % (key, line_no)
+                sys.exit(2)
+            value = jsonobj[key]
+            csv_array.append(value)
+    except Exception, e:
+        print >>sys.stderr, "ERROR: ", e, "at line %d" % line_no
+        sys.exit(2)
+    try:
+        csv_writer.writerow(csv_array)
+    except:
+        print >>sys.stderr, "ERROR: CSV output error at line %d" % line_no
+        sys.exit(2)
+
+def main():
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='Convert JSON (one JSON object, one line) into CSV')
+    parser.add_argument('-n', '--noheader', action='store_true', help="Suppress a header")
+    parser.add_argument('-v', '--version',  action='store_true', help="Show version string")
+    args = parser.parse_args()
+
+    if args.version:
+        print "json2csv version %s" % version_string
+        sys.exit(0)
+
+    # Get keys in the first line (using jq)
+    first_line = sys.stdin.readline().strip()
+    if len(first_line) < 2:
+        print >>sys.stderr, "ERROR: Input too short."
+        sys.exit(1)
+    if first_line[0] != '{' or first_line[-1] != '}':
+        print >>sys.stderr, "ERROR: The first line of the input does not look like a JSON (hash) object."
+        sys.exit(1)
+    try:
+        p = subprocess.Popen(["jq", "-c", "keys"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, close_fds=True)
+    except:
+        print >>sys.stderr, "ERROR: jq did not run. Probably you do not have jq installed properly?"
+        print >>sys.stderr, "       Please type jq [enter] to check if jq can be executed from command line."
+        print >>sys.stderr, "       If it does not help, please ask your system administrator."
+        sys.exit(1)
+    print >>p.stdin, first_line
+    p.stdin.close()
+    processed = p.stdout.readline().strip()
+    if len(processed) < 2:
+        print >>sys.stderr, "ERROR: jq error. The output of jq contains less than two characters."
+        sys.exit(1)
+    if processed[0] != '[' or processed[-1] != ']':
+        print >>sys.stderr, "ERROR: jq error. The output of jq does not contain an array of keys."
+        sys.exit(1)
+    try:
+        array_of_keys = list(csv.reader([processed[1:-1]]))[0]
+    except:
+        print >>sys.stderr, "ERROR: csv module (of Python) could not parse the output of jq (keys)"
+        sys.exit(1)
+
+    # Output the header (if needed)
+    csv_writer = csv.writer(sys.stdout)
+    if not args.noheader:
+        try:
+            csv_writer.writerow(array_of_keys)
+        except:
+            print >>sys.stderr, "ERROR: CSV writing error (header)"
+            sys.exit(1)
+    # Output the CSV lines
+    line_number = 1
+    try:
+        json_object_of_first_line = json.loads(first_line)
+        convert_json_to_csv(json_object_of_first_line, array_of_keys, csv_writer, line_number)
+    except Exception, e:
+        print >>sys.stderr, "ERROR: JSON parsing error at line %d" % line_number
+        sys.exit(1)
+    try:
+        for line in sys.stdin:
+            line_number += 1
+            json_object = json.loads(line.strip())
+            convert_json_to_csv(json_object, array_of_keys, csv_writer, line_number)
+    except:
+        print >>sys.stderr, "ERROR: JSON parsing error at line %d" % line_number
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
+
+

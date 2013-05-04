@@ -41,6 +41,7 @@ List
     <tr><td>sha_scan</td><td>general</td><td>Find duplicated files by collecting SHA1 hashes of files in a given directory.</td><td></td></tr>
     <tr><td>rep</td><td>general</td><td>Repository utilitiy (one command, manage svn/cvs/git/hg at once!)</td><td></td></tr>
     <tr><td>gfwhere</td><td>general</td><td>Find inconsistently replicated files in GlusterFS</td><td></td></tr>
+    <tr><td>json2csv</td><td>general</td><td>Convert JSON into CSV</td><td></td></tr>
     <tr><td></td><td></td><td></td><td></td></tr>
 </table>
 
