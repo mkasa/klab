@@ -40,6 +40,7 @@ List
     <tr><td>mddoc</td><td>general</td><td>Simple wrapper to view formatted Markdown texts via text browser</td><td>Requires Markdown.pl or pandoc.</td></tr>
     <tr><td>sha_scan</td><td>general</td><td>Find duplicated files by collecting SHA1 hashes of files in a given directory.</td><td></td></tr>
     <tr><td>rep</td><td>general</td><td>Repository utilitiy (one command, manage svn/cvs/git/hg at once!)</td><td></td></tr>
+    <tr><td>gfwhere</td><td>general</td><td>Find inconsistently replicated files in GlusterFS</td><td></td></tr>
     <tr><td></td><td></td><td></td><td></td></tr>
 </table>
 
