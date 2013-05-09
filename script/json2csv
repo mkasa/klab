@@ -4,6 +4,12 @@ jsoncsv: a standalone utility to convert JSON objects into CSV
 
 usage: cat example.json | jsoncsv [options...]
 
+options:
+	-t	output in TSV (instead of CSV)
+	-n	supress a header
+	-v	show the version and exit
+	-c c1,c2,c3,...	specify the order of the columns in output
+
 This utility converts JSON objects into CSV format (using jq).
 However, as you know, JSON format is more flexible then CSV, which means that JSON objects cannot be directly converted into CSV lines.
 Here we assume that the input contains a series of lines, each of which contains a JSON hash in which all values for keys are simple.
