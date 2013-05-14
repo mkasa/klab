@@ -52,7 +52,7 @@ unless otherwise stated in source code.
 
 The princple is that 3rd party libraries and their derivatives
 are basically licensed under their original licenses, while
-what we developed are licensed under the modified BSD. Such
-libraries include SQLite3 (http://www.sqlite.org/), sqdbcpp
+what we developed from scratch are licensed under the modified BSD.
+The 3rd party libraries include SQLite3 (http://www.sqlite.org/), sqdbcpp
 (http://code.google.com/p/sqdbcpp/).
 
