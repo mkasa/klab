@@ -1,0 +1,32 @@
+#!/usr/bin/env perl
+
+use strict;
+use JSON;
+
+my $mode = 0;
+my $cols = 0;
+while(<>) {
+    chomp;
+    if(/Scaffold Stats/) {
+        print '{"scaffold":'; $mode = 1; $cols = 0;
+        print ' {';
+    } elsif(/Contig Stats/) {
+        print '} ';
+        print ',"contig":'; $mode = 2; $cols = 0;
+        print ' {';
+    } elsif(/Gap Stats/) {
+        print '} ';
+        print ',"gap":'; $mode = 3; $cols = 0;
+        print ' {';
+    } elsif(/=====/) {
+        if($mode == 3) {
+            print '} ';
+            print '}';
+        }
+    } elsif(m|^(.*)?\t(\d+)$|) {
+        print ", " if($cols++);
+        print "\"$1\": $2";
+    }
+}
+print "\n";
+
