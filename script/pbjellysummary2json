@@ -3,6 +3,15 @@
 use strict;
 use JSON;
 
+sub js_symbol($)
+{
+	my $s = shift;
+	if($s =~ /^\d/) { $s = '_' . $s; }
+	$s =~ s| |_|g;
+	$s =~ s|\.||g;
+	return $s;
+}
+
 my $mode = 0;
 my $cols = 0;
 while(<>) {
@@ -25,7 +34,7 @@ while(<>) {
         }
     } elsif(m|^(.*)?\t(\d+)$|) {
         print ", " if($cols++);
-        print "\"$1\": $2";
+        print '"' . js_symbol($1) . '"' . ": $2";
     }
 }
 print "\n";
