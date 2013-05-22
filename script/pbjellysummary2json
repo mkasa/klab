@@ -9,6 +9,7 @@ sub js_symbol($)
 	if($s =~ /^\d/) { $s = '_' . $s; }
 	$s =~ s| |_|g;
 	$s =~ s|\.||g;
+	$s =~ s|#|n|g;
 	return $s;
 }
 
