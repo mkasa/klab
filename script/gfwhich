@@ -15,6 +15,7 @@ my $flag_omit_consistent = 0;
 my $flag_show_detail = 0;
 my $flag_fix = 0;
 my $flag_clean = 0;
+my $flag_df = 0;
 
 GetOptions(
     "debug" => \$debug,
@@ -24,7 +25,8 @@ GetOptions(
     "i"     => \$flag_omit_consistent,
     "d"     => \$flag_show_detail,
     "f"     => \$flag_fix,
-    "clean" => \$flag_clean
+    "clean" => \$flag_clean,
+    "df"    => \$flag_df
 );
 
 my $param_fix_file;
@@ -91,10 +93,35 @@ sub fix_file
     print_and_do("mv $local_path $file");
 }
 
+sub print_disk_free_space
+{
+    my @bricks = @_;
+    my $has_header_shown = 0;
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        my $path = $brick->{"path"};
+        my $cmd = "ssh $host env LANG=C df -h $path";
+        print "\$ $cmd\n" if($debug);
+        my @results = `$cmd`;
+        for(@results) {
+            if(/Mounted on/) {
+                if($has_header_shown) { next; }
+                $has_header_shown = 1;
+                print "          $_";
+            } else {
+                printf "%9s:%s", $host, $_;
+            }
+        }
+    }
+}
 
 my $ini = read_config();
 my $gluster_path = $ini->{"gluster_path"};
 my @bricks = @{$ini->{"bricks"}};
+if($flag_df) {
+    print_disk_free_space(@bricks);
+    exit 0;
+}
 my $cwd = getcwd();
 unless($cwd =~ m|^$gluster_path/(.*)$|) {
     print "The current directory '$cwd' does not seem like a GlusterFS directory.\n";
