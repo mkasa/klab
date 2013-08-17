@@ -10,6 +10,8 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <cstdlib>
+#include <ctime>
 #include <map>
 #include <set>
 #include <cstdlib>
@@ -1340,6 +1342,78 @@ void fastq_to_fasta(const char* file_name)
     delete b;
 }
 
+void clean_nucleotide_line(char* buffer, bool process_n, int char_change_into)
+{
+    for(char* p = buffer; *p != '\0'; p++) {
+        const char c = toupper(*p);
+        if(c != 'A' && c != 'C' && c != 'G' && c != 'T') {
+            if(process_n || c != 'N') {
+                if(char_change_into != -1) {
+                    *p = char_change_into;
+                } else {
+                    const char t = rand() / ((RAND_MAX / 2 + 1) / 2);
+                    *p = "ACGTT"[t];
+                }
+            }
+        }
+    }
+}
+
+void clean_fastx(const char* file_name, bool flag_process_n, int char_change_into/* -1 means random*/)
+{
+    ifstream ist(file_name);
+    if(!ist) {
+        cerr << "Cannot open '" << file_name << "'" << endl;
+        return;
+    }
+    srand(time(NULL));
+    char* b = new char[BUFFER_SIZE];
+    size_t line_count = 0;
+    if(ist.getline(b, BUFFER_SIZE)) {
+        ++line_count;
+        cout << b << '\n';
+        if(b[0] != '@') { 
+            // This should be FASTA
+            while(ist.getline(b, BUFFER_SIZE)) {
+                ++line_count;
+                if(b[0] != '>') { clean_nucleotide_line(b, flag_process_n, char_change_into); }
+                cout << b << '\n';
+            }
+        } else {
+            size_t number_of_nucleotides_in_read = 0;
+            // This is FASTQ
+            while(ist.getline(b, BUFFER_SIZE)) {
+                ++line_count;
+                if(b[0] == '+' && b[1] == '\0') { // EOS
+					cout << "+\n";
+                    long long n = number_of_nucleotides_in_read;
+                    while(ist.getline(b, BUFFER_SIZE)) {
+                        ++line_count;
+                        const size_t number_of_qvchars_in_line = strlen(b);
+                        cout << b << '\n';
+                        n -= number_of_qvchars_in_line;
+                        if(n <= 0) break;
+                    }
+                    if(ist.peek() != '@' && !ist.eof()) {
+                        cerr << "WARNING: bad file format? at line " << line_count << endl;
+                    }
+                    number_of_nucleotides_in_read = 0;
+                    if(!ist.getline(b, BUFFER_SIZE))
+                        break;
+                    cout << b << '\n';
+                    ++line_count;
+                } else {
+                    const int number_of_chars_in_line = strlen(b);
+                    number_of_nucleotides_in_read += number_of_chars_in_line;
+                    clean_nucleotide_line(b, flag_process_n, char_change_into);
+                    cout << b << '\n';
+                }
+            }
+        }
+    }
+    delete b;
+}
+
 void do_to_csv(int argc, char** argv)
 {
     static struct option long_options[] = {
@@ -1408,6 +1482,73 @@ void do_tofasta(int argc, char** argv)
 {
     for(int i = 2; i < argc; ++i) {
         fastq_to_fasta(argv[i]);
+    }
+}
+
+void do_clean(int argc, char** argv)
+{
+    bool flag_change_into_a = false;
+    bool flag_change_into_c = false;
+    bool flag_change_into_g = false;
+    bool flag_change_into_t = false;
+    bool flag_change_into_n = false;
+    bool flag_process_n = false;
+    bool flag_random_change = false;
+    static struct option long_options[] = {
+        {"processn", no_argument, 0, 'p'},
+        {"a", no_argument, 0, 'a'},
+        {"c", no_argument, 0, 'c'},
+        {"g", no_argument, 0, 'g'},
+        {"t", no_argument, 0, 't'},
+        {"n", no_argument, 0, 'n'},
+        {"random", no_argument, 0, 'r'},
+        {0, 0, 0, 0} // end of long options
+    };
+
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+		case 'a':
+            flag_change_into_a = true;
+			break;
+		case 'c':
+            flag_change_into_c = true;
+			break;
+		case 'g':
+            flag_change_into_g = true;
+			break;
+		case 't':
+            flag_change_into_t = true;
+			break;
+		case 'n':
+            flag_change_into_n = true;
+			break;
+        case 'p':
+            flag_process_n = true;
+            break;
+        case 'r':
+            flag_random_change = true;
+            break;
+		}
+	}
+    const int num_change_flags = int(flag_change_into_a) + int(flag_change_into_c) + int(flag_change_into_g) + int(flag_change_into_t) + int(flag_change_into_n) + int(flag_random_change);
+    if(1 < num_change_flags) {
+        cerr << "ERROR: --a, --c, --g, --t, --n, --random are exclusive." << endl;
+        exit(1);
+    }
+    int char_change_into = -1; // -1 means a random char
+    if(flag_change_into_a) char_change_into = 'A';
+    if(flag_change_into_c) char_change_into = 'C';
+    if(flag_change_into_g) char_change_into = 'G';
+    if(flag_change_into_t) char_change_into = 'T';
+    if(flag_change_into_n) char_change_into = 'N';
+    for(int i = optind + 1; i < argc; ++i) {
+        clean_fastx(argv[i], flag_process_n, char_change_into);
     }
 }
 
@@ -1493,6 +1634,17 @@ void show_help(const char* subcommand)
         cerr << "Currently, no options available.\n\n";
         return;
     }
+    if(subcmd == "clean") {
+        cerr << "Usage: fatt clean [options...] <FAST(A|Q) files>\n\n";
+        cerr << "--processn\tBy default, [^ACGTNacgtn] will be changed. With --processn, [^ACGTacgt] will be changed\n";
+        cerr << "--a\tChange into 'A'\n";
+        cerr << "--c\tChange into 'C'\n";
+        cerr << "--g\tChange into 'G'\n";
+        cerr << "--t\tChange into 'T'\n";
+        cerr << "--n\tChange into 'N'\n";
+        cerr << "--random\tChange into A/C/G/T randomly\n";
+        return;
+    }
     if(subcmd == "help") {
         cerr << "Uh? No detailed help for help.\n";
         cerr << "Read the manual, or ask the author.\n";
@@ -1507,6 +1659,7 @@ void show_help(const char* subcommand)
 	cerr << "\tlen\toutput the lengths of reads\n";
     cerr << "\tstat\tshow the statistics of input sequences\n";
     cerr << "\tindex\tcreate an index on read names\n";
+    cerr << "\tclean\tconvert non-ACGT(N) characters to ACGT\n";
     cerr << "\tguessqvtype\tguess the type of FASTQ (Sanger/Illumina1.3/Illumina1.5/...)\n";
     cerr << "\ttocsv\tconvert sequences into CSV format\n";
     cerr << "\tfold\tfold sequences\n";
@@ -1564,6 +1717,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     }
     if(commandString == "tofasta") {
         do_tofasta(argc, argv);
+        return;
+    }
+    if(commandString == "clean") {
+        do_clean(argc, argv);
         return;
     }
     // Help or error.
