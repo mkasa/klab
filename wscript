@@ -1,7 +1,7 @@
 
 # -*- python -*-
 APPNAME = 'kalab'
-VERSION = '1.16'
+VERSION = '1.17'
 
 def options(opt):
     opt.load(['compiler_c', 'compiler_cxx', 'python'])
@@ -17,6 +17,6 @@ def build(bld):
     bld(features = 'cxx cxxprogram', source = 'src/sieve.cc', target = 'sieve')
     bld(features = 'cxx c cxxprogram', source = ['src/fatt.cc', 'src/sqlite3.c', 'src/sqdb.cc'], target = 'fatt')
     executables = ['convertsequence', 'fixshebang', 'icc-color', 'gcc-color',
-                   'mydaemon', 'rep', 'sql', 'mddoc', 'sha_scan', 'gfwhich', 'json2csv',
+                   'mydaemon', 'rep', 'sql', 'mddoc', 'gmddoc', 'sha_scan', 'gfwhich', 'json2csv',
                    'ods2xls', 'ods2xlsx', 'pbjellysummary2json']
     bld.install_files('${PREFIX}/bin', ['script/' + x for x in executables], chmod=0755)
