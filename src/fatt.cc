@@ -575,6 +575,7 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
         cout << "<tr><td>avg</td><td>" << avg_length << "</td><td></td></tr>\n";
     } else if(flag_json) {
         cout << "{\"total_length\": " << total_length;
+        cout << ",\"count\": " << lengths.size();
         cout << ",\"max_length\": " << max_length;
         cout << ",\"n50\": " << n50_length;
         cout << ",\"n50num\": " << (sequence_index + 1);
@@ -583,8 +584,9 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
         cout << "}";
     } else {
         cout << "Total # of bases = " << total_length << "\n";
-        cout << "Max size = " << max_length << "\n";
         const string scaffold_str = is_contig ? "contig" : "scaffold";
+        cout << "# of " << scaffold_str << "s = " << lengths.size() << "\n";
+        cout << "Max size = " << max_length << "\n";
         cout << "N50 " << scaffold_str << " size = " << n50_length << "\n";
         cout << "N50 " << scaffold_str << " # = " << (sequence_index + 1) << "\n";
         cout << "Avg size = " << avg_length << "\n";
