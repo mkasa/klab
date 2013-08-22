@@ -21,6 +21,7 @@ my $flag_clean = 0;
 my $flag_df = 0;
 my $flag_whole = 0;
 my $param_gfid = undef;
+my $param_gfid_query = undef;
 
 GetOptions(
     "debug"    => \$debug,
@@ -36,6 +37,7 @@ GetOptions(
     "df"       => \$flag_df,
     "r=i"      => \$param_num_replica,
     "gfid=s"   => \$param_gfid,
+    "qgfid=s"  => \$param_gfid_query,
     "sudo"     => \$flag_sudo
 );
 
@@ -172,6 +174,30 @@ sub print_gfid_dir
     }
 }
 
+sub print_gfid_of_file_or_dir
+{
+    my ($gluster_path, $cwd, $lpath, @bricks) = @_;
+    unless($lpath =~ m|^/|) { # relative
+        $lpath = "$cwd/$lpath";
+    }
+    unless($lpath =~ s|^$gluster_path/||) {
+        print "The given directory '$lpath' does not seem like a GlusterFS directory.\n";
+        exit 1;
+    }
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        my $path = $brick->{"path"};
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        $cmd .= "env LANG=C getfattr -m trusted.gfid -d -e hex $path/$lpath";
+        $cmd .= " | grep trusted.gfid";
+        print "\$ $cmd\n" if($debug);
+        system $cmd;
+    }
+}
+
 my $ini = read_config();
 my $gluster_path = $ini->{"gluster_path"};
 my @bricks = @{$ini->{"bricks"}};
@@ -184,6 +210,11 @@ if(defined $param_gfid) {
     exit 0;
 }
 my $cwd = getcwd();
+if(defined $param_gfid_query) {
+    print_gfid_of_file_or_dir($gluster_path, $cwd, $param_gfid_query, @bricks);
+    exit 0;
+}
+
 unless($cwd =~ m|^$gluster_path/(.*)$|) {
     print "The current directory '$cwd' does not seem like a GlusterFS directory.\n";
     print "Check the first line of ~/.gfinfo\n";
