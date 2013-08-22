@@ -12,6 +12,7 @@ my $param_left_column_size = 10;
 my $param_num_replica = 2;
 my $flag_man = 0;
 my $flag_help = 0;
+my $flag_sudo = 0;
 my $flag_omit_consistent = 0;
 my $flag_show_detail = 0;
 my $flag_quick_fix = 0;
@@ -19,20 +20,23 @@ my $flag_fix = 0;
 my $flag_clean = 0;
 my $flag_df = 0;
 my $flag_whole = 0;
+my $param_gfid = undef;
 
 GetOptions(
-    "debug" => \$debug,
-    "help"  => \$flag_help,
-    "man"   => \$flag_man,
-    "l=i"   => \$param_left_column_size,
-    "i"     => \$flag_omit_consistent,
-    "d"     => \$flag_show_detail,
-    "fix"   => \$flag_fix,
+    "debug"    => \$debug,
+    "help"     => \$flag_help,
+    "man"      => \$flag_man,
+    "l=i"      => \$param_left_column_size,
+    "i"        => \$flag_omit_consistent,
+    "d"        => \$flag_show_detail,
+    "fix"      => \$flag_fix,
     "quickfix" => \$flag_quick_fix,
-    "w"     => \$flag_whole,
-    "clean" => \$flag_clean,
-    "df"    => \$flag_df,
-    "r=i"   => \$param_num_replica
+    "w"        => \$flag_whole,
+    "clean"    => \$flag_clean,
+    "df"       => \$flag_df,
+    "r=i"      => \$param_num_replica,
+    "gfid=s"   => \$param_gfid,
+    "sudo"     => \$flag_sudo
 );
 
 my $param_fix_file;
@@ -125,7 +129,11 @@ sub print_disk_free_space
     for my $brick (@bricks) {
         my $host = $brick->{"host"};
         my $path = $brick->{"path"};
-        my $cmd = "ssh $host env LANG=C df -h $path";
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        $cmd .= "env LANG=C df -h $path";
         print "\$ $cmd\n" if($debug);
         my @results = `$cmd`;
         for(@results) {
@@ -140,11 +148,39 @@ sub print_disk_free_space
     }
 }
 
+sub print_gfid_dir
+{
+    my ($gfid, $suffix, @bricks) = @_;
+    $gfid =~ tr/A-Z/a-z/;
+    unless($gfid =~ m|^([\da-f][\da-f])([\da-f][\da-f])|) {
+        print STDERR "ERROR: '$gfid' does not look like a gfid.\n";
+        exit 3;
+    }
+    my $p1 = $1; my $p2 = $2;
+    my $lpath = ".glusterfs/$p1/$p2/$gfid";
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        my $path = $brick->{"path"};
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        $cmd .= "env LANG=C ls -ald $path/$lpath";
+        $cmd .= "/$suffix" if(defined $suffix && $suffix ne '');
+        print "\$ $cmd\n" if($debug);
+        system $cmd;
+    }
+}
+
 my $ini = read_config();
 my $gluster_path = $ini->{"gluster_path"};
 my @bricks = @{$ini->{"bricks"}};
 if($flag_df) {
     print_disk_free_space(@bricks);
+    exit 0;
+}
+if(defined $param_gfid) {
+    print_gfid_dir($param_gfid, "", @bricks);
     exit 0;
 }
 my $cwd = getcwd();
@@ -335,8 +371,7 @@ for my $line (@ls_results) {
                         print STDERR " "x$param_left_column_size;
                         print STDERR color('red') . "ERROR: The retrieved replica were different! You have to fix it for yourself.\n";
                     } else {
-                        print " "x$param_left_column_size;
-                        print "All replica were identical.\n";
+                        print "All replica were identical, so we will fix it.\n";
                         print_and_do("mv $fname $fname.orig");
                         print_and_do("cp $sane_files[0]->{local_path} $fname");
                         for(@sane_files) {
@@ -383,6 +418,10 @@ Show details (hostnames and sizes) when inconsistencies are found.
 
 =item B<-w>
 Show very details (the results of ls -al) when inconsistencies are found.
+
+=item B<--sudo>
+Add 'sudo' to commands (if possible). This may help you manipulate files
+that are acceccible by root but not by your account.
 
 =item B<-l=d>
 When the host names you use are too long to fit in the default column size,
