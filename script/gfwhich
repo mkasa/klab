@@ -17,6 +17,7 @@ my $flag_omit_consistent = 0;
 my $flag_show_detail = 0;
 my $flag_quick_fix = 0;
 my $flag_fix = 0;
+my $flag_dirfix = 0;
 my $flag_clean = 0;
 my $flag_df = 0;
 my $flag_whole = 0;
@@ -32,6 +33,7 @@ GetOptions(
     "d"        => \$flag_show_detail,
     "fix"      => \$flag_fix,
     "quickfix" => \$flag_quick_fix,
+    "dirfix"   => \$flag_dirfix,
     "w"        => \$flag_whole,
     "clean"    => \$flag_clean,
     "df"       => \$flag_df,
@@ -48,6 +50,10 @@ if($flag_fix) {
 	$param_fix_file = shift;
     $param_fix_host = shift;
     $flag_help = 1 if(!defined $param_fix_file || !defined $param_fix_host);
+}
+if($flag_dirfix) {
+    $param_fix_file = shift;
+    $flag_help = 1 if(!defined $param_fix_file);
 }
 
 pod2usage(1) if $flag_help;
@@ -122,6 +128,16 @@ sub fix_file
     if($flag_clean) {
         print_and_do("rm $file.orig");
     }
+}
+
+sub fix_dir
+{
+    my $dir_name = shift;
+    my $tmp_dir_name = "$dir_name.tmp.$$";
+    print_and_do("mkdir $tmp_dir_name");
+    print_and_do("mv $dir_name/* $tmp_dir_name");
+    print_and_do("rmdir $dir_name");
+    print_and_do("mv $tmp_dir_name $dir_name");
 }
 
 sub print_disk_free_space
@@ -227,6 +243,10 @@ if($flag_fix) {
     fix_file($gluster_path, $cwd, $param_fix_file, $param_fix_host, @bricks);
     exit 0;
 }
+if($flag_dirfix) {
+    fix_dir($param_fix_file);
+    exit 0;
+}
 
 if($debug) {
     print "Bricks:\n  " . join("\n  ", @bricks) . "\n";
@@ -246,13 +266,25 @@ for my $brick (@bricks) {
         shift @results;
         for(@results) {
             # -rw-r--r-- 2 mkasa users 1329004544 Mar 18 16:11 CEPdaoD.sspace.scafSeq.fill.fa.sp2
-            if(m|([drwxst-]{10}?)\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:?\d+\s+(.*)$|i) {
+            if(m|([ldrwxst-]{10}?)\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:?\d+\s+(.*)$|i) {
                 my $perm = $1;
                 my $fsize = $2;
                 my $fname = $3;
                 print "$host: $fname = $fsize\n" if($debug);
                 my $line = $_; chomp $line;
-                push(@{$file_name_2_infos{$fname}}, {"host" => $host, "size" => $fsize, "perm" => $perm, "linestr" => $line});
+                if($perm =~ m|^l|) {
+                    unless($fname =~ m|^(.*) -> (.*)$|) {
+                        print STDERR "ERROR: Symbolic link could not be parsed.\n";
+                        print STDERR "STR: '$fname'.\n";
+                    } else {
+                        my $to_path = $1;
+                        my $from_path = $2;
+                        print "link from '$from_path' to '$to_path'\n" if($debug);
+                        push(@{$file_name_2_infos{$to_path}}, {"host" => $host, "size" => $fsize, "perm" => $perm, "linestr" => $line, "linkfrom" => $from_path});
+                    }
+                } else {
+                    push(@{$file_name_2_infos{$fname}}, {"host" => $host, "size" => $fsize, "perm" => $perm, "linestr" => $line});
+                }
             } else {
                 print STDERR "WARNING: SSH to $host yielded a unparsable result\n";
                 print STDERR "   LINE: $_\n";
@@ -273,153 +305,168 @@ for my $line (@ls_results) {
         print "$line\n";
         next;
     }
-    if($line =~ m|([drwxst-]{10}?)\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:?\d+\s+(.*)$|i) {
-        my $perm = $1;
-        my $fsize = $2;
-        my $fname = $3;
-        my $remaining_columns = $param_left_column_size;
-        my $has_found_inconsistency = 0;
-        my $directory_size = 0;
-        my $is_directory = $perm =~ m|^d|;
-        if($is_directory) {
-            my %t;
-            for my $o (@{$file_name_2_infos{$fname}}) {
-                $t{$o->{"size"}}++;
-            }
-            if(scalar(keys %t) > 2) { $has_found_inconsistency = 1; }
-            for(keys %t) { $directory_size = $_ if($directory_size < $_); }
-        } else {
-            for my $o (@{$file_name_2_infos{$fname}}) {
-                if($o->{"perm"} eq '---------T') {
-                    $has_found_inconsistency = 1 if($o->{"size"} != 0);
-                } else {
-                    $has_found_inconsistency = 1 if($fsize != $o->{"size"});
-                }
-            }
-        }
-        next if($flag_omit_consistent && !$has_found_inconsistency);
-        for my $o (@{$file_name_2_infos{$fname}}) {
-            my $host = $o->{"host"};
-            if($is_directory) {
-                if($has_found_inconsistency) {
-                    if($directory_size != $o->{"size"}) {
-                        print color('red'), $host, color('reset'), " ";
-                    } else {
-                        print color('green'), $host, color('reset'), " ";
-                    }
-                } else {
-                    if($directory_size != $o->{"size"}) {
-                        print color('blue'), $host, color('reset'), " ";
-                    } else {
-                        print "$host ";
-                    }
-                }
-            } else {
-                if($fsize != $o->{"size"}) {
-                    if($fsize > $o->{"size"}) {
-                        if($has_found_inconsistency) {
-                            print color('red'), $host, color('reset'), " ";
-                        } else {
-                            print color('blue'), $host, color('reset'), " ";
-                        }
-                    } else {
-                        print color('green'), $host, color('reset'), " ";
-                    }
-                } else {
-                    if($o->{"size"} > 0 && $o->{"perm"} eq '---------T') {
-                        print color('red'), $host, color('reset'), " ";
-                    } else {
-                        print "$host ";
-                    }
-                }
-            }
-            $remaining_columns -= 1 + length($host);
-        }
-        $remaining_columns = 1 if($remaining_columns < 1);
-        print " "x$remaining_columns, "$line\n";
-        if(($flag_show_detail || $flag_whole) && $has_found_inconsistency) {
-            if($flag_show_detail) {
-                print " "x$param_left_column_size;
-                my $largest_file_size = 0;
-                for my $o (@{$file_name_2_infos{$fname}}) {
-                    $largest_file_size = $o->{"size"} if($o->{"size"} > $largest_file_size);
-                }
-                for my $o (@{$file_name_2_infos{$fname}}) {
-                    my $host = $o->{"host"};
-                    print "$host: ";
-                    if($largest_file_size > $o->{"size"}) {
-                        print color('red'), "$o->{size}", color('reset'), " ";
-                    } else {
-                        print color('green'), "$o->{size}", color('reset'), " ";
-                    }
-                }
-                print "\n";
-            }
-            if($flag_whole) {
-                for my $o (@{$file_name_2_infos{$fname}}) {
-                    print " "x$param_left_column_size;
-                    print color('yellow'), $o->{"host"}, ": ", $o->{"linestr"}, color('reset'), "\n";
-                }
-            }
-        }
-        # print dump($file_name_2_infos{$fname}) . "\n";
-        if($has_found_inconsistency && $flag_quick_fix) {
-            if($is_directory) {
-                print STDERR " "x$param_left_column_size;
-                print STDERR color('yellow') . "WARNING: '$fname' is a directory, so will not fix it (not supported)." . color('reset') . "\n";
-            } else {
-                my @sane_files;
-                for my $o (@{$file_name_2_infos{$fname}}) {
-                    if($o->{"perm"} ne '---------T' && $o->{"size"} == $fsize) { push(@sane_files, $o); }
-                }
-                if($param_num_replica <= @sane_files) {
-                    for(@sane_files) {
-                        print " "x$param_left_column_size;
-                        print "$_->{host} looks sane.\n";
-                        $_->{"local_path"} = "$fname.tmp.$_->{host}.$$";
-                        my $remote_path = get_scp_path_from_fname($cwd, $fname, $_->{host}, @bricks);
-                        if(defined $remote_path) {
-                            print_and_do("scp $remote_path $_->{local_path}");
-                        } else {
-                            print STDERR color('red') . "ERROR: Could not find the remote path for '$fname'" . color('reset') ."\n";
-                        }
-                    }
-                    my $files_were_different = 0;
-                    for(my $i = 1; $i < @sane_files; $i++) {
-                        my $cmd = "cmp -s $sane_files[0]->{local_path} $sane_files[$i]->{local_path}";
-                        print STDERR " "x$param_left_column_size;
-                        if($? == -1) {
-                            print STDERR "ERROR: Could not spawn 'cmp -s' for '$fname'" . color('reset') . "\n";
-                        } else {
-                            my $retcode = $? >> 8;
-                            if($retcode != 0) {
-                                print STDERR "$sane_files[0]->{host} and $sane_files[$i]->{host} are different.\n";
-                                $files_were_different = 1;
-                            }
-                        }
-                    }
-                    if($files_were_different) {
-                        print STDERR " "x$param_left_column_size;
-                        print STDERR color('red') . "ERROR: The retrieved replica were different! You have to fix it for yourself.\n";
-                    } else {
-                        print "All replica were identical, so we will fix it.\n";
-                        print_and_do("mv $fname $fname.orig");
-                        print_and_do("cp $sane_files[0]->{local_path} $fname");
-                        for(@sane_files) {
-                            print_and_do("rm $_->{local_path}");
-                        }
-                        if($flag_clean) {
-                            print_and_do("rm $fname.orig");
-                        }
-                    }
-                } else {
-                    print STDERR color('yellow') . "INFO: The sufficient number of replica was not found for '$fname'" . color('reset') . ", so skipped.\n";
-                }
-            }
-        }
-    } else {
+    unless($line =~ m|([ldrwxst-]{10}?)\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:?\d+\s+(.*)$|i) {
         print STDERR "WARNING: local ls yielded a unparsable result\n";
         print STDERR "   LINE: $line\n";
+        next;
+    }
+    my $perm = $1;
+    my $fsize = $2;
+    my $fname = $3;
+    my $origin_name_if_symbolic_link;
+    my $is_symbolic_link = $perm =~ m|^l|;
+    if($is_symbolic_link) {
+        unless($fname =~ m|^(.*) -> (.*)$|) {
+            print STDERR "ERROR: Symbolic link could not be parsed.\n";
+            print STDERR "STR: '$fname'.\n";
+            next;
+        }
+        $fname = $1;
+        $origin_name_if_symbolic_link = $2;
+    }
+    my $remaining_columns = $param_left_column_size;
+    my $has_found_inconsistency = 0;
+    my %valid_directory_sizes = ();
+    my $is_directory = $perm =~ m|^d|;
+    if($is_directory) {
+        my %t;
+        for my $o (@{$file_name_2_infos{$fname}}) {
+            $t{$o->{"size"}}++;
+        }
+        while(my ($k, $v) = each %t) {
+            if($v % $param_num_replica != 0) { $has_found_inconsistency = 1; }
+        }
+    } else {
+        for my $o (@{$file_name_2_infos{$fname}}) {
+            if($o->{"perm"} eq '---------T') {
+                $has_found_inconsistency = 1 if($o->{"size"} != 0);
+            } else {
+                $has_found_inconsistency = 1 if($fsize != $o->{"size"});
+            }
+        }
+    }
+    next if($flag_omit_consistent && !$has_found_inconsistency);
+    for my $o (@{$file_name_2_infos{$fname}}) {
+        my $host = $o->{"host"};
+        if($is_directory) {
+            if($has_found_inconsistency) {
+                if(exists $valid_directory_sizes{$o->{"size"}}) {
+                    print color('red'), $host, color('reset'), " ";
+                } else {
+                    print color('green'), $host, color('reset'), " ";
+                }
+            } else {
+                if($o->{"size"} < 10) {
+                    print color('blue'), $host, color('reset'), " ";
+                } else {
+                    print "$host ";
+                }
+            }
+        } else {
+            if($fsize != $o->{"size"}) {
+                if($fsize > $o->{"size"}) {
+                    if($has_found_inconsistency) {
+                        print color('red'), $host, color('reset'), " ";
+                    } else {
+                        print color('blue'), $host, color('reset'), " ";
+                    }
+                } else {
+                    print color('green'), $host, color('reset'), " ";
+                }
+            } else {
+                if($o->{"size"} > 0 && $o->{"perm"} eq '---------T') {
+                    print color('red'), $host, color('reset'), " ";
+                } else {
+                    print "$host ";
+                }
+            }
+        }
+        $remaining_columns -= 1 + length($host);
+    }
+    $remaining_columns = 1 if($remaining_columns < 1);
+    print " "x$remaining_columns, "$line\n";
+    if(($flag_show_detail || $flag_whole) && $has_found_inconsistency) {
+        if($flag_show_detail) {
+            print " "x$param_left_column_size;
+            my $largest_file_size = 0;
+            for my $o (@{$file_name_2_infos{$fname}}) {
+                $largest_file_size = $o->{"size"} if($o->{"size"} > $largest_file_size);
+            }
+            for my $o (@{$file_name_2_infos{$fname}}) {
+                my $host = $o->{"host"};
+                print "$host: ";
+                if($largest_file_size > $o->{"size"}) {
+                    print color('red'), "$o->{size}", color('reset'), " ";
+                } else {
+                    print color('green'), "$o->{size}", color('reset'), " ";
+                }
+            }
+            print "\n";
+        }
+        if($flag_whole) {
+            for my $o (@{$file_name_2_infos{$fname}}) {
+                print " "x$param_left_column_size;
+                print color('yellow'), $o->{"host"}, ": ", $o->{"linestr"}, color('reset'), "\n";
+            }
+        }
+    }
+    # print dump($file_name_2_infos{$fname}) . "\n";
+    if($has_found_inconsistency && $flag_quick_fix) {
+        if($is_directory) {
+            print STDERR " "x$param_left_column_size;
+            print STDERR color('red') . "WARNING: '$fname' is a directory, so will not fix it (not supported). Check it manually." . color('reset') . "\n";
+        } elsif($is_symbolic_link) {
+            print STDERR " "x$param_left_column_size;
+            print STDERR color('red') . "WARNING: '$fname' is a symbolic link, so will not fix it (not supported). Check it manually." . color('reset') . "\n";
+        } else {
+            my @sane_files;
+            for my $o (@{$file_name_2_infos{$fname}}) {
+                if($o->{"perm"} ne '---------T' && $o->{"size"} == $fsize) { push(@sane_files, $o); }
+            }
+            if($param_num_replica <= @sane_files) {
+                for(@sane_files) {
+                    print " "x$param_left_column_size;
+                    print "$_->{host} looks sane.\n";
+                    $_->{"local_path"} = "$fname.tmp.$_->{host}.$$";
+                    my $remote_path = get_scp_path_from_fname($cwd, $fname, $_->{host}, @bricks);
+                    if(defined $remote_path) {
+                        print_and_do("scp $remote_path $_->{local_path}");
+                    } else {
+                        print STDERR color('red') . "ERROR: Could not find the remote path for '$fname'" . color('reset') ."\n";
+                    }
+                }
+                my $files_were_different = 0;
+                for(my $i = 1; $i < @sane_files; $i++) {
+                    my $cmd = "cmp -s $sane_files[0]->{local_path} $sane_files[$i]->{local_path}";
+                    print STDERR " "x$param_left_column_size;
+                    if($? == -1) {
+                        print STDERR "ERROR: Could not spawn 'cmp -s' for '$fname'" . color('reset') . "\n";
+                    } else {
+                        my $retcode = $? >> 8;
+                        if($retcode != 0) {
+                            print STDERR "$sane_files[0]->{host} and $sane_files[$i]->{host} are different.\n";
+                            $files_were_different = 1;
+                        }
+                    }
+                }
+                if($files_were_different) {
+                    print STDERR " "x$param_left_column_size;
+                    print STDERR color('red') . "ERROR: The retrieved replica were different! You have to fix it for yourself.\n";
+                } else {
+                    print "All replica were identical, so we will fix it.\n";
+                    print_and_do("mv $fname $fname.orig");
+                    print_and_do("cp $sane_files[0]->{local_path} $fname");
+                    for(@sane_files) {
+                        print_and_do("rm $_->{local_path}");
+                    }
+                    if($flag_clean) {
+                        print_and_do("rm $fname.orig");
+                    }
+                }
+            } else {
+                print STDERR color('yellow') . "INFO: The sufficient number of replica was not found for '$fname'" . color('reset') . ", so skipped.\n";
+            }
+        }
     }
 }
 
@@ -431,6 +478,7 @@ gfwhich - Checking the hostnames in which files in the current directory are sto
 
 gfwhich [options]
 gfwhich --fix <filename> <host>
+gfwhich --dirfix <dirname>
 gfwhich --quickfix
 
 =head1 OPTIONS
@@ -479,6 +527,14 @@ are available. If not, that file is skipped. When the sufficient number of
 replica were found, all of them are copied into temporary files, which are
 then compared each other. If the copied replica are all the same, it is
 copied back to GlusterFS. The original file is renamed with ".orig" suffix.
+
+=item B<--dirfix>
+B<--dirfix> fixes a split-brain status of the given directory.
+First, it creates a temporary directory. Then, it moves all the files
+in the given directory into the temporary directory. If successful,
+it removes the (empty) given directory, rename the temporary directory
+to the original given directory. After the whole process, the metadata
+of the given directory becomes consistent across replicas.
 
 =item B<-clean>
 B<-clean> can be used with B<--fix> or B<--quickfix>. B<--fix> and B<--quickfix> fix
