@@ -591,7 +591,7 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
             if(n50_total_length <= sum) break;
         }
         n50_length = lengths[sequence_index];
-	n50_sequence_index=sequence_index;
+        n50_sequence_index=sequence_index;
         for(;sequence_index < lengths.size(); sequence_index++) {
             sum += lengths[sequence_index];
             if(n70_total_length <= sum) break;
