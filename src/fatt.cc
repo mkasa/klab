@@ -604,61 +604,58 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
 {
     sort(lengths.rbegin(), lengths.rend());
     const size_t total_length = accumulate(lengths.begin(), lengths.end(), 0ull);
-    size_t sequence_index = (size_t)-1;
     size_t n50_sequence_index = (size_t)-1;
     size_t n50_length = 0;
+    size_t n70_sequence_index = (size_t)-1;
     size_t n70_length = 0;
+    size_t n80_sequence_index = (size_t)-1;
     size_t n80_length = 0;
+    size_t n90_sequence_index = (size_t)-1;
     size_t n90_length = 0;
     size_t max_length = 0;
     size_t min_length = 0;
     size_t avg_length = 0;
     if(!lengths.empty()) {
+        size_t sequence_index;
         size_t sum = 0;
-        const size_t n50_total_length = (total_length + 1ull) / 2;
-        const size_t n70_total_length = (size_t)((total_length + 1ull) * 0.7); 
-        const size_t n80_total_length = (size_t)((total_length + 1ull) * 0.8);
-        const size_t n90_total_length = (size_t)((total_length + 1ull) * 0.9);
-        max_length = lengths.front();
-        for(sequence_index = 0; sequence_index < lengths.size(); sequence_index++) {
-            sum += lengths[sequence_index];
-            if(n50_total_length <= sum) break;
-        }
+        const size_t n50_total_length = (size_t)((total_length + 1ull) * 0.5);
+        for(sequence_index = 0; sum < n50_total_length && sequence_index < lengths.size(); sequence_index++) sum += lengths[sequence_index];
         n50_length = lengths[sequence_index];
-        n50_sequence_index=sequence_index;
-        for(;sequence_index < lengths.size(); sequence_index++) {
-            sum += lengths[sequence_index];
-            if(n70_total_length <= sum) break;
-        }
+        n50_sequence_index = sequence_index;
+        const size_t n70_total_length = (size_t)((total_length + 1ull) * 0.7); 
+        for(sequence_index = 0; sum < n70_total_length && sequence_index < lengths.size(); sequence_index++) sum += lengths[sequence_index];
         n70_length = lengths[sequence_index];
-        for(; sequence_index < lengths.size(); sequence_index++) {
-            sum += lengths[sequence_index];
-            if(n80_total_length <= sum) break;
-        }
+        n70_sequence_index = sequence_index;
+        const size_t n80_total_length = (size_t)((total_length + 1ull) * 0.8); 
+        for(sequence_index = 0; sum < n80_total_length && sequence_index < lengths.size(); sequence_index++) sum += lengths[sequence_index];
         n80_length = lengths[sequence_index];
-        for(; sequence_index < lengths.size(); sequence_index++) {
-            sum += lengths[sequence_index];
-            if(n90_total_length <= sum) break;
-        }
+        n80_sequence_index = sequence_index;
+        const size_t n90_total_length = (size_t)((total_length + 1ull) * 0.9);
+        for(sequence_index = 0; sum < n90_total_length && sequence_index < lengths.size(); sequence_index++) sum += lengths[sequence_index];
         n90_length = lengths[sequence_index];
+        n90_sequence_index = sequence_index;
+
         min_length = lengths.back();
+        max_length = lengths.front();
         avg_length = (total_length + lengths.size() / 2) / lengths.size();
     }
     if(flag_html) {
         cout << "<tr><td></td><td>size (bp)</td><td>number</td></tr>\n";
         cout << "<tr><td>max</td><td>" << max_length << "</td><td>1</td></tr>\n";
         cout << "<tr><td>N50</td><td>" << n50_length << "</td><td>" << (n50_sequence_index + 1) << "</td></tr>\n";
-        cout << "<tr><td>N70</td><td>" << n70_length << "</td><td>" <<  "</td></tr>\n";
-        cout << "<tr><td>N80</td><td>" << n80_length << "</td><td>" <<  "</td></tr>\n";
-        cout << "<tr><td>N90</td><td>" << n90_length << "</td><td>" << (sequence_index + 1) << "</td></tr>\n";
+        cout << "<tr><td>N70</td><td>" << n70_length << "</td><td>" << (n70_sequence_index + 1) << "</td></tr>\n";
+        cout << "<tr><td>N80</td><td>" << n80_length << "</td><td>" << (n80_sequence_index + 1) << "</td></tr>\n";
+        cout << "<tr><td>N90</td><td>" << n90_length << "</td><td>" << (n90_sequence_index + 1) << "</td></tr>\n";
         cout << "<tr><td>min</td><td>" << min_length << "</td><td>" << lengths.size() << "</td></tr>\n";
         cout << "<tr><td>avg</td><td>" << avg_length << "</td><td></td></tr>\n";
     } else if(flag_json) {
         cout << "{\"total_length\": " << total_length;
         cout << ",\"count\": " << lengths.size();
         cout << ",\"max_length\": " << max_length;
-        cout << ",\"n50\": " << n50_length;
-        cout << ",\"n50num\": " << (n50_sequence_index + 1);
+        cout << ",\"n50\": " << n50_length << ",\"n50num\": " << (n50_sequence_index + 1);
+        cout << ",\"n70\": " << n70_length << ",\"n70num\": " << (n70_sequence_index + 1);
+        cout << ",\"n80\": " << n80_length << ",\"n80num\": " << (n80_sequence_index + 1);
+        cout << ",\"n90\": " << n90_length << ",\"n90num\": " << (n90_sequence_index + 1);
         cout << ",\"avg\": " << avg_length;
         cout << ",\"min\": " << min_length;
         cout << "}";
@@ -666,15 +663,14 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
         cout << "Total # of bases = " << total_length << "\n";
         const string scaffold_str = is_contig ? "contig" : "scaffold";
         cout << "# of " << scaffold_str << "s = " << lengths.size() << "\n";
-        cout << "Max size = " << max_length << "\n";
-        cout << "N50 " << scaffold_str << " size = " << n50_length << "\n";
-        cout << "N70 " << scaffold_str << " size = " << n70_length << "\n";
-        cout << "N80 " << scaffold_str << " size = " << n80_length << "\n";
-        cout << "N90 " << scaffold_str << " size = " << n90_length << "\n";
-        cout << "N50 " << scaffold_str << " # = " << (n50_sequence_index + 1) << "\n";
+        cout << "Max size = " << max_length << " (# = 1)\n";
+        cout << "N50 " << scaffold_str << " size = " << n50_length << " (# = " << (n50_sequence_index + 1) << ")\n";
+        cout << "N70 " << scaffold_str << " size = " << n70_length << " (# = " << (n70_sequence_index + 1) << ")\n";
+        cout << "N80 " << scaffold_str << " size = " << n80_length << " (# = " << (n80_sequence_index + 1) << ")\n";
+        cout << "N90 " << scaffold_str << " size = " << n90_length << " (# = " << (n90_sequence_index + 1) << ")\n";
+        cout << "Min size = " << min_length << "\n";
         cout << "Total " << scaffold_str << " # = " << lengths.size() << "\n";
         cout << "Avg size = " << avg_length << "\n";
-        cout << "Min size = " << min_length << "\n";
     }
 }
 
