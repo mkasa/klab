@@ -87,6 +87,8 @@ class FileLineBufferWithAutoExpansion
     size_t bufferOffsetToBeFill;
     size_t line_count; ///< 1-origin
     vector<char> headerID;
+    bool isFASTAMode;
+    bool isFASTQMode;
 
 public:
     char* b;
@@ -99,6 +101,8 @@ private:
         delete[] b;
         b = newb;
         currentBufferSize = nextBufferSize;
+        isFASTAMode = false;
+        isFASTQMode = false;
     }
 
 public:
@@ -126,9 +130,16 @@ public:
             if(ist.getline(b + bufferOffsetToBeFill, currentBufferSize - bufferOffsetToBeFill)) {
                 line_count++;
                 const bool isFirstLine = line_count == 1;
-                if(isFirstLine && !(looksLikeFASTQHeader() || looksLikeFASTAHeader())) {
-                    cerr << fileName << " does not look like either of FASTA/FASTQ!\n";
-                    exit(1);
+                if(isFirstLine) {
+                    if(looksLikeFASTQHeader()) {
+                        isFASTQMode = true;
+                        registerHeaderLine();
+                    } else if(looksLikeFASTAHeader()) {
+                        isFASTAMode = true;
+                    } else {
+                        cerr << fileName << " does not look like either of FASTA/FASTQ!\n";
+                        exit(1);
+                    }
                 }
                 return true;
             }
@@ -140,10 +151,19 @@ public:
     }
     bool looksLikeFASTQHeader() const { return b[0] == '@'; }
     bool looksLikeFASTAHeader() const { return b[0] == '@'; }
+    bool notFollowedByHeaderOrEOF() {
+        if(ist.peek() == '@') return false;
+        return !ist.eof();
+    }
+    void expectHeaderOfEOF() {
+        if(notFollowedByHeaderOrEOF()) {
+            cerr << "WARNING: Bad file format at line " << getLineCount() << ".\n";
+            cerr << "         We expected a new sequence (starting with '@') or EOF,\n";
+            cerr << "         but there is not. Check the file (" << fileName << ") first.\n";
+        }
+    }
     size_t getLineCount() const { return line_count; }
-    bool eof() { return ist.eof(); }
     bool fail() { return ist.fail(); }
-    int peek() { return ist.peek(); }
     size_t tellg() { return ist.tellg(); }
     size_t len() { return strlen(b); }
     void seekg(size_t offset) { ist.seekg(offset); }
@@ -227,9 +247,7 @@ void calculate_n50_statistics(const char* fname,
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
                     }
-                    if(f.peek() != '@' && !f.eof()) {
-                        cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
-                    }
+                    f.expectHeaderOfEOF();
                     if(!f.getline()) break;
                     length_of_scaffolds_wgap.push_back(length_as_scaffolds_wgap);
                     length_of_scaffolds_wogap.push_back(length_as_scaffolds_wogap);
@@ -297,9 +315,7 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
                     }
-                    if(f.peek() != '@' && !f.eof()) {
-                        cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
-                    }
+                    f.expectHeaderOfEOF();
                     if(!f.getline()) break;
 					if(show_name)
                         output_read_name(f.b);
@@ -352,9 +368,7 @@ void count_number_of_reads_in_file(const char* fname)
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
                     }
-                    if(f.peek() != '@' && !f.eof()) {
-                        cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
-                    }
+                    f.expectHeaderOfEOF();
 					UPDATE_MIN_AND_MAX(number_of_nucleotides_in_read);
                     number_of_nucleotides_in_read = 0;
                     if(!f.getline())
@@ -455,9 +469,7 @@ void do_check_same_names(int argc, char** argv)
                             n -= number_of_qvchars_in_line;
                             if(n <= 0) break;
                         }
-                        if(f.peek() != '@' && !f.eof()) {
-                            cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
-                        }
+                        f.expectHeaderOfEOF();
                         number_of_nucleotides_in_read = 0;
                         if(!f.getline())
                             break;
@@ -535,9 +547,7 @@ void create_index(const char* fname)
                             n -= number_of_qvchars_in_line;
                             if(n <= 0) break;
                         }
-                        if(f.peek() != '@' && !f.eof()) {
-                            cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
-                        }
+                        f.expectHeaderOfEOF();
                         last_pos = f.tellg();
                         if(!f.getline()) break;
                         INSERT_NAME_INTO_TABLE();
@@ -914,7 +924,7 @@ void do_extract(int argc, char** argv)
                                         return;
                                     }
                                     if(!f.looksLikeFASTQHeader()) {
-                                        cerr << "ERROR: bad file format. The line does not start with '@' at pos " << line_start_pos << endl;
+                                        cerr << "ERROR: bad file format. The line does not start with '@' at line " << f.getLineCount() << " (pos " << line_start_pos << ")" << endl;
                                         return;
                                     }
                                     cout << f.b << "\n";
@@ -987,9 +997,7 @@ void do_extract(int argc, char** argv)
                                 if(current_read_has_been_taken) cout << f.b << endl;
                                 if(n <= 0) break;
                             }
-                            if(f.peek() != '@' && !f.eof()) {
-                                cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
-                            }
+                            f.expectHeaderOfEOF();
                             number_of_nucleotides_in_read = 0;
                             if(!f.getline())
                                 break;
@@ -1046,9 +1054,7 @@ void do_guess_qv_type(int argc, char** argv)
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
                     }
-                    if(f.peek() != '@' && !f.eof()) {
-                        cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
-                    }
+                    f.expectHeaderOfEOF();
                     number_of_nucleotides_in_read = 0;
                     if(!f.getline())
                         break;
@@ -1158,9 +1164,7 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
                     }
-                    if(f.peek() != '@' && !f.eof()) {
-                        cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
-                    }
+                    f.expectHeaderOfEOF();
                     number_of_nucleotides_in_read = 0;
                     if(!f.getline())
                         break;
@@ -1255,9 +1259,7 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
                     }
-                    if(f.peek() != '@' && !f.eof()) {
-                        cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
-                    }
+                    f.expectHeaderOfEOF();
                     number_of_nucleotides_in_read = 0;
                     if(!f.getline())
                         break;
@@ -1324,8 +1326,8 @@ void fastq_to_fasta(const char* file_name)
                     n -= number_of_qvchars_in_line;
                     if(n <= 0) break;
                 }
-                if(f.peek() != '@' && !f.eof()) {
-                    cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
+                if(f.notFollowedByHeaderOrEOF()) {
+                    cerr << "WARNING: bad file format? at line " << f.getLineCount() << "." << endl;
                     return;
                 }
                 number_of_nucleotides_in_read = 0;
@@ -1376,7 +1378,6 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
                 cout << f.b << '\n';
             }
         } else {
-            f.registerHeaderLine();
             size_t number_of_nucleotides_in_read = 0;
             // This is FASTQ
             while(f.getline()) {
@@ -1389,9 +1390,7 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
                     }
-                    if(f.peek() != '@' && !f.eof()) {
-                        cerr << "WARNING: bad file format? at line " << f.getLineCount() << endl;
-                    }
+                    f.expectHeaderOfEOF();
                     number_of_nucleotides_in_read = 0;
                     if(!f.getline())
                         break;
