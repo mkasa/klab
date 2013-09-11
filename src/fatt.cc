@@ -86,6 +86,7 @@ class FileLineBufferWithAutoExpansion
     size_t currentBufferSize;
     size_t bufferOffsetToBeFill;
     size_t line_count; ///< 1-origin
+    vector<char> headerID;
 
 public:
     char* b;
@@ -105,6 +106,7 @@ public:
         b = new char[INITIAL_BUFFER_SIZE];
         currentBufferSize = INITIAL_BUFFER_SIZE;
         line_count = 0; // Just for safety
+        headerID.reserve(INITIAL_BUFFER_SIZE);
     }
     ~FileLineBufferWithAutoExpansion() {
         delete[] b;
@@ -145,6 +147,29 @@ public:
     size_t tellg() { return ist.tellg(); }
     size_t len() { return strlen(b); }
     void seekg(size_t offset) { ist.seekg(offset); }
+    void registerHeaderLine() {
+        const size_t len_with_gt = len();
+        if(len_with_gt == 0u) return;
+        const size_t l = len_with_gt - 1u;
+        headerID.resize(l);
+        for(size_t i = 1; i < len_with_gt; i++) {
+            if(b[i] != ' ') {
+                headerID[i - 1u] = b[i];
+            } else {
+                headerID.resize(i - 1);
+            }
+        }
+    }
+    bool looksLikeFASTQSeparator() const {
+        if(b[0] != '+') return false;
+        if(b[1] == '\0') return true;
+        for(size_t i = 0; i < headerID.size(); ++i) {
+            const char next_b = b[i + 1u];
+            if(next_b == '\0' || next_b == ' ' || next_b != headerID[i]) return false;
+        }
+        const char stopChar = b[headerID.size() + 1u];
+        return stopChar == '\0' || stopChar == ' ';
+    }
 };
 
 void calculate_n50_statistics(const char* fname,
@@ -1347,14 +1372,15 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
         if(!f.looksLikeFASTQHeader()) { 
             // This should be FASTA
             while(f.getline()) {
-                if(f.b[0] != '>') { clean_nucleotide_line(f.b, flag_process_n, char_change_into); }
+                if(!f.looksLikeFASTAHeader()) { clean_nucleotide_line(f.b, flag_process_n, char_change_into); }
                 cout << f.b << '\n';
             }
         } else {
+            f.registerHeaderLine();
             size_t number_of_nucleotides_in_read = 0;
             // This is FASTQ
             while(f.getline()) {
-                if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                if(f.looksLikeFASTQSeparator()) { // EOS
 					cout << "+\n";
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
@@ -1370,6 +1396,7 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
                     if(!f.getline())
                         break;
                     cout << f.b << '\n';
+                    f.registerHeaderLine();
                 } else {
                     const int number_of_chars_in_line = strlen(f.b);
                     number_of_nucleotides_in_read += number_of_chars_in_line;
