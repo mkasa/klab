@@ -219,7 +219,7 @@ void calculate_n50_statistics(const char* fname,
                         length_as_contigs = 0;
                     }
                 } else {
-                    length_as_scaffolds_wgap += strlen(f.b);
+                    length_as_scaffolds_wgap += f.len();
                     length_as_scaffolds_wogap += strlen_without_n(f.b);
                     for(const char* p = f.b; *p != '\0'; p++) {
                         if(*p == 'N' || *p == 'n') {
@@ -243,7 +243,7 @@ void calculate_n50_statistics(const char* fname,
                 if(f.looksLikeFASTQSeparator()) { // EOS
                     long long n = length_as_scaffolds_wgap;
                     while(f.getline()) {
-                        const size_t number_of_qvchars_in_line = strlen(f.b);
+                        const size_t number_of_qvchars_in_line = f.len();
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
                     }
@@ -259,7 +259,7 @@ void calculate_n50_statistics(const char* fname,
                         length_as_contigs = 0;
                     }
                 } else {
-                    const size_t number_of_nucleotides_in_line = strlen(f.b);
+                    const size_t number_of_nucleotides_in_line = f.len();
                     length_as_scaffolds_wgap += number_of_nucleotides_in_line;
                     length_as_scaffolds_wogap += strlen_without_n(f.b);
                     for(const char* p = f.b; *p != '\0'; p++) {
@@ -302,7 +302,7 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
                         cout << number_of_nucleotides_in_read << "\n";
                     number_of_nucleotides_in_read = 0;
                 } else {
-                    number_of_nucleotides_in_read += strlen(f.b);
+                    number_of_nucleotides_in_read += f.len();
                 }
 			}
             if(!show_name && 0 < number_of_nucleotides_in_read)
@@ -312,7 +312,7 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
                 if(f.looksLikeFASTQSeparator()) {
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
-                        const size_t number_of_qvchars_in_line = strlen(f.b);
+                        const size_t number_of_qvchars_in_line = f.len();
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
                     }
@@ -325,7 +325,7 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
                         cout << number_of_nucleotides_in_read << "\n";
                     number_of_nucleotides_in_read = 0;
                 } else {
-                    const size_t number_of_nucleotides_in_line = strlen(f.b);
+                    const size_t number_of_nucleotides_in_line = f.len();
                     number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                 }
             }
@@ -358,7 +358,7 @@ void count_number_of_reads_in_file(const char* fname)
 					UPDATE_MIN_AND_MAX(number_of_nucleotides_in_read);
 					number_of_nucleotides_in_read = 0;
                 } else {
-                    number_of_nucleotides += strlen(f.b);
+                    number_of_nucleotides += f.len();
                 }
             }
         } else {
@@ -366,7 +366,7 @@ void count_number_of_reads_in_file(const char* fname)
                 if(f.looksLikeFASTQSeparator()) {
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
-                        const size_t number_of_qvchars_in_line = strlen(f.b);
+                        const size_t number_of_qvchars_in_line = f.len();
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
                     }
@@ -377,7 +377,7 @@ void count_number_of_reads_in_file(const char* fname)
                     f.registerHeaderLine();
 					++number_of_sequences;
                 } else {
-                    const size_t number_of_nucleotides_in_line = strlen(f.b);
+                    const size_t number_of_nucleotides_in_line = f.len();
                     number_of_nucleotides += number_of_nucleotides_in_line;
                     number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                 }
@@ -459,7 +459,7 @@ void do_check_same_names(int argc, char** argv)
 						add_read_name_and_show_error_if_duplicates(readName2fileIndex, argv, f.b, findex, flag_do_not_show_file_name);
                         number_of_nucleotides_in_read = 0;
                     } else {
-                        number_of_nucleotides += strlen(f.b);
+                        number_of_nucleotides += f.len();
                     }
                 }
             } else {
@@ -467,7 +467,7 @@ void do_check_same_names(int argc, char** argv)
                     if(f.looksLikeFASTQSeparator()) {
                         long long n = number_of_nucleotides_in_read;
                         while(f.getline()) {
-                            const size_t number_of_qvchars_in_line = strlen(f.b);
+                            const size_t number_of_qvchars_in_line = f.len();
                             n -= number_of_qvchars_in_line;
                             if(n <= 0) break;
                         }
@@ -478,7 +478,7 @@ void do_check_same_names(int argc, char** argv)
                         ++number_of_sequences;
 						add_read_name_and_show_error_if_duplicates(readName2fileIndex, argv, f.b, findex, flag_do_not_show_file_name);
                     } else {
-                        const size_t number_of_nucleotides_in_line = strlen(f.b);
+                        const size_t number_of_nucleotides_in_line = f.len();
                         number_of_nucleotides += number_of_nucleotides_in_line;
                         number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                     }
@@ -536,7 +536,7 @@ void create_index(const char* fname)
 						++sequence_count;
                         number_of_nucleotides_in_read = 0;
                     } else {
-                        number_of_nucleotides_in_read += strlen(f.b);
+                        number_of_nucleotides_in_read += f.len();
                     }
                 }
             } else {
@@ -545,7 +545,7 @@ void create_index(const char* fname)
                     if(f.looksLikeFASTQSeparator()) {
                         long long n = number_of_nucleotides_in_read;
                         while(f.getline()) {
-                            const size_t number_of_qvchars_in_line = strlen(f.b);
+                            const size_t number_of_qvchars_in_line = f.len();
                             n -= number_of_qvchars_in_line;
                             if(n <= 0) break;
                         }
@@ -557,7 +557,7 @@ void create_index(const char* fname)
 						++sequence_count;
                         number_of_nucleotides_in_read = 0;
                     } else {
-                        const size_t number_of_nucleotides_in_line = strlen(f.b);
+                        const size_t number_of_nucleotides_in_line = f.len();
                         number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                     }
                 }
@@ -873,14 +873,14 @@ void do_extract(int argc, char** argv)
                                         long long n = number_of_nucleotides_in_read;
                                         cout << f.b << endl;
                                         while(f.getline()) {
-                                            const size_t number_of_qvchars_in_line = strlen(f.b);
+                                            const size_t number_of_qvchars_in_line = f.len();
                                             n -= number_of_qvchars_in_line;
                                             cout << f.b << endl;
                                             if(n <= 0) break;
                                         }
                                         break;
                                     } else {
-                                        const size_t number_of_nucleotides_in_line = strlen(f.b);
+                                        const size_t number_of_nucleotides_in_line = f.len();
                                         number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                                         cout << f.b << endl;
                                     }
@@ -915,7 +915,7 @@ void do_extract(int argc, char** argv)
                                     long long n = number_of_nucleotides_in_read;
                                     cout << f.b << endl;
                                     while(f.getline()) {
-                                        const size_t number_of_qvchars_in_line = strlen(f.b);
+                                        const size_t number_of_qvchars_in_line = f.len();
                                         n -= number_of_qvchars_in_line;
                                         cout << f.b << endl;
                                         if(n <= 0) break;
@@ -934,7 +934,7 @@ void do_extract(int argc, char** argv)
                                     cout << f.b << "\n";
 									number_of_nucleotides_in_read = 0;
                                 } else {
-                                    const size_t number_of_nucleotides_in_line = strlen(f.b);
+                                    const size_t number_of_nucleotides_in_line = f.len();
                                     number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                                     cout << f.b << endl;
                                 }
@@ -986,7 +986,7 @@ void do_extract(int argc, char** argv)
                             number_of_nucleotides_in_read = 0;
                         } else {
                             if(current_read_has_been_taken) cout << f.b << endl;
-                            number_of_nucleotides += strlen(f.b);
+                            number_of_nucleotides += f.len();
                         }
                     }
                 } else {
@@ -995,7 +995,7 @@ void do_extract(int argc, char** argv)
                             long long n = number_of_nucleotides_in_read;
                             if(current_read_has_been_taken) cout << f.b << endl;
                             while(f.getline()) {
-                                const size_t number_of_qvchars_in_line = strlen(f.b);
+                                const size_t number_of_qvchars_in_line = f.len();
                                 n -= number_of_qvchars_in_line;
                                 if(current_read_has_been_taken) cout << f.b << endl;
                                 if(n <= 0) break;
@@ -1016,7 +1016,7 @@ void do_extract(int argc, char** argv)
                             if(current_read_has_been_taken) cout << f.b << endl;
                             if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(f.b));
                         } else {
-                            const size_t number_of_nucleotides_in_line = strlen(f.b);
+                            const size_t number_of_nucleotides_in_line = f.len();
                             number_of_nucleotides += number_of_nucleotides_in_line;
                             number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                             if(current_read_has_been_taken) cout << f.b << endl;
@@ -1052,7 +1052,7 @@ void do_guess_qv_type(int argc, char** argv)
                 if(f.looksLikeFASTQSeparator()) {
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
-                        const size_t number_of_qvchars_in_line = strlen(f.b);
+                        const size_t number_of_qvchars_in_line = f.len();
                         for(unsigned char* p = reinterpret_cast<unsigned char*>(f.b); *p; ++p) histogram[*p]++;
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
@@ -1063,7 +1063,7 @@ void do_guess_qv_type(int argc, char** argv)
                     f.registerHeaderLine();
                     ++number_of_sequences;
                 } else {
-                    const size_t number_of_nucleotides_in_line = strlen(f.b);
+                    const size_t number_of_nucleotides_in_line = f.len();
                     number_of_nucleotides += number_of_nucleotides_in_line;
                     number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                 }
@@ -1140,7 +1140,7 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
                     OUTPUT_HEADER();
                 } else {
                     cout << f.b;
-                    number_of_nucleotides += strlen(f.b);
+                    number_of_nucleotides += f.len();
                 }
             }
             cout << '\n';
@@ -1159,7 +1159,7 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
                     cout << (output_in_tsv ? '\t' : ',') << '"';
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
-                        const size_t number_of_qvchars_in_line = strlen(f.b);
+                        const size_t number_of_qvchars_in_line = f.len();
 						if(output_in_tsv)
                         	cout << f.b;
 						else
@@ -1175,7 +1175,7 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
                     OUTPUT_HEADER();
                     ++number_of_sequences;
                 } else {
-                    const size_t number_of_nucleotides_in_line = strlen(f.b);
+                    const size_t number_of_nucleotides_in_line = f.len();
                     number_of_nucleotides += number_of_nucleotides_in_line;
                     number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                     cout << f.b;
@@ -1207,7 +1207,7 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
                     }
                     cout << f.b << '\n';
                 } else {
-                    const int number_of_chars_in_line = strlen(f.b);
+                    const int number_of_chars_in_line = f.len();
                     if(is_folding) {
                         int off = 0;
                         while(off < number_of_chars_in_line) {
@@ -1240,7 +1240,7 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
 					cout << "+\n";
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
-                        const size_t number_of_qvchars_in_line = strlen(f.b);
+                        const size_t number_of_qvchars_in_line = f.len();
                         if(is_folding) {
                             int off = 0;
                             while(off < number_of_qvchars_in_line) {
@@ -1271,7 +1271,7 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
                     }
                     cout << f.b << '\n';
                 } else {
-                    const int number_of_chars_in_line = strlen(f.b);
+                    const int number_of_chars_in_line = f.len();
                     number_of_nucleotides_in_read += number_of_chars_in_line;
                     if(is_folding) {
                         int off = 0;
@@ -1322,7 +1322,7 @@ void fastq_to_fasta(const char* file_name)
             if(f.looksLikeFASTQSeparator()) {
                 long long n = number_of_nucleotides_in_read;
                 while(f.getline()) {
-                    const size_t number_of_qvchars_in_line = strlen(f.b);
+                    const size_t number_of_qvchars_in_line = f.len();
                     number_of_nucleotides_in_output_line += number_of_qvchars_in_line;
                     n -= number_of_qvchars_in_line;
                     if(n <= 0) break;
@@ -1337,7 +1337,7 @@ void fastq_to_fasta(const char* file_name)
                 f.b[0] = '>';
                 cout << f.b << '\n';
             } else {
-                const int number_of_chars_in_line = strlen(f.b);
+                const int number_of_chars_in_line = f.len();
                 number_of_nucleotides_in_read += number_of_chars_in_line;
                 cout << f.b << '\n';
             }
@@ -1385,7 +1385,7 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
 					cout << "+\n";
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
-                        const size_t number_of_qvchars_in_line = strlen(f.b);
+                        const size_t number_of_qvchars_in_line = f.len();
                         cout << f.b << '\n';
                         n -= number_of_qvchars_in_line;
                         if(n <= 0) break;
@@ -1396,7 +1396,7 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
                     f.registerHeaderLine();
                     cout << f.b << '\n';
                 } else {
-                    const int number_of_chars_in_line = strlen(f.b);
+                    const int number_of_chars_in_line = f.len();
                     number_of_nucleotides_in_read += number_of_chars_in_line;
                     clean_nucleotide_line(f.b, flag_process_n, char_change_into);
                     cout << f.b << '\n';
