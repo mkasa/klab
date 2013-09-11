@@ -81,10 +81,11 @@ static bool is_file_fastq(const char* fastq_file_name)
 class FileLineBufferWithAutoExpansion
 {
     ifstream ist;
+    string fileName;
     static const size_t INITIAL_BUFFER_SIZE = 8192u;
     size_t currentBufferSize;
     size_t bufferOffsetToBeFill;
-    size_t line_count;
+    size_t line_count; ///< 1-origin
 
 public:
     char* b;
@@ -111,6 +112,7 @@ public:
     bool open(const char* file_name) {
         ist.open(file_name);
         line_count = 0;
+        fileName = file_name;
         return ist;
     }
     void close() {
@@ -121,6 +123,11 @@ public:
         do {
             if(ist.getline(b + bufferOffsetToBeFill, currentBufferSize - bufferOffsetToBeFill)) {
                 line_count++;
+                const bool isFirstLine = line_count == 1;
+                if(isFirstLine && !(looksLikeFASTQHeader() || looksLikeFASTAHeader())) {
+                    cerr << fileName << " does not look like either of FASTA/FASTQ!\n";
+                    exit(1);
+                }
                 return true;
             }
             if(ist.eof()) return false;
@@ -129,6 +136,8 @@ public:
             ist.clear();
         } while(true);
     }
+    bool looksLikeFASTQHeader() const { return b[0] == '@'; }
+    bool looksLikeFASTAHeader() const { return b[0] == '@'; }
     size_t getLineCount() const { return line_count; }
     bool eof() { return ist.eof(); }
     bool fail() { return ist.fail(); }
@@ -152,14 +161,10 @@ void calculate_n50_statistics(const char* fname,
         size_t length_as_scaffolds_wgap = 0;
         size_t length_as_scaffolds_wogap = 0;
         size_t length_as_contigs = 0;
-        if(f.b[0] != '@') { 
-            if(f.b[0] != '>') { // NOTE: this check must be copied to other functions.
-                cerr << fname << " does not look like FASTA/FASTQ!\n";
-                return;
-            }
+        if(!f.looksLikeFASTQHeader()) { 
 			// This should be FASTA
             while(f.getline()) {
-                if(f.b[0] == '>') {
+                if(f.looksLikeFASTAHeader()) {
                     length_of_scaffolds_wgap.push_back(length_as_scaffolds_wgap);
                     length_of_scaffolds_wogap.push_back(length_as_scaffolds_wogap);
                     length_as_scaffolds_wgap = 0;
@@ -189,7 +194,6 @@ void calculate_n50_statistics(const char* fname,
                 length_of_contigs.push_back(length_as_contigs);
             }
 		} else {
-			// This should be FASTQ
             while(f.getline()) {
                 if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
                     long long n = length_as_scaffolds_wgap;
@@ -245,10 +249,9 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
     if(f.getline()) {
 		if(show_name) output_read_name(f.b);
         size_t number_of_nucleotides_in_read = 0;
-        if(f.b[0] != '@') { 
-			// This should be FASTA
+        if(!f.looksLikeFASTQHeader()) { 
             while(f.getline()) {
-                if(f.b[0] == '>') {
+                if(f.looksLikeFASTAHeader()) {
                     if(show_name)
                         output_read_name(f.b);
                     else
@@ -261,7 +264,6 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
             if(!show_name && 0 < number_of_nucleotides_in_read)
                 cout << number_of_nucleotides_in_read << "\n";
 		} else {
-			// This should be FASTQ
             while(f.getline()) {
                 if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
                     long long n = number_of_nucleotides_in_read;
@@ -306,10 +308,9 @@ void count_number_of_reads_in_file(const char* fname)
     if(f.getline()) {
         number_of_sequences++;
         size_t number_of_nucleotides_in_read = 0;
-        if(f.b[0] != '@') { 
-            // This should be FASTA
+        if(!f.looksLikeFASTQHeader()) { 
             while(f.getline()) {
-                if(f.b[0] == '>') {
+                if(f.looksLikeFASTAHeader()) {
                     number_of_sequences++;
 					UPDATE_MIN_AND_MAX(number_of_nucleotides_in_read);
 					number_of_nucleotides_in_read = 0;
@@ -318,7 +319,6 @@ void count_number_of_reads_in_file(const char* fname)
                 }
             }
         } else {
-            // This is FASTQ
             while(f.getline()) {
                 if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
                     long long n = number_of_nucleotides_in_read;
@@ -411,10 +411,9 @@ void do_check_same_names(int argc, char** argv)
             number_of_sequences++;
             size_t number_of_nucleotides_in_read = 0;
 			add_read_name_and_show_error_if_duplicates(readName2fileIndex, argv, f.b, findex, flag_do_not_show_file_name);
-            if(f.b[0] != '@') { 
-                // This should be FASTA
+            if(!f.looksLikeFASTQHeader()) { 
                 while(f.getline()) {
-                    if(f.b[0] == '>') {
+                    if(f.looksLikeFASTAHeader()) {
                         number_of_sequences++;
 						add_read_name_and_show_error_if_duplicates(readName2fileIndex, argv, f.b, findex, flag_do_not_show_file_name);
                         number_of_nucleotides_in_read = 0;
@@ -423,7 +422,6 @@ void do_check_same_names(int argc, char** argv)
                     }
                 }
             } else {
-                // This is FASTQ
                 while(f.getline()) {
                     if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
                         long long n = number_of_nucleotides_in_read;
@@ -491,11 +489,10 @@ void create_index(const char* fname)
             INSERT_NAME_INTO_TABLE();
 			++sequence_count;
             size_t number_of_nucleotides_in_read = 0;
-            if(f.b[0] != '@') { 
-                // This should be FASTA
+            if(!f.looksLikeFASTQHeader()) { 
                 last_pos = f.tellg();
                 while(f.getline()) {
-                    if(f.b[0] == '>') {
+                    if(f.looksLikeFASTAHeader()) {
                         INSERT_NAME_INTO_TABLE();
 						++sequence_count;
                         number_of_nucleotides_in_read = 0;
@@ -504,7 +501,6 @@ void create_index(const char* fname)
                     }
                 }
             } else {
-                // This should be FASTQ
                 last_pos = f.tellg();
                 while(f.getline()) {
                     if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
@@ -852,7 +848,7 @@ void do_extract(int argc, char** argv)
                                 }
                             } else {
                                 while(f.getline()) {
-                                    if(f.b[0] == '>') break;
+                                    if(f.looksLikeFASTAHeader()) break;
                                     cout << f.b << "\n";
                                 }
                             }
@@ -892,7 +888,7 @@ void do_extract(int argc, char** argv)
                                         cerr << "WARNING: reached the end of file.\n";
                                         return;
                                     }
-                                    if(f.b[0] != '@') {
+                                    if(!f.looksLikeFASTQHeader()) {
                                         cerr << "ERROR: bad file format. The line does not start with '@' at pos " << line_start_pos << endl;
                                         return;
                                     }
@@ -906,7 +902,7 @@ void do_extract(int argc, char** argv)
                             }
                         } else {
                             while(f.getline()) {
-                                if(f.b[0] == '>') {
+                                if(f.looksLikeFASTAHeader()) {
                                     sequence_index++;
                                     if(param_end <= sequence_index)
                                         break;
@@ -937,10 +933,9 @@ void do_extract(int argc, char** argv)
                 }
                 if(current_read_has_been_taken) cout << f.b << endl;
                 if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(f.b));
-                if(f.b[0] != '@') { 
-                    // This should be FASTA
+                if(!f.looksLikeFASTQHeader()) { 
                     while(f.getline()) {
-                        if(f.b[0] == '>') {
+                        if(f.looksLikeFASTAHeader()) {
                             number_of_sequences++;
                             if(param_start == -1) {
                                 current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(f.b)) != 0) ^ flag_reverse_condition;
@@ -957,7 +952,6 @@ void do_extract(int argc, char** argv)
                         }
                     }
                 } else {
-                    // This is FASTQ
                     while(f.getline()) {
                         if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
                             long long n = number_of_nucleotides_in_read;
@@ -1014,7 +1008,7 @@ void do_guess_qv_type(int argc, char** argv)
         if(f.getline()) {
             number_of_sequences++;
             size_t number_of_nucleotides_in_read = 0;
-            if(f.b[0] != '@') { 
+            if(!f.looksLikeFASTQHeader()) { 
                 cerr << "ERROR: the input file '" << file_name << "' does not seem to be a FASTQ file at line " << f.getLineCount() << endl;
                 return;
             }
@@ -1086,7 +1080,7 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
     if(f.getline()) {
         number_of_sequences++;
         size_t number_of_nucleotides_in_read = 0;
-        if(f.b[0] != '@') { 
+        if(!f.looksLikeFASTQHeader()) { 
             // This should be FASTA
             if(!does_not_output_header) {
                 if(output_in_tsv) {
@@ -1105,7 +1099,7 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
             }
             OUTPUT_HEADER();
             while(f.getline()) {
-                if(f.b[0] == '>') {
+                if(f.looksLikeFASTAHeader()) {
                     number_of_sequences++;
                     number_of_nucleotides_in_read = 0;
                     cout << '\n';
@@ -1171,10 +1165,10 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
     if(f.getline()) {
         size_t number_of_nucleotides_in_output_line = 0;
         cout << f.b << '\n';
-        if(f.b[0] != '@') { 
+        if(!f.looksLikeFASTQHeader()) { 
             // This should be FASTA
             while(f.getline()) {
-                if(f.b[0] == '>') {
+                if(f.looksLikeFASTAHeader()) {
                     if(0 < number_of_nucleotides_in_output_line) {
                         cout << '\n';
                         number_of_nucleotides_in_output_line = 0;
@@ -1284,8 +1278,8 @@ void fastq_to_fasta(const char* file_name)
     }
     if(f.getline()) {
         size_t number_of_nucleotides_in_output_line = 0;
-        if(f.b[0] != '@') { 
-            if(f.b[0] == '>') {
+        if(!f.looksLikeFASTQHeader()) { 
+            if(f.looksLikeFASTAHeader()) {
                 cerr << "Input is already FASTA." << endl;
             } else {
                 cerr << "Input does not look like FASTA/FASTQ." << endl;
@@ -1350,7 +1344,7 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
     srand(time(NULL));
     if(f.getline()) {
         cout << f.b << '\n';
-        if(f.b[0] != '@') { 
+        if(!f.looksLikeFASTQHeader()) { 
             // This should be FASTA
             while(f.getline()) {
                 if(f.b[0] != '>') { clean_nucleotide_line(f.b, flag_process_n, char_change_into); }
