@@ -240,7 +240,7 @@ void calculate_n50_statistics(const char* fname,
             }
 		} else {
             while(f.getline()) {
-                if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                if(f.looksLikeFASTQSeparator()) { // EOS
                     long long n = length_as_scaffolds_wgap;
                     while(f.getline()) {
                         const size_t number_of_qvchars_in_line = strlen(f.b);
@@ -249,6 +249,7 @@ void calculate_n50_statistics(const char* fname,
                     }
                     f.expectHeaderOfEOF();
                     if(!f.getline()) break;
+                    f.registerHeaderLine();
                     length_of_scaffolds_wgap.push_back(length_as_scaffolds_wgap);
                     length_of_scaffolds_wogap.push_back(length_as_scaffolds_wogap);
                     length_as_scaffolds_wgap = 0;
@@ -308,7 +309,7 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
                 cout << number_of_nucleotides_in_read << "\n";
 		} else {
             while(f.getline()) {
-                if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                if(f.looksLikeFASTQSeparator()) {
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
                         const size_t number_of_qvchars_in_line = strlen(f.b);
@@ -317,6 +318,7 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
                     }
                     f.expectHeaderOfEOF();
                     if(!f.getline()) break;
+                    f.registerHeaderLine();
 					if(show_name)
                         output_read_name(f.b);
                     else
@@ -361,7 +363,7 @@ void count_number_of_reads_in_file(const char* fname)
             }
         } else {
             while(f.getline()) {
-                if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                if(f.looksLikeFASTQSeparator()) {
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
                         const size_t number_of_qvchars_in_line = strlen(f.b);
@@ -371,8 +373,8 @@ void count_number_of_reads_in_file(const char* fname)
                     f.expectHeaderOfEOF();
 					UPDATE_MIN_AND_MAX(number_of_nucleotides_in_read);
                     number_of_nucleotides_in_read = 0;
-                    if(!f.getline())
-                        break;
+                    if(!f.getline()) break;
+                    f.registerHeaderLine();
 					++number_of_sequences;
                 } else {
                     const size_t number_of_nucleotides_in_line = strlen(f.b);
@@ -462,7 +464,7 @@ void do_check_same_names(int argc, char** argv)
                 }
             } else {
                 while(f.getline()) {
-                    if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                    if(f.looksLikeFASTQSeparator()) {
                         long long n = number_of_nucleotides_in_read;
                         while(f.getline()) {
                             const size_t number_of_qvchars_in_line = strlen(f.b);
@@ -471,8 +473,8 @@ void do_check_same_names(int argc, char** argv)
                         }
                         f.expectHeaderOfEOF();
                         number_of_nucleotides_in_read = 0;
-                        if(!f.getline())
-                            break;
+                        if(!f.getline()) break;
+                        f.registerHeaderLine();
                         ++number_of_sequences;
 						add_read_name_and_show_error_if_duplicates(readName2fileIndex, argv, f.b, findex, flag_do_not_show_file_name);
                     } else {
@@ -540,7 +542,7 @@ void create_index(const char* fname)
             } else {
                 last_pos = f.tellg();
                 while(f.getline()) {
-                    if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                    if(f.looksLikeFASTQSeparator()) {
                         long long n = number_of_nucleotides_in_read;
                         while(f.getline()) {
                             const size_t number_of_qvchars_in_line = strlen(f.b);
@@ -550,6 +552,7 @@ void create_index(const char* fname)
                         f.expectHeaderOfEOF();
                         last_pos = f.tellg();
                         if(!f.getline()) break;
+                        f.registerHeaderLine();
                         INSERT_NAME_INTO_TABLE();
 						++sequence_count;
                         number_of_nucleotides_in_read = 0;
@@ -863,9 +866,10 @@ void do_extract(int argc, char** argv)
                             }
                             cout << f.b << "\n";
                             if(is_fastq) {
+                                f.registerHeaderLine();
                                 size_t number_of_nucleotides_in_read = 0;
                                 while(f.getline()) {
-                                    if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                                    if(f.looksLikeFASTQSeparator()) {
                                         long long n = number_of_nucleotides_in_read;
                                         cout << f.b << endl;
                                         while(f.getline()) {
@@ -904,9 +908,10 @@ void do_extract(int argc, char** argv)
                         }
                         cout << f.b << "\n";
                         if(is_fastq) {
+                            f.registerHeaderLine();
                             size_t number_of_nucleotides_in_read = 0;
                             while(f.getline()) {
-                                if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                                if(f.looksLikeFASTQSeparator()) {
                                     long long n = number_of_nucleotides_in_read;
                                     cout << f.b << endl;
                                     while(f.getline()) {
@@ -916,8 +921,7 @@ void do_extract(int argc, char** argv)
                                         if(n <= 0) break;
                                     }
                                     sequence_index++;
-                                    if(param_end <= sequence_index)
-                                        break;
+                                    if(param_end <= sequence_index) break;
                                     const long long line_start_pos = f.tellg();
                                     if(!f.getline()) {
                                         cerr << "WARNING: reached the end of file.\n";
@@ -939,8 +943,7 @@ void do_extract(int argc, char** argv)
                             while(f.getline()) {
                                 if(f.looksLikeFASTAHeader()) {
                                     sequence_index++;
-                                    if(param_end <= sequence_index)
-                                        break;
+                                    if(param_end <= sequence_index) break;
                                 }
                                 cout << f.b << "\n";
                             }
@@ -988,7 +991,7 @@ void do_extract(int argc, char** argv)
                     }
                 } else {
                     while(f.getline()) {
-                        if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                        if(f.looksLikeFASTQSeparator()) {
                             long long n = number_of_nucleotides_in_read;
                             if(current_read_has_been_taken) cout << f.b << endl;
                             while(f.getline()) {
@@ -999,8 +1002,8 @@ void do_extract(int argc, char** argv)
                             }
                             f.expectHeaderOfEOF();
                             number_of_nucleotides_in_read = 0;
-                            if(!f.getline())
-                                break;
+                            if(!f.getline()) break;
+                            f.registerHeaderLine();
                             ++number_of_sequences;
                             if(param_start == -1) {
                                 current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(f.b)) != 0) ^ flag_reverse_condition;
@@ -1046,7 +1049,7 @@ void do_guess_qv_type(int argc, char** argv)
                 return;
             }
             while(f.getline()) {
-                if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                if(f.looksLikeFASTQSeparator()) {
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
                         const size_t number_of_qvchars_in_line = strlen(f.b);
@@ -1056,8 +1059,8 @@ void do_guess_qv_type(int argc, char** argv)
                     }
                     f.expectHeaderOfEOF();
                     number_of_nucleotides_in_read = 0;
-                    if(!f.getline())
-                        break;
+                    if(!f.getline()) break;
+                    f.registerHeaderLine();
                     ++number_of_sequences;
                 } else {
                     const size_t number_of_nucleotides_in_line = strlen(f.b);
@@ -1152,7 +1155,7 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
             }
             OUTPUT_HEADER();
             while(f.getline()) {
-                if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                if(f.looksLikeFASTQSeparator()) {
                     cout << (output_in_tsv ? '\t' : ',') << '"';
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
@@ -1166,8 +1169,8 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
                     }
                     f.expectHeaderOfEOF();
                     number_of_nucleotides_in_read = 0;
-                    if(!f.getline())
-                        break;
+                    if(!f.getline()) break;
+                    f.registerHeaderLine();
                     cout << '"' << '\n';
                     OUTPUT_HEADER();
                     ++number_of_sequences;
@@ -1228,9 +1231,8 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
                 cout << '\n';
         } else {
             size_t number_of_nucleotides_in_read = 0;
-            // This is FASTQ
             while(f.getline()) {
-                if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+                if(f.looksLikeFASTQSeparator()) {
                     if(0 < number_of_nucleotides_in_output_line) {
                         cout << '\n';
                         number_of_nucleotides_in_output_line = 0;
@@ -1261,8 +1263,8 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
                     }
                     f.expectHeaderOfEOF();
                     number_of_nucleotides_in_read = 0;
-                    if(!f.getline())
-                        break;
+                    if(!f.getline()) break;
+                    f.registerHeaderLine();
                     if(0 < number_of_nucleotides_in_output_line) {
                         cout << '\n';
                         number_of_nucleotides_in_output_line = 0;
@@ -1290,8 +1292,7 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
                     }
                 }
             }
-            if(0 < number_of_nucleotides_in_output_line)
-                cout << '\n';
+            if(0 < number_of_nucleotides_in_output_line) cout << '\n';
         }
     }
 }
@@ -1318,7 +1319,7 @@ void fastq_to_fasta(const char* file_name)
         cout << f.b << '\n';
         size_t number_of_nucleotides_in_read = 0;
         while(f.getline()) {
-            if(f.b[0] == '+' && f.b[1] == '\0') { // EOS
+            if(f.looksLikeFASTQSeparator()) {
                 long long n = number_of_nucleotides_in_read;
                 while(f.getline()) {
                     const size_t number_of_qvchars_in_line = strlen(f.b);
@@ -1331,8 +1332,8 @@ void fastq_to_fasta(const char* file_name)
                     return;
                 }
                 number_of_nucleotides_in_read = 0;
-                if(!f.getline())
-                    break;
+                if(!f.getline()) break;
+                f.registerHeaderLine();
                 f.b[0] = '>';
                 cout << f.b << '\n';
             } else {
@@ -1379,9 +1380,8 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
             }
         } else {
             size_t number_of_nucleotides_in_read = 0;
-            // This is FASTQ
             while(f.getline()) {
-                if(f.looksLikeFASTQSeparator()) { // EOS
+                if(f.looksLikeFASTQSeparator()) {
 					cout << "+\n";
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
@@ -1392,10 +1392,9 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
                     }
                     f.expectHeaderOfEOF();
                     number_of_nucleotides_in_read = 0;
-                    if(!f.getline())
-                        break;
-                    cout << f.b << '\n';
+                    if(!f.getline()) break;
                     f.registerHeaderLine();
+                    cout << f.b << '\n';
                 } else {
                     const int number_of_chars_in_line = strlen(f.b);
                     number_of_nucleotides_in_read += number_of_chars_in_line;
