@@ -25,8 +25,6 @@
 
 using namespace std;
 
-static const size_t BUFFER_SIZE = 16 * 1024 * 1024u;
-
 struct CSVEscape
 {
 	const char* p;
@@ -81,8 +79,10 @@ static bool is_file_fastq(const char* fastq_file_name)
 class FileLineBufferWithAutoExpansion
 {
     ifstream ist;
+    vector<char> bufferForIFStream;
     string fileName;
-    static const size_t INITIAL_BUFFER_SIZE = 8192u;
+    static const size_t INITIAL_BUFFER_SIZE = 8 * 1024u;
+    static const size_t STREAM_BUFFER_SIZE = 16 * 1024u * 1024u;
     size_t currentBufferSize;
     size_t bufferOffsetToBeFill;
     size_t line_count; ///< 1-origin
@@ -111,12 +111,14 @@ public:
         currentBufferSize = INITIAL_BUFFER_SIZE;
         line_count = 0; // Just for safety
         headerID.reserve(INITIAL_BUFFER_SIZE);
+        bufferForIFStream.resize(STREAM_BUFFER_SIZE);
     }
     ~FileLineBufferWithAutoExpansion() {
         delete[] b;
     }
     bool open(const char* file_name) {
-        ist.open(file_name);
+        ist.rdbuf()->pubsetbuf(&*bufferForIFStream.begin(), bufferForIFStream.size());
+        ist.open(file_name, ios::binary);
         line_count = 0;
         fileName = file_name;
         return ist;
@@ -150,7 +152,7 @@ public:
         } while(true);
     }
     bool looksLikeFASTQHeader() const { return b[0] == '@'; }
-    bool looksLikeFASTAHeader() const { return b[0] == '@'; }
+    bool looksLikeFASTAHeader() const { return b[0] == '>'; }
     bool notFollowedByHeaderOrEOF() {
         if(ist.peek() == '@') return false;
         return !ist.eof();
