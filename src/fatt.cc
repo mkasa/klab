@@ -177,6 +177,7 @@ public:
                 headerID[i - 1u] = b[i];
             } else {
                 headerID.resize(i - 1);
+                break;
             }
         }
     }
