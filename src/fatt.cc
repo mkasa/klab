@@ -25,6 +25,14 @@
 
 using namespace std;
 
+#ifndef VERSION_STRING
+#define VERSION_STRING ""
+#endif
+void show_version()
+{
+    cout << "fatt version " << VERSION_STRING << endl;
+}
+
 struct CSVEscape
 {
 	const char* p;
@@ -1692,6 +1700,10 @@ void show_help(const char* subcommand)
 
 void dispatchByCommand(const string& commandString, int argc, char** argv)
 {
+    if(commandString == "--version") {
+        show_version();
+        return;
+    }
 	if(commandString == "count") {
 		do_count(argc, argv);
 		return;

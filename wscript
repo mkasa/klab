@@ -9,7 +9,7 @@ def options(opt):
 def configure(conf):
     conf.load(['compiler_c', 'compiler_cxx', 'python'])
     conf.check_python_version((2,4,2))
-    conf.env.append_unique('CXXFLAGS', ['-O2'])
+    conf.env.append_unique('CXXFLAGS', ['-O2', '-DVERSION_STRING=' + VERSION])
     conf.env.INCLUDES += '.'
     conf.env.LIB += ['pthread', 'dl']
 
