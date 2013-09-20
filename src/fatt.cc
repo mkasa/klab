@@ -1615,6 +1615,9 @@ void show_help(const char* subcommand)
         cerr << "--file\tSpecify a file in which you listed the read names. One line, one read.\n";
         cerr << "--stdin\tRead the list of read names from stdin. It may be useful when you combine with *NIX pipe.\n";
         cerr << "--reverse\tReverse the extracting condition. It is like -v option of grep.\n";
+        cerr << "--start\tSpecify the start index of reads to be output. 0-based, inclusive.\n";
+        cerr << "--end\tSpecify the end index of reads to be output. 0-based, exclusive.\n";
+        cerr << "--num\tSpecify the number of reads to be output.\n";
         return;
     }
     if(subcmd == "len") {
