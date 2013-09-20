@@ -1,10 +1,10 @@
 fatt
-====
+=====
 
 This tool manipulates FASTA/FASTQ files.
 
 extract
--------
+--------
 You can extract sequences with the specified names::
 
     fatt extract --seq chr1 foo.fastq > chr1.fastq
@@ -41,19 +41,19 @@ This feature might be useful especially for n-fold cross-validation. Alternative
 Note that --start and --end take 0-origin numbers.
 
 count
------
+------
 You can count the number of the sequences in each given file.
 
     fatt count foo.fastq
 
 name
-----
+-----
 You can output the name of the sequences in each given file.
 
     fatt name foo.fastq > foo.names.txt
 
 chksamename
------------
+------------
 You can get the name of the sequences that appear more than
 once in the given files. Note that it looks only names,
 so differnt sequences with the same name will also be reported.
@@ -64,13 +64,13 @@ When you find some duplicated sequences, you probably want to use 'fatt extract 
 to filter out the duplicated sequences.
 
 len
----
+----
 You can calculate the length of the sequences in given files.
 
     fatt len foo.fasta
 
 stat
-----
+-----
 You can show the statistics of input sequences by the following command.
 
     fatt stat foo.fasta foo2.fastq
@@ -85,7 +85,7 @@ In addition, you may use --json to output in JSON format.
     fatt stat --json foo.fasta
 
 index
------
+------
 It creates an index on the name of the sequences in each given file.
 Subsequent access may get faster if the file is very large and you
 retrieve only a few sequences.
@@ -100,14 +100,26 @@ This command accesses storage quite randomly, so avoid using remote file systems
 for performance where possible.
 
 guessqvtype
-----------
+------------
 There are several types of FASTQ formats. They differ in the base of Quality Value.
 This command takes FASTQ files and guesses the base of QV.
 
     fatt guessqvtype foo.fastq
 
+[A Wikipedia article about FASTQ
+(en)](http://en.wikipedia.org/wiki/FASTQ_format) explains variants of
+FASTQ formats.
+
+convertqv
+----------
+Convert FASTQ files into anothers with different QV base/range.
+This would help you convert old Solexa/Illumina FASTQ into a Sanger
+FASTQ file, or vice versa.
+
+    fatt convertqv --fromillumina --tosanger foo.fastq > foo.sanger.fastq
+
 tocsv
------
+------
 It converts input FASTA/FASTQ files into CSV files.
 
     fatt tocsv foo.fastq > foo.csv
@@ -119,7 +131,7 @@ If you like TSV instead of CSV, give --tsv.
 In the both cases, you can specify --noheader to suppress the header output.
 
 tofasta
--------
+--------
 It converts input FASTQ files into FASTA files.
 
     fatt tofastq foo.fastq > foo.fasta
@@ -127,7 +139,7 @@ It converts input FASTQ files into FASTA files.
 If the input is not in FASTQ format, it aborts with an error message.
 
 fold
-----
+-----
 If the sequences or the QVs are too long in a single line, you can fold at
 the specified length (70 chars by default).
 
@@ -138,11 +150,10 @@ Give --len=n to fold at n characters.
     fatt fold --len=50 foo_long_lines.fastq > foo_folded.fastq
 
 unfold
-------
+-------
 It collects nucleotide characters into a single line. Most Illumina reads are already in this format.
 
     fatt unfold foo.fastq > foo_unfolded.fastq
-
 
 help
 ----
