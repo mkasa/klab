@@ -1065,6 +1065,146 @@ void do_extract(int argc, char** argv)
     }
 }
 
+void do_convert_qv_type(int argc, char** argv)
+{
+    int param_from_base = 64;
+    int param_to_base = 33;
+    int param_out_qv_min = 0;
+    int param_out_qv_max = 40;
+    int param_in_qv_min = -5;
+    int param_in_qv_max = 99;
+
+    static struct option long_options[] = {
+        {"fromsanger",   no_argument, 0, 's'},
+        {"fromsolexa",   no_argument, 0, 'x'},
+        {"fromillumina", no_argument, 0, 'i'},
+        {"toillumina13", no_argument, 0, '3'},
+        {"toillumina15", no_argument, 0, '5'},
+        {"toillumina18", no_argument, 0, '8'},
+        {"tosanger",     no_argument, 0, 'q'},
+    	{"frombase", required_argument, 0, 'f'},
+    	{"tobase", required_argument, 0, 't'},
+    	{"min", required_argument, 0, 'a'},
+    	{"max", required_argument, 0, 'b'},
+    	{"inmin", required_argument, 0, 'c'},
+    	{"inmax", required_argument, 0, 'd'},
+        {0, 0, 0, 0} // end of long options
+    };
+
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+		case 'a':
+            param_out_qv_min = atoi(optarg);
+			break;
+        case 'b':
+            param_out_qv_max = atoi(optarg);
+            break;
+		case 'c':
+            param_in_qv_min = atoi(optarg);
+			break;
+        case 'd':
+            param_in_qv_max = atoi(optarg);
+            break;
+        case 'f':
+            param_from_base = atoi(optarg);
+            break;
+        case 't':
+            param_to_base = atoi(optarg);
+            break;
+        case 's':
+            param_from_base = 33;
+            break;
+        case 'i':
+            param_from_base = 64;
+            break;
+        case 'x':
+            param_from_base = 64;
+            param_in_qv_min = -5;
+            param_in_qv_max = 40;
+            break;
+        case '3':
+            param_to_base = 64;
+            param_out_qv_min = 0;
+            param_out_qv_max = 40;
+            break;
+        case '5':
+            param_to_base = 64;
+            param_out_qv_min = 3;
+            param_out_qv_max = 40;
+            break;
+        case '8':
+            param_to_base = 33;
+            param_out_qv_min = 0;
+            param_out_qv_max = 40;
+            break;
+        case 'q':
+            param_to_base = 33;
+            param_out_qv_min = 0;
+            param_out_qv_max = 40;
+            break;
+		}
+	}
+	if(param_in_qv_max < param_in_qv_min) {
+		cerr << "ERROR: Input QV range [" << param_in_qv_min << ", " << param_in_qv_max << ") is empty." << endl;
+		return;
+	}
+	if(param_out_qv_max < param_out_qv_min) {
+		cerr << "ERROR: Output QV range [" << param_out_qv_min << ", " << param_out_qv_max << ") is empty." << endl;
+		return;
+	}
+    cerr << "QV [" << param_in_qv_min << ", " << param_in_qv_max << "):base" << param_from_base << " ==> "
+            "QV [" << param_out_qv_min << ", " << param_out_qv_max << "):base" << param_to_base << endl;
+    for(int findex = optind + 1; findex < argc; ++findex) {
+        const char* file_name = argv[findex];
+        FileLineBufferWithAutoExpansion f;
+        if(!f.open(file_name)) {
+            cerr << "Cannot open '" << file_name << "'" << endl;
+            continue;
+        }
+        if(f.getline()) {
+            size_t number_of_nucleotides_in_read = 0;
+            if(!f.looksLikeFASTQHeader()) { 
+                cerr << "ERROR: the input file '" << file_name << "' does not seem to be a FASTQ file at line " << f.getLineCount() << endl;
+                return;
+            }
+            while(f.getline()) {
+                if(f.looksLikeFASTQSeparator()) {
+                    long long n = number_of_nucleotides_in_read;
+                    while(f.getline()) {
+                        const size_t number_of_qvchars_in_line = f.len();
+                        for(unsigned char* p = reinterpret_cast<unsigned char*>(f.b); *p; ++p) {
+                            int qv = *p - param_from_base;
+                            if(qv < param_in_qv_min || param_in_qv_max < qv) {
+                                cerr << "ERROR: the input file '" << file_name << "' contains an invalid QV (" << qv << "; chr = '" << *p << "'; ord = '" << int(*p) << "') at line " << f.getLineCount() << endl;
+                                return;
+                            }
+                            if(param_out_qv_max < qv) qv = param_out_qv_max;
+                            if(qv < param_out_qv_min) qv = param_out_qv_min;
+                            *p = param_to_base + qv;
+                        }
+                        cout << f.b << '\n';
+                        n -= number_of_qvchars_in_line;
+                        if(n <= 0) break;
+                    }
+                    f.expectHeaderOfEOF();
+                    number_of_nucleotides_in_read = 0;
+                    if(!f.getline()) break;
+                    f.registerHeaderLine();
+                } else {
+                    const size_t number_of_nucleotides_in_line = f.len();
+                    number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                }
+            }
+        }
+    }
+}
+
 void do_guess_qv_type(int argc, char** argv)
 {
     for(int findex = 2; findex < argc; ++findex) {
@@ -1645,6 +1785,25 @@ void show_help(const char* subcommand)
         cerr << "Currently, no options available.\n\n";
         return;
     }
+    if(subcmd == "convertqv") {
+        cerr << "Usage: fatt convertqv [options...] <FASTQ files>\n\n";
+        cerr << "Normal options:\n";
+        cerr << "\t--fromsolexa\tInput is Solexa FASTQ\n";
+        cerr << "\t--fromsanger\tInput is Sanger FASTQ\n";
+        cerr << "\t--fromillumina\tInput is Illumina FASTQ (of any types other than Illumina 1.8+, which is essentially Sanger FASTQ)\n";
+        cerr << "\t--toillumina13\tOutput is Illumina 1.3\n";
+        cerr << "\t--toillumina15\tOutput is Illumina 1.5\n";
+        cerr << "\t--toillumina18\tOutput is Illumina 1.8\n";
+        cerr << "\t--tosanger\tOutput is Sanger FASTQ (default)\n";
+        cerr << "\nCustom options:\n";
+        cerr << "\t--frombase\tSet the base of input (the ord of the character that corresponds to QV = 0)\n";
+        cerr << "\t--tobase\tSet the base of output (the ord of the character that corresponds to QV = 0)\n";
+        cerr << "\t--min d\tSet the minimum QV for output. When a QV is lower than d, it will be set to d.\n";
+        cerr << "\t--max d\tSet the maximum QV for output. When a QV is higher than d, it will be set to d.\n";
+        cerr << "\t--inmin d\tSet the minimum QV for input. When a QV in input is lower than d, print an error.\n";
+        cerr << "\t--inmax d\tSet the maximum QV for input. When a QV in input is higher than d, print an error.\n";
+        return;
+    }
     if(subcmd == "tocsv") {
         cerr << "Usage: fatt tocsv [options...] <FAST(A|Q) files>\n\n";
         cerr << "--noheader\tSuppress header output.\n";
@@ -1693,6 +1852,7 @@ void show_help(const char* subcommand)
     cerr << "\tindex\tcreate an index on read names\n";
     cerr << "\tclean\tconvert non-ACGT(N) characters to ACGT\n";
     cerr << "\tguessqvtype\tguess the type of FASTQ (Sanger/Illumina1.3/Illumina1.5/...)\n";
+    cerr << "\tconvertqv\tconvert into a different type of FASTQ (Sanger/Illumina1.3/Illumina1.5/...)\n";
     cerr << "\ttocsv\tconvert sequences into CSV format\n";
     cerr << "\tfold\tfold sequences\n";
     cerr << "\tunfold\tunfold sequences\n";
@@ -1737,6 +1897,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     }
     if(commandString == "guessqvtype") {
         do_guess_qv_type(argc, argv);
+        return;
+    }
+    if(commandString == "convertqv") {
+        do_convert_qv_type(argc, argv);
         return;
     }
     if(commandString == "tocsv") {
