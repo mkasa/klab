@@ -84,6 +84,22 @@ static bool is_file_fastq(const char* fastq_file_name)
     return true;
 }
 
+class CoutBuffering
+{
+    vector<char> buffer;
+public:
+    CoutBuffering(bool) {}
+    void setBufferSize(size_t size = 256 * 1024u * 1024u) {
+        if(isatty(fileno(stdin))) return; // No buffering if TTY.
+        buffer.resize(size);
+        cout.rdbuf()->pubsetbuf(&*buffer.begin(), buffer.size());
+        std::ios_base::sync_with_stdio(false);
+    }
+    CoutBuffering(size_t size = 256 * 1024u * 1024u) {
+        setBufferSize(size);
+    }
+};
+
 class FileLineBufferWithAutoExpansion
 {
     ifstream ist;
@@ -1173,8 +1189,10 @@ void do_convert_qv_type(int argc, char** argv)
                 cerr << "ERROR: the input file '" << file_name << "' does not seem to be a FASTQ file at line " << f.getLineCount() << endl;
                 return;
             }
+            cout << f.b << "\n";
             while(f.getline()) {
                 if(f.looksLikeFASTQSeparator()) {
+                    cout << f.b << "\n";
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
                         const size_t number_of_qvchars_in_line = f.len();
@@ -1196,9 +1214,11 @@ void do_convert_qv_type(int argc, char** argv)
                     number_of_nucleotides_in_read = 0;
                     if(!f.getline()) break;
                     f.registerHeaderLine();
+                    cout << f.b << "\n";
                 } else {
                     const size_t number_of_nucleotides_in_line = f.len();
                     number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                    cout << f.b << "\n";
                 }
             }
         }
@@ -1867,6 +1887,7 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
         show_version();
         return;
     }
+    CoutBuffering cb;
 	if(commandString == "count") {
 		do_count(argc, argv);
 		return;
