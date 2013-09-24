@@ -155,6 +155,15 @@ It collects nucleotide characters into a single line. Most Illumina reads are al
 
     fatt unfold foo.fastq > foo_unfolded.fastq
 
+composition
+------------
+It calculates all 1- to 3-mer frequencies in the given files.
+
+    fatt composition foo.fastq
+
+It recognizes 'A' and 'a' as different characters by default. To ignore
+cases, add '--ignorecase'.
+
 help
 ----
 You can see the description of a subcommand. For example, if you do not remember

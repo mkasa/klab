@@ -12,6 +12,8 @@
 #include <vector>
 #include <cstdlib>
 #include <ctime>
+#include <cctype>
+#include <iomanip>
 #include <map>
 #include <set>
 #include <cstdlib>
@@ -1603,6 +1605,144 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
     }
 }
 
+static char asterisk_if_nulchar(int i)
+{
+    if(i != 0) return i;
+    return '*';
+}
+
+void investigate_composition(const char* file_name, bool ignore_case, bool flag_only_monomer, bool flag_only_bimer, bool flag_only_trimer, bool flag_dapi_check)
+{
+    FileLineBufferWithAutoExpansion f;
+    if(!f.open(file_name)) {
+        cerr << "Cannot open '" << file_name << "'" << endl;
+        return;
+    }
+    // We will investigate 1-mer to 3-mer composition of the given input file.
+    // NOTE: the variables below are static only for avoiding stack overflow.
+    const size_t N = 256;
+    static size_t freq_1_mer[N];
+    static size_t freq_2_mer[N][N];
+    static size_t freq_3_mer[N][N][N];
+    memset(freq_1_mer, 0, sizeof(freq_1_mer));
+    memset(freq_2_mer, 0, sizeof(freq_2_mer));
+    memset(freq_3_mer, 0, sizeof(freq_3_mer));
+    if(f.getline()) {
+        const size_t LOOK_BEHIND_SIZE = 2;
+        char previousCharacters[LOOK_BEHIND_SIZE];
+        memset(previousCharacters, 0, sizeof(previousCharacters));
+        if(f.looksLikeFASTQHeader()) {
+            size_t number_of_nucleotides_in_read = 0;
+            while(f.getline()) {
+                if(f.looksLikeFASTQSeparator()) {
+                    long long n = number_of_nucleotides_in_read;
+                    while(f.getline()) {
+                        const size_t number_of_qvchars_in_line = f.len();
+                        n -= number_of_qvchars_in_line;
+                        if(n <= 0) break;
+                    }
+                    {
+                        const char c = 0;
+                        freq_1_mer[c]++;
+                        freq_2_mer[previousCharacters[0]][c]++;
+                        freq_3_mer[previousCharacters[1]][previousCharacters[0]][c]++;
+                        for(size_t j = 0; j < sizeof(previousCharacters) / sizeof(char); j++) previousCharacters[j] = 0;
+                    }
+                    f.expectHeaderOfEOF();
+                    number_of_nucleotides_in_read = 0;
+                    if(!f.getline()) break;
+                    f.registerHeaderLine();
+                } else {
+                    const int number_of_chars_in_line = f.len();
+                    number_of_nucleotides_in_read += number_of_chars_in_line;
+                    for(size_t i = 0; i < number_of_chars_in_line; i++) {
+                        const char c = ignore_case ? toupper(f.b[i]) : f.b[i];
+                        freq_1_mer[c]++;
+                        freq_2_mer[previousCharacters[0]][c]++;
+                        freq_3_mer[previousCharacters[1]][previousCharacters[0]][c]++;
+                        for(size_t j = sizeof(previousCharacters) / sizeof(char) - 1u; 0 < j; j--) previousCharacters[j] = previousCharacters[j - 1];
+                        previousCharacters[0] = c;
+                    }
+                }
+            }
+        } else {
+            while(f.getline()) {
+                if(f.looksLikeFASTAHeader()) {
+                    {
+                        const char c = 0;
+                        freq_1_mer[c]++;
+                        freq_2_mer[previousCharacters[0]][c]++;
+                        freq_3_mer[previousCharacters[1]][previousCharacters[0]][c]++;
+                        for(size_t j = 0; j < sizeof(previousCharacters) / sizeof(char); j++) previousCharacters[j] = 0;
+                    }
+                } else {
+                    const size_t number_of_chars_in_line = f.len();
+                    for(size_t i = 0; i < number_of_chars_in_line; i++) {
+                        const char c = ignore_case ? toupper(f.b[i]) : f.b[i];
+                        freq_1_mer[c]++;
+                        freq_2_mer[previousCharacters[0]][c]++;
+                        freq_3_mer[previousCharacters[1]][previousCharacters[0]][c]++;
+                        for(size_t j = sizeof(previousCharacters) / sizeof(char) - 1u; 0 < j; j--) previousCharacters[j] = previousCharacters[j - 1];
+                        previousCharacters[0] = c;
+                    }
+                }
+            }
+        }
+    }
+    // show the results
+    const size_t total_n_nmers = accumulate(freq_1_mer, freq_1_mer + sizeof(freq_1_mer) / sizeof(size_t), 0llu);
+    cout << "Total # n-mers\n\t" << total_n_nmers << "\n";
+    cout.setf(ios_base::fixed, ios_base::floatfield);
+    if(!flag_only_trimer && !flag_only_bimer && !flag_dapi_check) {
+        cout << "1-mer stats\n";
+        for(size_t i = 0; i < N; ++i) {
+            if(freq_1_mer[i] != 0) cout << "\t" << asterisk_if_nulchar(i) << "\t" << freq_1_mer[i] << "\t" << (double(freq_1_mer[i]) / total_n_nmers) << "\n";
+        }
+    }
+    if(!flag_only_trimer && !flag_only_monomer && !flag_dapi_check) {
+        cout << "2-mer stats\n";
+        for(size_t i = 0; i < N; ++i) {
+            for(size_t j = 0; j < N; ++j) {
+                if(freq_2_mer[i][j] != 0) cout << "\t" << asterisk_if_nulchar(i) << asterisk_if_nulchar(j) << "\t" << freq_2_mer[i][j] << "\t" << (double(freq_2_mer[i][j]) / total_n_nmers) << "\n";
+            }
+        }
+    }
+    if(!flag_only_monomer && !flag_only_bimer && !flag_dapi_check) {
+        cout << "3-mer stats\n";
+        for(size_t i = 0; i < N; ++i) {
+            for(size_t j = 0; j < N; ++j) {
+                for(size_t k = 0; k < N; ++k) {
+                    if(freq_3_mer[i][j][k] != 0) cout << "\t" << asterisk_if_nulchar(i) << asterisk_if_nulchar(j) << asterisk_if_nulchar(k) << "\t" << freq_3_mer[i][j][k] << "\t" << (double(freq_3_mer[i][j][k]) / total_n_nmers) << "\n";
+                }
+            }
+        }
+    }
+    if(flag_dapi_check) {
+        cout << "Stats for DAPI intensity\n";
+        const size_t sum_at = freq_1_mer['A'] + freq_1_mer['a'] + freq_1_mer['T'] + freq_1_mer['t'];
+        cout << "\tA/T\t" << sum_at << "\t" << (double(sum_at) / total_n_nmers) << "\n";
+        for(size_t i = 0; i < N; ++i) {
+            if(toupper(i) != 'A' && toupper(i) != 'T') continue;
+            for(size_t j = 0; j < N; ++j) {
+                if(toupper(j) != 'A' && toupper(j) != 'T') continue;
+                for(size_t k = 0; k < N; ++k) {
+                    if(toupper(k) != 'A' && toupper(k) != 'T') continue;
+                    if(isupper(i) && isupper(j) && isupper(k)) continue;
+                    freq_3_mer[toupper(i)][toupper(j)][toupper(k)] += freq_3_mer[i][j][k];
+                }
+            }
+        }
+        const size_t freq_AAA = freq_3_mer['A']['A']['A'] + freq_3_mer['T']['T']['T'];
+        const size_t freq_AAT = freq_3_mer['A']['A']['T'] + freq_3_mer['A']['T']['T'];
+        const size_t freq_ATA = freq_3_mer['A']['T']['A'] + freq_3_mer['T']['A']['T'];
+        const size_t freq_TTA = freq_3_mer['T']['T']['A'] + freq_3_mer['T']['A']['A'];
+        cout << "\tAAA\t" << freq_AAA << "\t" << (double(freq_AAA) / total_n_nmers) << "\n";
+        cout << "\tAAT\t" << freq_AAT << "\t" << (double(freq_AAT) / total_n_nmers) << "\n";
+        cout << "\tATA\t" << freq_ATA << "\t" << (double(freq_ATA) / total_n_nmers) << "\n";
+        cout << "\tTTA\t" << freq_TTA << "\t" << (double(freq_TTA) / total_n_nmers) << "\n";
+    }
+}
+
 void do_to_csv(int argc, char** argv)
 {
     static struct option long_options[] = {
@@ -1741,6 +1881,51 @@ void do_clean(int argc, char** argv)
     }
 }
 
+void do_composition(int argc, char** argv)
+{
+    bool flag_ignore_case  = false;
+    bool flag_only_monomer = false;
+    bool flag_only_bimer   = false;
+    bool flag_only_trimer  = false;
+    bool flag_dapi_check   = false;
+    static struct option long_options[] = {
+        {"ignorecase", no_argument, 0, 'i'},
+        {"monomer", no_argument, 0, '1'},
+        {"bimer", no_argument, 0, '2'},
+        {"trimer", no_argument, 0, '3'},
+        {"dapicheck", no_argument, 0, 'd'},
+        {0, 0, 0, 0} // end of long options
+    };
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+		case 'i':
+            flag_ignore_case = true;
+			break;
+        case '1':
+            flag_only_monomer = true;
+            break;
+        case '2':
+            flag_only_bimer = true;
+            break;
+        case '3':
+            flag_only_trimer = true;
+            break;
+        case 'd':
+            flag_dapi_check = true;
+            break;
+        }
+    }
+    for(int i = optind + 1; i < argc; ++i) {
+        investigate_composition(argv[i], flag_ignore_case, flag_only_monomer, flag_only_bimer, flag_only_trimer, flag_dapi_check);
+    }
+}
+
 void show_usage()
 {
     cerr << "Usage: fatt <command> [options...]" << endl;
@@ -1856,6 +2041,15 @@ void show_help(const char* subcommand)
         cerr << "--random\tChange into A/C/G/T randomly\n";
         return;
     }
+    if(subcmd == "compisition") {
+        cerr << "Usage: fatt composition [options...] <FAST(A|Q) files>\n\n";
+        cerr << "--ignorecase\tIgnore case ('A' and 'a' will be considered as identical)\n";
+        cerr << "--monomer\tShow only monomers\n";
+        cerr << "--bimer\tShow only bimers\n";
+        cerr << "--trimer\tShow only trimers\n";
+        cerr << "--dapicheck\tShow DAPI-staining related stats\n";
+        return;
+    }
     if(subcmd == "help") {
         cerr << "Uh? No detailed help for help.\n";
         cerr << "Read the manual, or ask the author.\n";
@@ -1942,6 +2136,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     }
     if(commandString == "clean") {
         do_clean(argc, argv);
+        return;
+    }
+    if(commandString == "composition") {
+        do_composition(argc, argv);
         return;
     }
     // Help or error.
