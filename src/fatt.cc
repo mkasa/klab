@@ -652,15 +652,15 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
         n50_length = lengths[sequence_index];
         n50_sequence_index = sequence_index;
         const size_t n70_total_length = (size_t)((total_length + 1ull) * 0.7); 
-        for(sequence_index = 0; sum < n70_total_length && sequence_index < lengths.size(); sequence_index++) sum += lengths[sequence_index];
+        for(sum = 0, sequence_index = 0; sum < n70_total_length && sequence_index < lengths.size(); sequence_index++) sum += lengths[sequence_index];
         n70_length = lengths[sequence_index];
         n70_sequence_index = sequence_index;
         const size_t n80_total_length = (size_t)((total_length + 1ull) * 0.8); 
-        for(sequence_index = 0; sum < n80_total_length && sequence_index < lengths.size(); sequence_index++) sum += lengths[sequence_index];
+        for(sum = 0, sequence_index = 0; sum < n80_total_length && sequence_index < lengths.size(); sequence_index++) sum += lengths[sequence_index];
         n80_length = lengths[sequence_index];
         n80_sequence_index = sequence_index;
         const size_t n90_total_length = (size_t)((total_length + 1ull) * 0.9);
-        for(sequence_index = 0; sum < n90_total_length && sequence_index < lengths.size(); sequence_index++) sum += lengths[sequence_index];
+        for(sum = 0, sequence_index = 0; sum < n90_total_length && sequence_index < lengths.size(); sequence_index++) sum += lengths[sequence_index];
         n90_length = lengths[sequence_index];
         n90_sequence_index = sequence_index;
 
