@@ -644,7 +644,32 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
     size_t max_length = 0;
     size_t min_length = 0;
     size_t avg_length = 0;
-    if(!lengths.empty()) {
+    if(total_length < 1){
+      if(flag_html) { // anyway wrong input
+        cout << "<tr><td></td><td>size (bp)</td><td>number</td></tr>\n";
+        cout << "<tr><td>max</td><td>" << 0 << "</td><td>1</td></tr>\n";
+        cout << "<tr><td>N50</td><td>" << 0 << "</td><td>" << (0) << "</td></tr>\n";
+        cout << "<tr><td>min</td><td>" << 0 << "</td><td>" << lengths.size() << "</td></tr>\n";
+        cout << "<tr><td>avg</td><td>" << 0 << "</td><td></td></tr>\n";
+      } else if(flag_json) {// wrong value but should be processible?
+        cout << "{\"total_length\": " << total_length;
+        cout << ",\"count\": " << lengths.size();
+        cout << ",\"max_length\": " << max_length;
+        cout << ",\"n50\": " << 0 << ",\"n50num\": " << (0);
+        cout << ",\"n70\": " << 0 << ",\"n70num\": " << (0);
+        cout << ",\"n80\": " << 0 << ",\"n80num\": " << (0);
+        cout << ",\"n90\": " << 0 << ",\"n90num\": " << (0);
+        cout << ",\"avg\": " << avg_length;
+        cout << ",\"min\": " << min_length;
+        cout << "}";
+      } else {  // assume human process
+        cout << "Total # of bases = " << total_length << "\n";
+        cout << "# of scaffolds = " << lengths.size() << "\n";
+        cout << "Possible Input error!\n";
+      }
+      return;
+    }
+    { // lengths cannot be empty when total_length >= 1;
         size_t sequence_index;
         size_t sum = 0;
         const size_t n50_total_length = (size_t)((total_length + 1ull) * 0.5);
