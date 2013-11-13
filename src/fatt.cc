@@ -550,12 +550,20 @@ struct DeleteOnFailure {
 	}
 };
 
-void create_index(const char* fname)
+void create_index(const char* fname, bool flag_force)
 {
     const string index_file_name = get_index_file_name(fname);
     if(doesIndexExist(fname)) {
         cerr << "'" << index_file_name << "' already exists!" << endl;
-        return;
+        if(flag_force) {
+            cerr << "However, --force flag is given, so we remove it first." << endl;
+            if(unlink(index_file_name.c_str()) != 0) {
+                cerr << "Could not delete '" << index_file_name << "'. Abort." << endl;
+                return;
+            }
+        } else {
+            return;
+        }
     }
     cerr << "Creating index" << flush;
     try {
@@ -797,8 +805,26 @@ void do_stat(int argc, char** argv)
 
 void do_index(int argc, char** argv)
 {
-	for(int i = 2; i < argc; ++i) {
-		create_index(argv[i]);
+    bool flag_force = false;
+    static struct option long_options[] = {
+        {"force", no_argument , 0, 'f'},
+        {0, 0, 0, 0} // end of long options
+    };
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+		case 'f':
+            flag_force = true;
+			break;
+        }
+	}
+	for(int i = optind + 1; i < argc; ++i) {
+		create_index(argv[i], flag_force);
 	}
 }
 
@@ -809,12 +835,14 @@ void do_extract(int argc, char** argv)
     bool flag_output_unique = false;
 	bool flag_noindex = false;
 	bool flag_index = false;
+    bool flag_force = false;
 	long long param_start = -1;
 	long long param_end = -1;
 	long long param_num = -1;
 
     static struct option long_options[] = {
         {"reverse", no_argument , 0, 'r'},
+        {"force", no_argument , 0, 'F'},
         {"seq", required_argument, 0, 's'},
         {"file", required_argument, 0, 'f'},
         {"stdin", no_argument, 0, 'c'},
@@ -838,6 +866,9 @@ void do_extract(int argc, char** argv)
 		case 0:
 			// you can see long_options[option_index].name/flag and optarg (null if no argument).
 			break;
+        case 'F':
+            flag_force = true;
+            break;
 		case 'r':
             flag_reverse_condition = true;
 			break;
@@ -915,7 +946,7 @@ void do_extract(int argc, char** argv)
     for(int findex = optind + 1; findex < argc; ++findex) {
         const char* file_name = argv[findex];
 		if(flag_index && !doesIndexExist(file_name)) {
-			create_index(file_name);
+			create_index(file_name, flag_force);
 		}
 		const bool use_index = (flag_index || (!flag_noindex && doesIndexExist(file_name))) && !flag_reverse_condition;
         FileLineBufferWithAutoExpansion f;
@@ -2530,6 +2561,7 @@ void show_help(const char* subcommand)
         cerr << "--start\tSpecify the start index of reads to be output. 0-based, inclusive.\n";
         cerr << "--end\tSpecify the end index of reads to be output. 0-based, exclusive.\n";
         cerr << "--num\tSpecify the number of reads to be output.\n";
+        cerr << "--force\tForce on error.\n";
         return;
     }
     if(subcmd == "len") {
@@ -2546,7 +2578,7 @@ void show_help(const char* subcommand)
     }
     if(subcmd == "index") {
         cerr << "Usage: fatt index [options...] <FAST(A|Q) files>\n\n";
-        cerr << "Currently, no options available.\n\n";
+        cerr << "--force\tRemove an existing index if any.\n\n";
         cerr << "It creates an index on the name of the sequences in each given file.\n";
         cerr << "Subsequent access may get faster if the file is very large and you\n";
         cerr << "retrieve only a few sequences.\n";
