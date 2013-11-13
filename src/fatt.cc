@@ -2775,10 +2775,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     if(commandString != "help") {
         cerr << "ERROR: Unknown command '" << commandString << "'" << endl;
     }
-	if(argc < 3) {
-    	show_help("");
-	} else {
+	if(commandString == "help" && 3 <= argc) {
 		show_help(argv[2]);
+	} else {
+    	show_help("");
 	}
 }
 
