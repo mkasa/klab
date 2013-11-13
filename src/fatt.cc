@@ -2124,7 +2124,7 @@ public:
             ops.push_back(OrderPreservedSequence(cit->second.file_position, &(cit->second)));
         }
         sort(ops.begin(), ops.end());
-        if(is_file_fastq) {
+        if(is_fastq) {
             for(size_t i = 0; i < ops.size(); i++) {
                 const Sequence& s = *(ops[i].second);
                 ost << '@' << s.name;
@@ -2152,7 +2152,7 @@ public:
             return false;
         }
         const Sequence& s = sequences[sequence_name];
-        if(is_file_fastq) {
+        if(is_fastq) {
             ost << '@' << s.name;
             if(!s.description.empty()) ost << ' ' << s.description;
             ost << '\n' << s.sequence << "\n+\n" << s.qv << '\n';
@@ -2175,6 +2175,14 @@ public:
             cerr << "Could not open file '" << sequence_file_name << "'" << endl; return false;
         }
         const bool is_fastq = is_file_fastq(sequence_file_name.c_str());
+        if(has_file_type_determined) {
+            if(this->is_fastq != is_fastq) {
+                cerr << "You cannot mix both FASTA/FASTQ files." << endl; return false;
+            }
+        } else {
+            this->is_fastq = is_fastq;
+            has_file_type_determined = true;
+        }
         if(is_verbose) { cerr << "MODE: " << (is_fastq ? "fastq" : "fasta") << endl; }
         const string index_file_name = get_index_file_name(sequence_file_name.c_str());
         try {
@@ -2184,14 +2192,16 @@ public:
             if(stmt.Next()) {
                 const long long pos = stmt.GetField(0);
                 f.seekg(pos);
-                if(f.fail() || !f.getline()) {
-                    cerr << "'" << sequence_name << "' is missing in the file. Maybe the index is old?\n"; return false;
+                if(is_verbose) { cerr << "SEEK to " << pos << endl; }
+                if(f.fail()) {
+                    cerr << "'" << sequence_name << "' is missing in the file. The file is too small. Maybe the index is old?\n"; return false;
                 }
-                vector<char> current_sequence, current_qv;
                 if(!f.getline()) {
-                    cerr << "We could not find a sequence at the position in the database. Maybe the index is old?\n"; return true;
+                    cerr << "'" << sequence_name << "' is missing in the file. The header is not as expected. Maybe the index is old?\n"; return false;
                 }
                 f.registerHeaderLineWithDesc();
+                vector<char> current_sequence, current_qv;
+                if(is_verbose) { cerr << "HEADER: " << f.b << endl; }
                 if(is_fastq) {
                     size_t number_of_nucleotides_in_read = 0;
                     while(f.getline()) {
