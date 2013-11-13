@@ -50,6 +50,14 @@ static ostream& operator << (ostream& os, const CSVEscape& c)
 	return os;
 }
 
+static ostream& operator << (ostream& os, const vector<char>& v)
+{
+    for(size_t i = 0; i < v.size(); i++) {
+        os << v[i];
+    }
+	return os;
+}
+
 static size_t strlen_without_n(const char * p)
 {
     size_t retval = 0;
@@ -113,6 +121,7 @@ class FileLineBufferWithAutoExpansion
     size_t bufferOffsetToBeFill;
     size_t line_count; ///< 1-origin
     vector<char> headerID;
+    vector<char> headerIDwithDesc;
     bool isFASTAMode;
     bool isFASTQMode;
 
@@ -208,6 +217,18 @@ public:
                 break;
             }
         }
+    }
+    void registerHeaderLineWithDesc() {
+        registerHeaderLine();
+        headerIDwithDesc.assign(b, b + len());
+    }
+    string getSequenceName() const {
+        return string(headerID.begin(), headerID.end());
+    }
+    string getSequenceDescription() const {
+        const vector<char>::const_iterator p = find(headerIDwithDesc.begin(), headerIDwithDesc.end(), ' ');
+        const vector<char>::const_iterator st = p == headerIDwithDesc.end() ? headerIDwithDesc.end() : p + 1;
+        return string(st, headerIDwithDesc.end());
     }
     bool looksLikeFASTQSeparator() const {
         if(b[0] != '+') return false;
@@ -1926,6 +1947,552 @@ void do_composition(int argc, char** argv)
     }
 }
 
+struct Sequence {
+    size_t file_position;
+    string name;
+    string description;
+    vector<char> sequence;
+    vector<char> qv;
+    Sequence() {}
+    Sequence(size_t file_position, string name, string description, const vector<char>& sequence) : file_position(file_position), name(name), description(description), sequence(sequence) {}
+    Sequence(size_t file_position, string name, string description, const vector<char>& sequence, const vector<char>& qv) : file_position(file_position), name(name), description(description), sequence(sequence), qv(qv) {}
+    inline bool operator < (const Sequence& b) const {
+        return name < b.name;
+    }
+};
+
+class GenomeEditScript {
+    bool is_fastq;
+    bool has_file_type_determined;
+    bool is_verbose;
+    typedef map<string, Sequence> SequenceMap;
+    SequenceMap sequences;
+
+    static const size_t FOLD_WITH_THIS_SIZE = 70u;
+
+    string trim(const string& s) {
+        string::size_type f = s.find_first_not_of(" \t");
+        if(f == string::npos) f = 0;
+        string::size_type l = s.find_last_not_of(" \t");
+        if(l == string::npos) l = s.size();
+        return s.substr(f, l - f + 1);
+    }
+    vector<string> split(const string& s) {
+        vector<string> retval;
+        string::size_type i = 0;
+        while(i < s.size()) {
+            string::size_type j = s.find_first_of(" \t", i);
+            if(j == string::npos) {
+                retval.push_back(s.substr(i));
+                break;
+            }
+            retval.push_back(s.substr(i, j - i));
+            if(s.size() <= j + 1) break;
+            string::size_type k = s.find_first_not_of(" \t", j + 1);
+            if(k == string::npos) break; // I think this never happens because s is already trimmed.
+            i = k;
+        }
+        return retval;
+    }
+public:
+    bool loadEntireSeq(const char* seq_file_name) {
+        FileLineBufferWithAutoExpansion f;
+        if(!f.open(seq_file_name)) {
+            cerr << "Cannot open '" << seq_file_name << "'" << endl;
+            return false;
+        }
+        string current_read_name_and_description;
+        if(f.getline()) {
+            f.registerHeaderLineWithDesc();
+            vector<char> current_sequence;
+            current_sequence.reserve(64 * 1024);
+            if(!f.looksLikeFASTQHeader()) { 
+                // This should be FASTA
+                if(has_file_type_determined) {
+                    if(is_fastq) {
+                        cerr << "ERROR: The file '" << seq_file_name << "' looks like a FASTA file, but the previous file(s) is in FASTQ format.\n";
+                        cerr << "       You cannot mix both the formats.\n";
+                        return false;
+                    }
+                } else {
+                    is_fastq = false;
+                }
+                while(f.getline()) {
+                    if(f.looksLikeFASTAHeader()) {
+                        const string sequence_name = f.getSequenceName();
+                        sequences[sequence_name] = Sequence(f.getLineCount(), sequence_name, f.getSequenceDescription(), current_sequence);
+                        current_sequence.resize(0);
+                        f.registerHeaderLineWithDesc();
+                    } else {
+                        const int number_of_chars_in_line = f.len();
+                        current_sequence.insert(current_sequence.end(), f.b, f.b + f.len());
+                    }
+                }
+                const string sequence_name = f.getSequenceName();
+                sequences[sequence_name] = Sequence(f.getLineCount(), sequence_name, f.getSequenceDescription(), current_sequence);
+            } else {
+                if(has_file_type_determined) {
+                    if(!is_fastq) {
+                        cerr << "ERROR: The file '" << seq_file_name << "' looks like a FASTQ file, but the previous file(s) is in FASTA format.\n";
+                        cerr << "       You cannot mix both the formats.\n";
+                        return false;
+                    }
+                } else {
+                    is_fastq = true;
+                }
+                vector<char> current_qv;
+                current_qv.reserve(64 * 1024);
+                while(f.getline()) {
+                    if(f.looksLikeFASTQSeparator()) {
+                        long long n = current_sequence.size();
+                        while(f.getline()) {
+                            const size_t number_of_qvchars_in_line = f.len();
+                            current_qv.insert(current_qv.end(), f.b, f.b + number_of_qvchars_in_line);
+                            n -= number_of_qvchars_in_line;
+                            if(n <= 0) break;
+                        }
+                        f.expectHeaderOfEOF();
+                        {
+                            const string sequence_name = f.getSequenceName();
+                            sequences[sequence_name] = Sequence(f.getLineCount(), sequence_name, f.getSequenceDescription(), current_sequence, current_qv);
+                            current_sequence.resize(0);
+                            current_qv.resize(0);
+                        }
+                        if(!f.getline()) break;
+                        f.registerHeaderLineWithDesc();
+                    } else {
+                        const int number_of_chars_in_line = f.len();
+                        current_sequence.insert(current_sequence.end(), f.b, f.b + number_of_chars_in_line);
+                    }
+                }
+            }
+        }
+        return true;
+    }
+    ostream& output_with_fold(ostream& os, const vector<char>& s) {
+        size_t cursor = 0;
+        while(cursor < s.size()) {
+            const size_t len = std::min<size_t>(FOLD_WITH_THIS_SIZE, s.size() - cursor);
+            for(size_t i = 0; i < len; i++) os << s[cursor + i];
+            os << '\n';
+            cursor += len;
+        }
+        return os;
+    }
+    typedef pair<size_t, const Sequence *> OrderPreservedSequence;
+    bool saveEntireSeq(const char* sequence_file_name) {
+        ofstream ost(sequence_file_name);
+        if(!ost) {
+            cerr << "Could not open file '" << sequence_file_name << "'" << endl;
+            return false;
+        }
+        vector<OrderPreservedSequence> ops;
+        for(SequenceMap::const_iterator cit = sequences.begin(); cit != sequences.end(); ++cit) {
+            ops.push_back(OrderPreservedSequence(cit->second.file_position, &(cit->second)));
+        }
+        sort(ops.begin(), ops.end());
+        if(is_file_fastq) {
+            for(size_t i = 0; i < ops.size(); i++) {
+                const Sequence& s = *(ops[i].second);
+                ost << '@' << s.name;
+                if(!s.description.empty()) ost << ' ' << s.description;
+                ost << '\n' << s.sequence << "\n+\n" << s.qv << '\n';
+            }
+        } else {
+            for(size_t i = 0; i < ops.size(); i++) {
+                const Sequence& s = *(ops[i].second);
+                ost << '>' << s.name;
+                if(!s.description.empty()) ost << ' ' << s.description;
+                ost << '\n';
+                output_with_fold(ost, s.sequence);
+            }
+        }
+        return true;
+    }
+    bool saveOneSeq(const string& sequence_file_name, const string& sequence_name) {
+        if(sequences.count(sequence_name) == 0) {
+            cerr << "Could not find a sequence '" << sequence_name << "'\n"; return false;
+        }
+        ofstream ost(sequence_file_name.c_str());
+        if(!ost) {
+            cerr << "Could not open file '" << sequence_file_name << "'" << endl;
+            return false;
+        }
+        const Sequence& s = sequences[sequence_name];
+        if(is_file_fastq) {
+            ost << '@' << s.name;
+            if(!s.description.empty()) ost << ' ' << s.description;
+            ost << '\n' << s.sequence << "\n+\n" << s.qv << '\n';
+        } else {
+            ost << '>' << s.name;
+            if(!s.description.empty()) ost << ' ' << s.description;
+            ost << '\n';
+        }
+        return true;
+    }
+    bool loadOneSeq(const string& sequence_file_name, const string& sequence_name) {
+        if(sequences.count(sequence_name)) {
+            cerr << "There is already a sequence '" << sequence_name << "'\n"; return false;
+        }
+        if(!doesIndexExist(sequence_file_name.c_str())) {
+            cerr << "You have to create the index of '" << sequence_file_name << "' first.\n"; return false;
+        }
+        FileLineBufferWithAutoExpansion f;
+        if(!f.open(sequence_file_name.c_str())) {
+            cerr << "Could not open file '" << sequence_file_name << "'" << endl; return false;
+        }
+        const bool is_fastq = is_file_fastq(sequence_file_name.c_str());
+        if(is_verbose) { cerr << "MODE: " << (is_fastq ? "fastq" : "fasta") << endl; }
+        const string index_file_name = get_index_file_name(sequence_file_name.c_str());
+        try {
+            sqdb::Db db(index_file_name.c_str());
+            sqdb::Statement stmt = db.Query("select pos from seqpos where name=?");
+            stmt.Bind(1, sequence_name);
+            if(stmt.Next()) {
+                const long long pos = stmt.GetField(0);
+                f.seekg(pos);
+                if(f.fail() || !f.getline()) {
+                    cerr << "'" << sequence_name << "' is missing in the file. Maybe the index is old?\n"; return false;
+                }
+                vector<char> current_sequence, current_qv;
+                if(!f.getline()) {
+                    cerr << "We could not find a sequence at the position in the database. Maybe the index is old?\n"; return true;
+                }
+                f.registerHeaderLineWithDesc();
+                if(is_fastq) {
+                    size_t number_of_nucleotides_in_read = 0;
+                    while(f.getline()) {
+                        if(f.looksLikeFASTQSeparator()) {
+                            long long n = current_sequence.size();
+                            while(f.getline()) {
+                                const size_t number_of_qvchars_in_line = f.len();
+                                current_qv.insert(current_qv.end(), f.b, f.b + number_of_qvchars_in_line);
+                                n -= number_of_qvchars_in_line;
+                                if(n <= 0) break;
+                            }
+                            sequences[f.getSequenceName()] = Sequence(f.getLineCount(), f.getSequenceName(), f.getSequenceDescription(), current_sequence, current_qv);
+                            break;
+                        } else {
+                            current_sequence.insert(current_sequence.end(), f.b, f.b + f.len());
+                        }
+                    }
+                } else {
+                    while(f.getline()) {
+                        if(f.looksLikeFASTAHeader()) break;
+                        current_sequence.insert(current_sequence.end(), f.b, f.b + f.len());
+                    }
+                    sequences[f.getSequenceName()] = Sequence(f.getLineCount(), f.getSequenceName(), f.getSequenceDescription(), current_sequence);
+                }
+            } else {
+                cerr << "'" << sequence_name << "' was not found.\n"; return false;
+            }
+        } catch (const sqdb::Exception& e) {
+            cerr << "ERROR: database error. " << e.GetErrorMsg() << endl;
+            return false;
+        }
+        return true;
+    }
+    bool renameSequence(const string& old_name, const string& new_name) {
+        if(sequences.count(old_name) == 0) {
+            cerr << "Could not find a sequence '" << old_name << "', which you tried to rename into '" << new_name << "'\n"; return false;
+        }
+        if(sequences.count(new_name)) {
+            cerr << "There is already a sequence '" << new_name << "', to which you tried to rename a sequence '" << old_name << "'\n"; return false;
+        }
+        sequences[new_name] = sequences[old_name];
+        sequences[new_name].name = new_name;
+        sequences.erase(sequences.find(old_name));
+        return true;
+    }
+    bool duplicateSequence(const string& old_name, const string& new_name) {
+        if(sequences.count(old_name) == 0) {
+            cerr << "Could not find a sequence '" << old_name << "', which you tried to duplicate to '" << new_name << "'\n"; return false;
+        }
+        if(sequences.count(new_name)) {
+            cerr << "There is already a sequence '" << new_name << "', to which you tried to duplicate a sequence '" << old_name << "'\n"; return false;
+        }
+        sequences[new_name] = sequences[old_name];
+        return true;
+    }
+    bool setSequenceDescription(const vector<string>& subargs) {
+        const string& seq_name = subargs.front();
+        if(sequences.count(seq_name) == 0) {
+            cerr << "Could not find a sequence '" << seq_name << "'\n"; return false;
+        }
+        string desc;
+        for(size_t i = 1; i < subargs.size(); i++) {
+            if(1 < i) desc += ' ';
+            desc += subargs[i];
+        }
+        sequences[seq_name].description = desc;
+        return true;
+    }
+    bool splitSequence(const string& seq_name, const string& split_position_str, const string& left_seq_name, const string& right_seq_name) {
+        if(sequences.count(seq_name) == 0) {
+            cerr << "Could not find a sequence '" << seq_name << "'\n"; return false;
+        }
+        if(sequences.count(left_seq_name)) {
+            cerr << "There is already a sequence '" << left_seq_name << "'\n"; return false;
+        }
+        if(sequences.count(right_seq_name)) {
+            cerr << "There is already a sequence '" << right_seq_name << "'\n"; return false;
+        }
+        const long long pos = atoll(split_position_str.c_str());
+        Sequence& orig_seq = sequences[seq_name];
+        if(pos < 0 || orig_seq.sequence.size() < pos) {
+            cerr << "Sequence '" << seq_name << "' was " << orig_seq.sequence.size() << " bp in length, but you tried to split it at " << pos << " bp, which is out of range" << endl; return false;
+        }
+        Sequence& left_seq = sequences[left_seq_name];
+        Sequence& right_seq = sequences[right_seq_name];
+        left_seq.file_position = orig_seq.file_position;
+        right_seq.file_position = orig_seq.file_position + 1;
+        left_seq.name = left_seq_name;
+        right_seq.name = right_seq_name;
+        left_seq.sequence.assign(orig_seq.sequence.begin(), orig_seq.sequence.begin() + pos);
+        right_seq.sequence.assign(orig_seq.sequence.begin() + pos, orig_seq.sequence.end());
+        if(!orig_seq.qv.empty()) {
+            left_seq.qv.assign(orig_seq.qv.begin(), orig_seq.qv.begin() + pos);
+            right_seq.qv.assign(orig_seq.qv.begin() + pos, orig_seq.qv.end());
+        }
+        return true;
+    }
+    void printSequence(const vector<string>& subargs) {
+        const string& seq_name = subargs[0];
+        if(sequences.count(seq_name) == 0) {
+            cerr << "Could not find a sequence '" << seq_name << "'\n"; return;
+        }
+        const Sequence& s = sequences[seq_name];
+        const long long start_pos = subargs.size() <= 1 ? 0ull : atoll(subargs[1].c_str());
+        const long long end_pos = subargs.size() <= 2 ? s.sequence.size() : atoll(subargs[2].c_str());
+        if(start_pos < 0 || s.sequence.size() < start_pos) {
+            cerr << "Start position (" << start_pos << " bp; 0-origin, inclusive) is out of range. The length of the sequence '" << seq_name << "' is " << s.sequence.size() << endl; return;
+        }
+        if(end_pos < 0 || s.sequence.size() < end_pos) {
+            cerr << "End position (" << end_pos << " bp; 0-origin, exclusive) is out of range. The length of the sequence '" << seq_name << "' is " << s.sequence.size() << endl; return;
+        }
+        cout << (is_fastq ? '@' : '>') << seq_name;
+        if(0 < start_pos || end_pos < s.sequence.size()) cout << ' ' << (start_pos + 1) << ':' << end_pos;
+        cout << '\n';
+        if(is_fastq) {
+            for(size_t i = start_pos; i < end_pos; i++) cout << s.sequence[i];
+            cout << "\n+\n";
+            for(size_t i = start_pos; i < end_pos; i++) cout << s.qv[i];
+            cout << '\n';
+        } else {
+            for(size_t i = start_pos; i < end_pos; ) {
+                size_t len = min<size_t>(FOLD_WITH_THIS_SIZE, end_pos - i); 
+                for(size_t j = 0; j < len; j++) cout << s.sequence[i + j];
+                cout << '\n';
+                i += len;
+            }
+        }
+    }
+    bool trimSequence(int direction, const string& seq_name, const string& amount) {
+        if(sequences.count(seq_name) == 0) {
+            cerr << "Could not find a sequence '" << seq_name << "'\n"; return false;
+        }
+        if(direction != 5 && direction != 3) {
+            cerr << "ERROR: logic error (trimSequence)\n"; return false;
+        }
+        long long amount_int = atoll(amount.c_str());
+        if(amount_int == 0) {
+            cerr << "WARNING: You tried to trim 0 bases from '" << seq_name << "'\n";
+        }
+        if(is_verbose) {
+            cerr << "TRIM '" << seq_name << "' at " << direction << "'-end by " << amount_int << " bp" << endl;
+        }
+        vector<char>& seq = sequences[seq_name].sequence;
+        vector<char>& qv = sequences[seq_name].qv;
+        if(seq.size() <= amount_int) {
+            cerr << "WARNING: You tried to trim '" << seq_name << "' by " << amount_int << "bp, but its size is only " << seq.size() << " bp.\n";
+            seq.resize(0);
+            sequences[seq_name].qv.resize(0);
+            return true;
+        }
+        if(direction == 5) {
+            seq.erase(seq.begin(), seq.begin() + amount_int);
+            if(!qv.empty())
+                qv.erase(qv.begin(), qv.begin() + amount_int);
+        } else {
+            seq.resize(seq.size() - amount_int);
+            if(!qv.empty())
+                qv.resize(qv.size() - amount_int);
+        }
+        return true;
+    }
+    void executeScript(const char* script_file_name) {
+        ifstream ist(script_file_name);
+        if(!ist) {
+            cerr << "ERROR: Cannot open '" << script_file_name << "'\n" << endl;
+            return;
+        }
+        size_t script_line_number = 0;
+        string line;
+        while(getline(ist, line)) {
+            script_line_number++;
+            line = trim(line);
+            if(line.empty() || line[0] == '#') continue;
+            vector<string> args = split(line);
+            if(args.empty()) continue;
+            const string& cmd = args.front();
+            vector<string> subargs(args.begin() + 1, args.end());
+            if(is_verbose) {
+                cerr << "COMMAND: " << cmd << " SUBARGS: [";
+                for(size_t i = 0; i < subargs.size(); i++) { if(i) cerr << ", "; cerr << '"' << subargs[i] << '"'; }
+                cerr << "]" << endl;
+            }
+            if(cmd == "loadall") {
+                if(subargs.size() != 1) {
+                    cerr << "ERROR: # of the arguments is invalid.\n";
+                    cerr << "usage: loadall <file name (FASTA or FASTQ)>" << endl;
+                    return;
+                }
+                if(!loadEntireSeq(subargs.front().c_str())) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "saveall") {
+                if(subargs.size() != 1) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: saveall <file name>\n";
+                    cerr << "The file type (either FASTA or FASTQ) is automatically determined by the input file" << endl;
+                    return;
+                }
+                if(!saveEntireSeq(subargs.front().c_str())) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "loadone") {
+                if(subargs.size() != 2) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: loadone <file name> <sequence name>\n";
+                    return;
+                }
+                if(!loadOneSeq(subargs[0], subargs[1])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "saveone") {
+                if(subargs.size() != 2) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: saveone <file name> <sequence name>\n";
+                    return;
+                }
+                if(!saveOneSeq(subargs[0], subargs[1])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "rename") {
+                if(subargs.size() != 2) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: rename <old name> <new name>\n";
+                    return;
+                }
+                if(!renameSequence(subargs[0], subargs[1])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "setdesc") {
+                if(subargs.size() < 1) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: setdesc <sequence name> <descriptions (spaces are allowed)>\n";
+                    cerr << "Note that successive space characters are compressed into one.\n";
+                    return;
+                }
+                if(!setSequenceDescription(subargs)) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "trim5") {
+                if(subargs.size() != 2) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: trim5 <sequence name> <trim size (in bp)>\n";
+                    return;
+                }
+                if(!trimSequence(5, subargs[0], subargs[1])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "trim3") {
+                if(subargs.size() != 2) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: trim3 <sequence name> <trim size (in bp)>\n";
+                    return;
+                }
+                if(!trimSequence(3, subargs[0], subargs[1])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "print") {
+                if(subargs.size() < 1 || 3 < subargs.size()) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: print <sequence name> [<start position (0-origin, inclusive)> <end position (0-origin, exclusive)]\n";
+                    return;
+                }
+                printSequence(subargs);
+            } else if(cmd == "split") {
+                if(subargs.size() != 3) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: split <sequence name> <split position (0-origin)> <left sequence name> <right sequence name>\n";
+                    cerr << "The base at the split position goes to the right sequence.\n" << endl;
+                    return;
+                }
+                if(!splitSequence(subargs[0], subargs[1], subargs[2], subargs[3])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "dupseq") {
+                if(subargs.size() != 2) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: dupseq <sequence name> <new sequence name>\n";
+                    return;
+                }
+                if(!duplicateSequence(subargs[0], subargs[1])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else {
+                cerr << "ERROR: unknown command '" << cmd << "' at line " << script_line_number << endl;
+                return;
+            }
+        }
+    }
+    GenomeEditScript(char** argv, int start, int end, bool verbose) : is_verbose(verbose) {
+        is_fastq = false;
+        has_file_type_determined = false;
+        for(int i = start + 1; i < end; ++i) {
+            if(!loadEntireSeq(argv[i])) {
+                cerr << "ERROR: an error occurred." << endl;
+                exit(2);
+            }
+        }
+        executeScript(argv[start]);
+    }
+};
+
+void do_edit(int argc, char** argv)
+{
+    bool flag_verbose = false;
+    static struct option long_options[] = {
+        {"verbose", no_argument, 0, 'v'},
+        {0, 0, 0, 0} // end of long options
+    };
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+		case 'v':
+            flag_verbose = true;
+			break;
+        }
+    }
+    GenomeEditScript ges(argv, optind + 1, argc, flag_verbose);
+}
+
 void show_usage()
 {
     cerr << "Usage: fatt <command> [options...]" << endl;
@@ -2050,6 +2617,29 @@ void show_help(const char* subcommand)
         cerr << "--dapicheck\tShow DAPI-staining related stats\n";
         return;
     }
+    if(subcmd == "edit") {
+        cerr << "Usage: fatt edit [options...] <edit script> [FAST(A|Q) files]\n\n";
+        cerr << "No options available.\n";
+        cerr << "Genome Edit Script (GES) specification:\n";
+        cerr << "\tYou can put at most one command in a line; you need n lines for n commands.\n";
+        cerr << "\tBlank lines and lines starting with '#' will be ignored.\n";
+        cerr << "\tA line with a command looks like this:\n";
+        cerr << "\t\tCommand arg1 arg2 arg3 ...\n";
+        cerr << "\tThe list of available commands are the following:\n";
+        cerr << "\t\tloadall\tload entire sequences in a file (arg1) into memory\n";
+        cerr << "\t\tsaveall\tsave entire sequences in memory into a file (arg1)\n";
+        cerr << "\t\tloadone\tload a specified sequence in a file (arg1) with name arg2 into memory (index is used when available)\n";
+        cerr << "\t\tsaveone\tsave a specified sequence in memory with name arg1 into a file (arg2)\n";
+        cerr << "\t\trename\trename a sequence (arg1) into arg2\n";
+        cerr << "\t\tsetdesc\tset a description (arg2) to a specified sequence (arg1)\n";
+        cerr << "\t\ttrim5\ttrim the 5'-end of a specified sequence (arg1) in memory by arg2 bp\n";
+        cerr << "\t\ttrim3\ttrim the 3'-end of a specified sequence (arg1) in memory by arg2 bp\n";
+        cerr << "\t\tprint\tprint a specified sequence (arg1) in memory; range [arg2, arg3) is optional\n";
+        cerr << "\t\tsplit\tsplit a specified sequence (arg1) at position (arg2; 0-origin; the base at arg2 belongs to the latter fragment) into arg3 and arg4\n";
+        cerr << "\t\tdupseq\tduplicate a specified sequence (arg1) and name it arg2\n";
+        cerr << "\nFiles given in the command line will be loaded by loadall command before executing the edit script.\n";
+        return;
+    }
     if(subcmd == "help") {
         cerr << "Uh? No detailed help for help.\n";
         cerr << "Read the manual, or ask the author.\n";
@@ -2071,6 +2661,7 @@ void show_help(const char* subcommand)
     cerr << "\tfold\tfold sequences\n";
     cerr << "\tunfold\tunfold sequences\n";
     cerr << "\ttofasta\tconvert a FASTQ file into a FASTA file\n";
+    cerr << "\tedit\tedit sequences by DSL (domain-specific language)\n";
     cerr << "\thelp\tshow help message\n";
     cerr << "\nType 'fatt help <command>' to show the detail of the command.\n";
 }
@@ -2140,6 +2731,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     }
     if(commandString == "composition") {
         do_composition(argc, argv);
+        return;
+    }
+    if(commandString == "edit") {
+        do_edit(argc, argv);
         return;
     }
     // Help or error.
