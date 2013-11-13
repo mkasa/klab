@@ -596,6 +596,7 @@ void create_index(const char* fname, bool flag_force)
                     } else {
                         number_of_nucleotides_in_read += f.len();
                     }
+                    last_pos = f.tellg();
                 }
             } else {
                 last_pos = f.tellg();
@@ -618,6 +619,7 @@ void create_index(const char* fname, bool flag_force)
                         const size_t number_of_nucleotides_in_line = f.len();
                         number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                     }
+                    last_pos = f.tellg();
                 }
             }
             #undef INSERT_NAME_INTO_TABLE
