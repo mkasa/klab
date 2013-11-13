@@ -164,6 +164,105 @@ It calculates all 1- to 3-mer frequencies in the given files.
 It recognizes 'A' and 'a' as different characters by default. To ignore
 cases, add '--ignorecase'.
 
+edit
+-----
+It allows us to edit FASTA/FASTQ files. It takes a Genome Edit Script
+(GES) and optional input files.
+
+    fatt edit edit.ges input1.fastq input2.fastq input3.fastq
+
+The file type of inputs is automatically determined.
+
+    fatt edit edit.ges input1.fa input2.fa input3.fa
+
+Note that fatt looks the content of input files, but not the file
+extensions. In other words, if a file 'input.fastq' contains FASTA
+sequences, it is considered as a FASTA file.
+
+Next we explain the format of GES.
+GES is similar to shell script, but it differs in commands.
+It ignores blank lines and lines starting with '#'
+
+    # You can write comment
+    
+    # Blank line is ignored
+
+The other lines contain commands. Available commands are the following.
+
+### loadall
+You can load an entire file (FASTA/FASTQ).
+
+    loadall input.fastq
+
+Note that you cannot use both FASTA and FASTQ files. It means that if
+the first file loaded is FASTQ, then the next file must be also FASTQ.
+This restriction applies to other loading commands, too.
+
+### loadone
+It loads a single sequence from a file (FASTA/FASTQ).
+This operation requires that the target input file has an index.
+See 'fatt index' for details.
+
+    loadone input.fastq seq1
+
+It utilizes the index of the input file, achieving very fast access.
+
+### saveall
+You can save the entire sequences in memory to a file.
+The type of the format (FASTA or FASTQ) is automatically determined.
+
+    saveall output.fastq
+
+Again, note that the output format is determined by the content, not by
+the file name.
+
+### saveone
+It saves a single sequence into a file.
+
+    saveone output.fastq seq1
+
+### rename
+It renames a sequence into another.
+
+    rename seq1 new_seq1
+
+### trim3 and trim5
+It trims the 5'- or 3'-end of the specified sequence by the specified
+amount (in bp).
+
+    # Trims the 3'-end of seq1 by 3 bp.
+    trim3 seq1 3
+    # Trims the 5'-end of seq1 by 10 bp.
+    trim5 seq2 10
+
+### dupseq
+It duplicates the specified sequence.
+
+    dupseq seq1 newseq1
+
+### split
+It splits the specified sequence by the specified position.
+
+    # seq1 is split into two sequences, seq1_left and seq1_right.
+    split seq1 10 seq1_left seq1_right
+    # seq1_left is 10 bp in length, and the rest goes to seq1_right
+    # seq1 is removed.
+
+### setdesc
+It sets the description of the given sequence.
+
+    setdesc seq1 ChromosomeI
+
+### print
+It prints the content of the given sequence.
+
+    print seq1
+
+You can specify the range.
+
+    # This will print nuleotides from 10 bp (0-origin, inclusive) to 20 bp (0-origin, exclusive)
+    print seq1 10 20
+
 help
 ----
 You can see the description of a subcommand. For example, if you do not remember
