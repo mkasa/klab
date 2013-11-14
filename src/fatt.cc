@@ -2014,16 +2014,37 @@ class GenomeEditScript {
         vector<string> retval;
         string::size_type i = 0;
         while(i < s.size()) {
-            string::size_type j = s.find_first_of(" \t", i);
-            if(j == string::npos) {
-                retval.push_back(s.substr(i));
-                break;
+            const bool this_term_is_quoted = s[i] == '"';
+            if(this_term_is_quoted) {
+                string::size_type j = i + 1;
+                while(j < s.size()) {
+                    if(s[j] == '"') break;
+                    if(s[j] == '\\') {
+                        j++;
+                        if(s.size() <= j) break;
+                    }
+                    j++;
+                }
+                if(s.size() <= j) {
+                    cerr << "ERROR: unmatched quote '\"'\nTHIS LINE: " << s << endl;
+                    exit(2);
+                }
+                retval.push_back(s.substr(i + 1, j - i - 1));
+                string::size_type k = s.find_first_not_of(" \t", j + 1);
+                if(k == string::npos) break; // I think this never happens because s is already trimmed.
+                i = k;
+            } else {
+                string::size_type j = s.find_first_of(" \t", i);
+                if(j == string::npos) {
+                    retval.push_back(s.substr(i));
+                    break;
+                }
+                retval.push_back(s.substr(i, j - i));
+                if(s.size() <= j + 1) break;
+                string::size_type k = s.find_first_not_of(" \t", j + 1);
+                if(k == string::npos) break; // I think this never happens because s is already trimmed.
+                i = k;
             }
-            retval.push_back(s.substr(i, j - i));
-            if(s.size() <= j + 1) break;
-            string::size_type k = s.find_first_not_of(" \t", j + 1);
-            if(k == string::npos) break; // I think this never happens because s is already trimmed.
-            i = k;
         }
         return retval;
     }
