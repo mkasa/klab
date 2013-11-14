@@ -2276,6 +2276,33 @@ public:
             cerr << "There is already a sequence '" << new_name << "', to which you tried to duplicate a sequence '" << old_name << "'\n"; return false;
         }
         sequences[new_name] = sequences[old_name];
+        sequences[new_name].name = new_name;
+        return true;
+    }
+    bool joinSequence(const string& left_sequence_name, const string& right_sequence_name, const string& new_sequence_name) {
+        if(sequences.count(left_sequence_name) == 0) {
+            cout << "Could not find a sequence '" << left_sequence_name << "', which you tried to join to '" << new_sequence_name << "'\n"; return false;
+        }
+        if(sequences.count(right_sequence_name) == 0) {
+            cout << "Could not find a sequence '" << right_sequence_name << "', which you tried to join to '" << new_sequence_name << "'\n"; return false;
+        }
+        if(sequences.count(new_sequence_name)) {
+            cout << "There is already a sequence '" << new_sequence_name << "', to which you tried to join sequences ('" << left_sequence_name << "', '" << right_sequence_name << "')\n"; return false;
+        }
+        Sequence& left_seq = sequences[left_sequence_name];
+        Sequence& right_seq = sequences[right_sequence_name];
+        Sequence& new_seq = sequences[new_sequence_name];
+        new_seq.name = new_sequence_name;
+        new_seq.sequence.resize(left_seq.sequence.size() + right_seq.sequence.size());
+        copy(left_seq.sequence.begin(), left_seq.sequence.end(), new_seq.sequence.begin());
+        copy(right_seq.sequence.begin(), right_seq.sequence.end(), new_seq.sequence.begin() + left_seq.sequence.size());
+        if(!left_seq.qv.empty() && !right_seq.qv.empty()) {
+            new_seq.qv.resize(left_seq.qv.size() + right_seq.qv.size());
+            copy(left_seq.qv.begin(), left_seq.qv.end(), new_seq.qv.begin());
+            copy(right_seq.qv.begin(), right_seq.qv.end(), new_seq.qv.begin() + left_seq.qv.size());
+        }
+        sequences.erase(left_sequence_name);
+        sequences.erase(right_sequence_name);
         return true;
     }
     bool setSequenceDescription(const vector<string>& subargs) {
@@ -2515,6 +2542,16 @@ public:
                     cerr << "ERROR: an error occurred." << endl;
                     exit(2);
                 }
+            } else if(cmd == "join") {
+                if(subargs.size() != 3) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: join <left sequence> <right sequence>\n";
+                    return;
+                }
+                if(!joinSequence(subargs[0], subargs[1], subargs[2])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
             } else {
                 cerr << "ERROR: unknown command '" << cmd << "' at line " << script_line_number << endl;
                 return;
@@ -2702,6 +2739,7 @@ void show_help(const char* subcommand)
         cerr << "\t\tprint\tprint a specified sequence (arg1) in memory; range [arg2, arg3) is optional\n";
         cerr << "\t\tsplit\tsplit a specified sequence (arg1) at position (arg2; 0-origin; the base at arg2 belongs to the latter fragment) into arg3 and arg4\n";
         cerr << "\t\tdupseq\tduplicate a specified sequence (arg1) and name it arg2\n";
+        cerr << "\t\tjoin\tjoin two specified sequences (arg1, arg2) into one (arg3)\n";
         cerr << "\nFiles given in the command line will be loaded by loadall command before executing the edit script.\n";
         return;
     }
