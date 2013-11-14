@@ -181,13 +181,23 @@ sequences, it is considered as a FASTA file.
 
 Next we explain the format of GES.
 GES is similar to shell script, but it differs in commands.
-It ignores blank lines and lines starting with '#'
+It ignores blank lines and lines starting with '#':
 
     # You can write comment
     
     # Blank line is ignored
 
-The other lines contain commands. Available commands are the following.
+The other lines contain commands.
+Each line starts with a command. Arguments for that command (if any) follow it:
+
+    command arg1 arg2 arg3 ...
+
+If you give an argument containing space characters, quote it with '"'.
+Here is an example:
+
+    setdesc "Chromosome I" "E. coli MG1655 Chromosome I (circular)"
+
+Available commands are the following.
 
 ### loadall
 You can load an entire file (FASTA/FASTQ).
@@ -251,7 +261,7 @@ It splits the specified sequence by the specified position.
 ### setdesc
 It sets the description of the given sequence.
 
-    setdesc seq1 ChromosomeI
+    setdesc seq1 "Chromosome I"
 
 ### print
 It prints the content of the given sequence.
