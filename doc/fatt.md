@@ -258,6 +258,20 @@ It splits the specified sequence by the specified position.
     # seq1_left is 10 bp in length, and the rest goes to seq1_right
     # seq1 is removed.
 
+### join
+It joins two sequences (the first and the second arguments) into one
+(the third argument).
+
+    # seq1 and seq2 are joined
+    join seq1 seq2 seq12
+    # ex)
+    #    seq1: AAA
+    #    seq2: CCC
+    #      =>
+    #         seq12: AAACCC
+
+The two sequences are removed after the new sequence is created.
+
 ### setdesc
 It sets the description of the given sequence.
 
