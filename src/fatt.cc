@@ -113,6 +113,7 @@ public:
 class FileLineBufferWithAutoExpansion
 {
     ifstream ist;
+    bool is_first_open;
     vector<char> bufferForIFStream;
     string fileName;
     static const size_t INITIAL_BUFFER_SIZE = 8 * 1024u;
@@ -147,12 +148,19 @@ public:
         line_count = 0; // Just for safety
         headerID.reserve(INITIAL_BUFFER_SIZE);
         bufferForIFStream.resize(STREAM_BUFFER_SIZE);
+        is_first_open = true;
     }
     ~FileLineBufferWithAutoExpansion() {
+        if(!is_first_open) close();
         delete[] b;
     }
     bool open(const char* file_name) {
-        ist.rdbuf()->pubsetbuf(&*bufferForIFStream.begin(), bufferForIFStream.size());
+        if(is_first_open) {
+            is_first_open = false;
+            ist.rdbuf()->pubsetbuf(&*bufferForIFStream.begin(), bufferForIFStream.size());
+        } else {
+            close();
+        }
         ist.open(file_name, ios::binary);
         line_count = 0;
         fileName = file_name;
