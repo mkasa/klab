@@ -61,6 +61,10 @@ if($command eq 'outgoing') { print STDERR "Sorry, not implemented yet.\n"; exit 
 if($command eq 'outgoingall' || $command eq 'ogall') {
 	cmd_outgoingall(); exit 0;
 }
+if($command eq 'outgoingall_child') {
+    my $dir = shift;
+    cmd_outgoingall_child($dir); exit 0;
+}
 if($command eq 'origin') { cmd_origin(); exit 0; }
 if($command eq 'originall' || $command eq 'orall') {
 	cmd_originall(); exit 0;
@@ -342,73 +346,100 @@ sub git_get_current_branch
 	return undef;
 }
 
+sub cmd_outgoingall_sub
+{
+    my ($dirname, $base_dir) = @_;
+    my $type = get_repo_type($dirname);
+    if(defined $type) {
+        if(chdir $dirname) {
+            my $ret_status = return_status_silently($type);
+            if($ret_status == 0) {
+                if($type eq 'hg') {
+                    my @s = `hg outgoing`;
+                    if(($? >> 8) == 0) {
+                        print cl('green') . "O" . cl('reset');
+                    } else {
+                        print " ";
+                    }
+                } elsif ($type eq 'git') {
+                    my @s = `git fetch`;
+                    my $current_branch = git_get_current_branch();
+                    unless(defined $current_branch) {
+                        print cl('red') . "X" . cl('reset');
+                    } else {
+                        my $remoterep = `git config branch.$current_branch.remote`; chomp $remoterep;
+                        if((!defined $remoterep) || ($remoterep eq '')) {
+                            print cl('red') . "X" . cl('reset');
+                        } else {
+                            my $remotebra = `git config branch.$current_branch.merge`; chomp $remotebra;
+                            $remotebra =~ s|^[^/]*/[^/]*/||;
+                            my @result = `git log $remoterep/$remotebra.. | cat`;
+                            if(1 < @result) { # outputs just one line if nothing is outgoing
+                                print cl('green') . "O" . cl('reset');
+                            } else {
+                                print " ";
+                            }
+                        }
+                    }
+                } elsif ($type eq 'svn') {
+                    my @s = `svn status -u`;
+                    if($?) {
+                        print cl('red') . "X" . cl('reset');
+                    } else {
+                        if(scalar(@s) > 1) {
+                            print cl('green') . "O" . cl('reset');
+                        } else {
+                            print " ";
+                        }
+                    }
+                } else {
+                    print cl('red') . "U" . cl('reset');
+                }
+            } else {
+                print cl('green') . "M" . cl('reset');
+            }
+            print "\t$type\t$dirname\n";
+            unless(chdir $base_dir) {
+                print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
+                print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
+                exit 3;
+            }
+        } else {
+            print cl('red') . "X" . cl('reset') . "\tdenied\t$dirname\n";
+        }
+    } else {
+        print cl('red') . "-" . cl('reset') . "\tunknown\t$dirname\n";
+    }
+}
+
+sub cmd_outgoingall_child
+{
+	my $dirname = shift;
+	my $base_dir = Cwd::getcwd();
+    cmd_outgoingall_sub($dirname, $base_dir);
+}
+
 sub cmd_outgoingall
 {
 	my @dirnames = <*>;
 	my $base_dir = Cwd::getcwd();
-	for my $dirname (@dirnames) {
-		my $type = get_repo_type($dirname);
-		if(defined $type) {
-			if(chdir $dirname) {
-				my $ret_status = return_status_silently($type);
-				if($ret_status == 0) {
-					if($type eq 'hg') {
-						my @s = `hg outgoing`;
-						if(($? >> 8) == 0) {
-							print cl('green') . "O" . cl('reset');
-						} else {
-							print " ";
-						}
-					} elsif ($type eq 'git') {
-						my @s = `git fetch`;
-						my $current_branch = git_get_current_branch();
-						unless(defined $current_branch) {
-							print cl('red') . "X" . cl('reset');
-						} else {
-							my $remoterep = `git config branch.$current_branch.remote`; chomp $remoterep;
-							if((!defined $remoterep) || ($remoterep eq '')) {
-								print cl('red') . "X" . cl('reset');
-							} else {
-								my $remotebra = `git config branch.$current_branch.merge`; chomp $remotebra;
-								$remotebra =~ s|^[^/]*/[^/]*/||;
-								my @result = `git log $remoterep/$remotebra.. | cat`;
-								if(1 < @result) { # outputs just one line if nothing is outgoing
-									print cl('green') . "O" . cl('reset');
-								} else {
-									print " ";
-								}
-							}
-						}
-					} elsif ($type eq 'svn') {
-						my @s = `svn status -u`;
-						if($?) {
-							print cl('red') . "X" . cl('reset');
-						} else {
-							if(scalar(@s) > 1) {
-								print cl('green') . "O" . cl('reset');
-							} else {
-								print " ";
-							}
-						}
-					} else {
-						print cl('red') . "U" . cl('reset');
-					}
-				} else {
-					print cl('green') . "M" . cl('reset');
-				}
-				print "\t$type\t$dirname\n";
-				unless(chdir $base_dir) {
-					print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
-					print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
-					exit 3;
-				}
-			} else {
-				print cl('red') . "X" . cl('reset') . "\tdenied\t$dirname\n";
-			}
-		} else {
-			print cl('red') . "-" . cl('reset') . "\tunknown\t$dirname\n";
-		}
-	}
+    my $is_gnu_parallel_available = is_gnu_parallel_available();
+    unless($is_gnu_parallel_available) {
+        for my $dirname (@dirnames) {
+            cmd_outgoingall_sub($dirname, $base_dir);
+        }
+    } else {
+        my @parallel_commands;
+        for my $dirname (@dirnames) {
+            my $type = get_repo_type($dirname);
+            if(defined $type) {
+                push(@parallel_commands, "$0 outgoingall_child $dirname");
+            } else {
+                print "unknown\t$dirname\n";
+            }
+        }
+        gnu_parallel(@parallel_commands);
+    }
 }
 
 sub show_origin()
