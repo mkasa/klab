@@ -1,0 +1,103 @@
+#!/usr/bin/env perl
+
+use strict;
+use Term::ANSIColor;
+
+my @args;
+my @opts;
+my $param_num_lines_to_take = 7;
+my $flag_color = 0;
+
+for(@ARGV) {
+    if(/^-(\d+)/) {
+        $param_num_lines_to_take = $1;
+    } elsif(/^-(c|-color)$/) {
+        $flag_color = 1;
+    } elsif(/^-/) {
+        push(@opts, $_);
+    } else {
+        push(@args, $_);
+    }
+}
+if($param_num_lines_to_take != 10) {
+    push(@opts, "-$param_num_lines_to_take");
+}
+
+if(0 < @args) { # File mode
+    my $opt_str = join(' ', @opts);
+    FILE: for my $file (@args) {
+        open my $fh, "<", $file or die "Cannot open '$file'";
+        print color('green') if($flag_color);
+        print "==> $file <==\n" unless(@args == 1);
+        print color('reset') if($flag_color);
+        my $head_lines = 0;
+        my @maybe_tail_lines;
+        while(<$fh>) {
+            if($head_lines < $param_num_lines_to_take) {
+                if($flag_color) {
+                    print color('yellow') unless($head_lines);
+                }
+                $head_lines++;
+                print;
+            } else {
+                print color('reset') if($flag_color);
+                push(@maybe_tail_lines, $_);
+                if($param_num_lines_to_take < @maybe_tail_lines) {
+                    close $fh;
+                    print ".\n.\n.\n";
+                    print color('yellow') if($flag_color);
+                    print `tail $opt_str $file`;
+                    print color('reset') if($flag_color);
+                    # print STDERR "tail $opt_str $file\n";
+                    next FILE;
+                }
+            }
+        }
+        print color('reset') if($flag_color);
+        print for(@maybe_tail_lines);
+        close $fh;
+    }
+} else { # Pipe mode
+    my $head_lines = 0;
+    my @maybe_tail_lines;
+    my $already_shown_dots = 0;
+    while(<STDIN>) {
+        if($head_lines < $param_num_lines_to_take) {
+            if($flag_color) {
+                print color('yellow') unless($head_lines);
+            }
+            $head_lines++;
+            print;
+        } else {
+            if($param_num_lines_to_take <= @maybe_tail_lines) {
+                shift @maybe_tail_lines;
+                unless($already_shown_dots) {
+                    $already_shown_dots = 1;
+                    print color('reset') if($flag_color);
+                    print ".\n.\n.\n";
+                    print color('yellow') if($flag_color);
+                }
+            }
+            push(@maybe_tail_lines, $_);
+        }
+    }
+    print for(@maybe_tail_lines);
+    print color('reset') if($flag_color);
+}
+
+=pod
+
+=head1 NAME
+
+headtail - head & tail
+
+=head1 SYNOPSIS
+
+headtail [-#] [options...] [files...]
+
+=head1 DESCRIPTION
+
+B<headtail> shows the head and the tail of given input files (or the standard input).
+
+=cut
+
