@@ -10,13 +10,15 @@ use Getopt::Long;
 use Cwd;
 use Term::ANSIColor;
 
-my $flag_debug   = 0;
-my $flag_help    = 0;
-my $flag_man     = 0;
+my $flag_debug      = 0;
+my $flag_help       = 0;
+my $flag_man        = 0;
+my $flag_noparallel = 0;
 
-GetOptions("debug"   => \$flag_debug,
-		   "help"    => \$flag_help,
-           "man"     => \$flag_man,
+GetOptions("debug"      => \$flag_debug,
+		   "help"       => \$flag_help,
+           "man"        => \$flag_man,
+           "noparallel" => \$flag_noparallel
 	);
 
 my $command = shift;
@@ -289,7 +291,7 @@ sub cmd_pullall()
 	my @dirnames = <*>;
 	my $base_dir = Cwd::getcwd();
     my $is_gnu_parallel_available = is_gnu_parallel_available();
-    unless($is_gnu_parallel_available) {
+    unless($is_gnu_parallel_available && !$flag_noparallel) {
         for my $dirname (@dirnames) {
             cmd_pullall_sub($dirname, $base_dir);
         }
@@ -424,7 +426,7 @@ sub cmd_outgoingall
 	my @dirnames = <*>;
 	my $base_dir = Cwd::getcwd();
     my $is_gnu_parallel_available = is_gnu_parallel_available();
-    unless($is_gnu_parallel_available) {
+    unless($is_gnu_parallel_available && !$flag_noparallel) {
         for my $dirname (@dirnames) {
             cmd_outgoingall_sub($dirname, $base_dir);
         }
