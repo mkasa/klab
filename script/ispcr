@@ -1,0 +1,622 @@
+#!/usr/bin/env perl
+
+use strict;
+
+use Getopt::Long;
+use Pod::Usage;
+use File::stat;
+use Bio::Seq;
+use Bio::Seq::SeqWithQuality;
+use Bio::SeqIO;
+use BLASTM8Parse;
+
+my $flag_man        = 0;
+my $flag_help       = 0;
+my $flag_force      = 0;
+my $flag_forceblast = 0;
+my $flag_nosequence = 0;
+my $flag_noheader   = 0;
+my $flag_dispnohit  = 0;
+my $flag_nononspecific = 0;
+my $flag_accurate   = 0;
+my $isFastaCMDMode  = 0;
+my $debug           = 0;
+
+my $param_maxmismatches         = 1;
+my $param_maxamplifiedlength    = 10000;
+my $param_numcpus               = 1;
+my $param_maxfragmentspertarget = -1;
+my $param_maxallowablenonspecificlinear = 330;
+
+GetOptions( 'help|?'           => \$flag_help,
+	        'man'              => \$flag_man,
+	        'force'            => \$flag_force,
+	        'forceblast'       => \$flag_forceblast,
+	        'debug'            => \$debug,
+	        'allowMismatch=i'  => \$param_maxmismatches,
+	        'maxLength=i'      => \$param_maxamplifiedlength,
+	        'numCPUs=i'        => \$param_numcpus,
+	        'maxFragments=i'   => \$param_maxfragmentspertarget,
+	        'noHeader'         => \$flag_noheader,
+	        'noSequence'       => \$flag_nosequence,
+	        'noNonSpecific'    => \$flag_nononspecific,
+	        'displaynohit'     => \$flag_dispnohit,
+	        'nowholesSequence' => \$isFastaCMDMode,
+                'accurate'         => \$flag_accurate,	    
+	        'maxPrimingSite=i' => \$param_maxallowablenonspecificlinear
+	        ) or pod2usage(2);
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man;
+pod2usage(2) if(@ARGV != 2);
+
+my $primerfastafilename = shift;
+my $targetfastafilename = shift;
+
+my $versionstring = "2.02";
+print STDERR "In-silico PCR version $versionstring\n\n";
+print STDERR "  Max mismatches           : $param_maxmismatches\n";
+if($param_maxamplifiedlength > 0) {
+    print STDERR "  Max amplified length     : $param_maxamplifiedlength\n";
+} else {
+    print STDERR "  Max amplified length     : no limit\n";
+}
+if($param_maxfragmentspertarget > 0) {
+    print STDERR "  Max fragments per target : $param_maxfragmentspertarget\n";
+} else {
+    print STDERR "  Max fragments per target : no limit\n";
+}
+if($param_numcpus > 1) {
+    print STDERR "  Number of CPUs to use    : $param_numcpus\n";
+}
+
+print STDERR "  Max number priming sites : $param_maxallowablenonspecificlinear\n";
+print STDERR "  Output amplicon          : ";
+if($flag_nosequence) {
+    print STDERR "false\n";
+} else {
+    print STDERR "true\n";
+}
+print STDERR "  Primer FASTA file name   : $primerfastafilename\n";
+print STDERR "  Target FASTA file name   : $targetfastafilename\n";
+print STDERR "\n";
+
+my $blastdatabasefilename = "$targetfastafilename.nsq";
+my $blastdatabasefilestat       = stat($blastdatabasefilename);
+my $targetfastafilenamefilestat = stat($targetfastafilename);
+
+if($debug) {
+	if($blastdatabasefilestat) {
+		print STDERR "  BLAST database mtime : ", scalar localtime $blastdatabasefilestat->mtime, "\n";
+	} else {
+		print STDERR "  BLAST database mtime : not found\n";
+	}
+	print STDERR "  TARGET FASTA   mtime : ", scalar localtime $targetfastafilenamefilestat->mtime, "\n";
+}
+if(!$blastdatabasefilestat || $flag_force || $blastdatabasefilestat->mtime < $targetfastafilenamefilestat->mtime) {
+	if($blastdatabasefilestat) {
+		if($flag_force) {
+	        print STDERR "  BLAST database is already formatdb'ed,\n";
+	        print STDERR "  but will formatdb again because -force option is specified\n";
+	    } else {
+	    	print STDERR "  BLAST database is found, but\n";
+	        print STDERR "  '$blastdatabasefilename' is created at ", scalar localtime $blastdatabasefilestat->mtime, ",\n";
+	        print STDERR "  which is older than original FASTA file '$targetfastafilename' (", scalar localtime $targetfastafilenamefilestat->mtime, ")\n";
+	    }
+    } else {
+		print STDERR "  BLAST database is not found. Will formatdb.\n";
+    }
+    my $cmdline = "formatdb -i $targetfastafilename -p F -o T";
+    print STDERR "  % $cmdline\n";
+    system $cmdline;
+    if($?) {
+	    print STDERR "  Error has occured while formatdb\n";
+	    exit 1;
+    }
+} else {
+    print STDERR "  BLAST database is already formatdb'ed. Will use it.\n";
+    print STDERR "  If you need recalculation, please delete the existing file, or just try -force option.\n";
+}
+
+my $targetfastabasefilename;
+if($targetfastafilename =~ m{[/\\]([^/\\]+)$} ){
+    $targetfastabasefilename = $1;
+    # print STDERR "Match : $targetfastabasefilename\n";
+} else {
+    $targetfastabasefilename = $targetfastafilename;
+    # print STDERR "No-Match : $targetfastabasefilename\n";
+}
+
+my $blastresultfilename = "${primerfastafilename}.mapped2${targetfastabasefilename}.blastresult.txt";
+my $blastresultfilestat = stat($blastresultfilename);
+my $primerfastafilestat = stat($primerfastafilename);
+
+if($debug) {
+	if($blastresultfilestat) {
+		print STDERR "  BLAST result   mtime : ", scalar localtime $blastresultfilestat->mtime, "\n";
+	} else {
+		print STDERR "  BLAST result   mtime : not found\n";
+	}
+	print STDERR "  Primer FASTA   mtime : ", scalar localtime $primerfastafilestat->mtime, "\n";
+}
+if(!$blastresultfilestat || $flag_force || $flag_forceblast || $blastresultfilestat->mtime < $targetfastafilenamefilestat->mtime || $blastresultfilestat->mtime < $primerfastafilestat->mtime) {
+    if(!-e $blastresultfilename) {
+		print STDERR "  BLAST search result is not found.\n";
+    } elsif( $blastresultfilestat->mtime < $targetfastafilenamefilestat->mtime) {
+    	print STDERR "  BLAST search result is created at ", scalar(localtime $blastresultfilestat->mtime), ",\n";
+    	print STDERR "  which is older than the FASTA file '$targetfastafilename' (", scalar localtime $targetfastafilenamefilestat->mtime, ")\n";
+    } elsif( $blastresultfilestat->mtime < $primerfastafilestat->mtime) {
+    	print STDERR "  BLAST search result is created at ", scalar(localtime $blastresultfilestat->mtime), ",\n";
+    	print STDERR "  which is older than the primer FASTA file '$primerfastafilename' (", scalar localtime $primerfastafilestat->mtime, ")\n";
+    } elsif( $flag_forceblast ) {
+		print STDERR "  BLAST search result is found, but -forceblast option is specified. Will do BLAST.\n";
+    } else {
+		print STDERR "  BLAST search result is found, but -force option is specified. Will do BLAST.\n";
+    }
+    my $cmdline;
+    if($param_numcpus <= 1) {
+		$cmdline = "blastall -p blastn -d $targetfastafilename -i $primerfastafilename -o $blastresultfilename -b $param_maxallowablenonspecificlinear -m 8 -F F";
+    } else {
+		$cmdline = "parablast.pl --numcpus=$param_numcpus -- -p blastn -d $targetfastafilename -i $primerfastafilename -o $blastresultfilename -b $param_maxallowablenonspecificlinear -m 8 -F F";
+    }
+    if($flag_accurate) {
+	$cmdline .= " -W 7 -q -1";
+    }
+    print STDERR "  % $cmdline\n";
+    system $cmdline;
+    if($?) {
+	    if($param_numcpus <= 1) {
+	        print STDERR "  Error has occured while blastn\n";
+	    } else {
+	        print STDERR "  Error has occured while paraBLAST\n";
+	    }
+	    exit 1;
+    }
+} else {
+    print STDERR "  BLAST search result is found. Will use it.\n";
+    print STDERR "  If you need recalculation, please delete the existing file, or just try -force option.\n";
+}
+
+my %primerLength;
+my %primerSequence;
+my @primerBaseNames;
+{
+    my $numprimers = 0;
+    my $totalbp = 0;
+
+    my $seqin  = Bio::SeqIO->new('-file'   => "<$primerfastafilename",
+								 '-format' => 'fasta'     );
+	my $previous_basename = undef;
+    my %already_processed_basenames = ();
+    while(my $seq = $seqin->next_seq) {
+	    my $seqname = $seq->display_id; $seqname =~ s/\.bwd/\.rev/;
+	    my $nseq = $seq->seq;
+	    my $primerlength = length $nseq;
+	    $primerLength{$seqname}   = $primerlength;
+	    $primerSequence{$seqname} = $nseq;
+	    if($seqname =~ /^(.+)\.(fwd|rev)$/) {
+	    	my $basename = $1;
+	    	my $dir = $2;
+	    	if($previous_basename ne $basename) {
+	            if(defined $already_processed_basenames{$basename}) {
+	            	print STDERR "\n";
+	            	print STDERR "  ERROR: '$basename.fwd' and '$basename.rev' must be consecutive in the input FASTA file due to the technical limitation.\n";
+	            	exit 2;
+	            } else {
+	            	$already_processed_basenames{$basename} = 1;
+	            }
+	            $previous_basename = $basename;
+	        }
+	    	push(@primerBaseNames, $basename) if(@primerBaseNames == 0 || $primerBaseNames[-1] ne $basename);
+	    }
+	    $totalbp += $primerlength;
+	    if($primerlength < 11) {
+	        print STDERR "  WARNING: The length of '$seq' is only $primerlength bp, which is less than minimal length required for processing(11bp). The result may be unreliable.\n";
+	    }
+	    $numprimers++;
+    }
+    print STDERR "  Total $numprimers primers loaded. Total $totalbp bp.\n";
+
+	my $fastaModeLimit = 300;
+	if(!$flag_nosequence && $fastaModeLimit > $numprimers) {
+		my $indexFileName = "$targetfastafilename.nsd";
+		if(-e $indexFileName) {
+			$isFastaCMDMode = 1;
+		}
+	}
+}
+
+my %targetSequence;
+unless($flag_nosequence) {
+	unless($isFastaCMDMode) {
+	    my $numTargetSequences = 0;
+	    my $totalbp = 0;
+	    my $seqin  = Bio::SeqIO->new('-file'   => "<$targetfastafilename",
+	                                 '-format' => 'fasta'     );
+	    while(my $seq = $seqin->next_seq) {
+	        my $seqname = $seq->display_id;
+	        $targetSequence{$seqname} = $seq->seq;
+	        $numTargetSequences++;
+	        $totalbp += length $seq->seq;
+	    }
+	    print STDERR "  Total $numTargetSequences target sequences loaded. Total $totalbp bp.\n";
+	} else {
+	    print STDERR "  The number of primer pairs is not big. Try to use 'fastacmd' to reduce running time.\n";
+	}
+} else {
+    print STDERR "  -noSequence option is specified. Skip loading target sequence.\n";
+}
+
+sub getTargetSequenceByNameAndRange($$$) # name, start(0-origin,inclusive), end(0-origin,exclusive)
+{
+	my $sequenceName = shift;
+	my $startPos = shift;  $startPos++; # to 1-origin
+	my $endPos = shift; #  $endPos++; to 1-origin  $endPos--; to inclusive
+	my $cmdLine = "fastacmd -d $targetfastafilename -s $sequenceName -L $startPos,$endPos";
+	my @fastaret = `$cmdLine`;
+	if($?) {
+		print STDERR "Error occured while executing fastacmd.\n";
+		print STDERR "Command line : $cmdLine\n";
+		print STDERR "$!\n";
+		exit 1;
+	}
+	shift @fastaret;
+	my $retval = '';
+	for(@fastaret) {
+		chomp;
+		$retval .= $_;
+	}
+	return $retval;
+}
+
+sub processOnePrimerPair($$); # proto-type
+
+show_header() unless($flag_noheader);
+{
+	my $current_basename = undef;
+	my $current_matches = {fwd => [], rev => []};
+    my $num_suvivedmatches = 0;
+    my $index_primerbasenames = 0;
+
+    sub output_nohit_line_by_name($) {
+    	my $primerbasename = shift;
+        my $fwd_primer_sequence = $primerSequence{"${primerbasename}.fwd"};
+        my $bwd_primer_sequence = $primerSequence{"${primerbasename}.rev"};
+        print "$primerbasename,$fwd_primer_sequence,$bwd_primer_sequence,NOHIT,-1,-1,-1\n";
+    }
+    sub output_nohit_line_by_index($) {
+    	my $index = shift;
+        my $primerbasename = $primerBaseNames[$index];
+        output_nohit_line_by_name($primerbasename);
+    }
+    sub output_nohit_primers ($) {
+    	return unless($flag_dispnohit);
+    	my $newname = shift;
+    	output_nohit_line_by_index($index_primerbasenames++) while($primerBaseNames[$index_primerbasenames] ne $newname);
+   		$index_primerbasenames++;
+    }
+    sub output_trailing_nohit_primers() {
+    	return unless($flag_dispnohit);
+    	output_nohit_line_by_index($index_primerbasenames++) while($index_primerbasenames < @primerBaseNames);
+    }
+    open FH, "<$blastresultfilename" or die "Cannot open '$blastresultfilename'";
+
+    while(<FH>) {
+        chomp;
+        chop if(/\r$/);
+		my $rawmatch = parseBLASTM8ResultLine($_);
+	    my $query_id    = $rawmatch->{qid};
+	    my $length      = $rawmatch->{alignlen};
+	    my $mismatches  = $rawmatch->{mismatch};
+	    my $gapopenings = $rawmatch->{gapopen};
+	    my $numberOfNonMatchingBases = $primerLength{$query_id} - $length + $mismatches + $gapopenings;
+	    # print "$numberOfNonMatchingBases\n";
+	    next if($numberOfNonMatchingBases > $param_maxmismatches);
+	    if($query_id =~ /^(.+)\.(fwd|rev)$/) {
+	        my $basename = $1;
+	        my $dir      = $2;
+	        print STDERR "\tBASE='$basename' DIR='$dir'\n" if($debug);
+	        if($basename ne $current_basename) {
+	        	if(defined $current_basename) {
+	                output_nohit_primers($current_basename);
+	                processOnePrimerPair($current_basename, $current_matches);
+	            }
+				$current_basename = $basename;
+				$current_matches = {fwd => [], rev => []};
+	        }
+                if($dir eq 'fwd') {
+	            push(@{$current_matches->{fwd}}, $rawmatch);
+                } else {
+	            push(@{$current_matches->{rev}}, $rawmatch);
+                }
+	        $num_suvivedmatches++;
+	    } else {
+	        print STDERR "  WARNING: primer name '$query_id' does not conform to the rule. It must be end with either '.fwd' or '.rev'\n";
+	    }
+    }
+    if(defined $current_basename) {
+		output_nohit_primers($current_basename);
+		processOnePrimerPair($current_basename, $current_matches);
+	}
+	output_trailing_nohit_primers();
+    close FH;
+    print STDERR "  $num_suvivedmatches remained after filtering weak homology (i.e. more than $param_maxmismatches mismatches)\n";
+}
+
+print STDERR "\n";
+
+sub show_header() {
+    print "#Name, Forward Primer, Backward Primer, Target Name, Start Position, End Position, Amplified Length, Amplified Fragments\n";
+}
+
+sub reverseComplement($){
+    my $seq = shift;
+    my $retseq;
+    while(my $c = chop $seq) {
+		$retseq .= $c;
+    }
+    $retseq =~ tr/ACGTacgt/TGCAtgca/;
+    return $retseq;
+}
+
+sub processOnePrimerPair($$) {
+	my $primerbasename = shift;
+	my $referenceToMatches = shift;
+    my $referenceToForwardMatchArray  = $referenceToMatches->{fwd};
+    my $referenceToBackwardMatchArray = $referenceToMatches->{rev};
+    if(   @{$referenceToForwardMatchArray } >= $param_maxallowablenonspecificlinear
+       || @{$referenceToBackwardMatchArray} >= $param_maxallowablenonspecificlinear)
+    {
+    	my $fwd_primer_sequence = $primerSequence{"${primerbasename}.fwd"};
+    	my $bwd_primer_sequence = $primerSequence{"${primerbasename}.rev"};
+    	unless($flag_nononspecific){
+		    print "$primerbasename,$fwd_primer_sequence,$bwd_primer_sequence,NONSPECIFIC,-1,-1,-1\n";
+		}
+    	return;
+    }
+    my %subjectID2ReferenceToForwardMatchArray;
+    my %subjectID2ReferenceToBackwardMatchArray;
+    for my $match (@{$referenceToForwardMatchArray}) {
+		push(@{$subjectID2ReferenceToForwardMatchArray{$match->{sid}}}, $match);
+    }
+    for my $match (@{$referenceToBackwardMatchArray}) {
+		push(@{$subjectID2ReferenceToBackwardMatchArray{$match->{sid}}}, $match);
+    }
+    my $numTotalMatches = 0;
+    while(my ($scaffoldName, $refToFMatchesInScaff) = each %subjectID2ReferenceToForwardMatchArray) {
+	    my $refToBMatchesInScaff = $subjectID2ReferenceToBackwardMatchArray{$scaffoldName};
+	    next unless(defined $refToBMatchesInScaff); # a little speed up
+	    my $numFragmentsOutputInTheScaffold = 0;
+	    # checks every pairs
+	    FORALLPRIMERPAIRS: for my $fwdPrimer (@{$refToFMatchesInScaff}) {
+	        my $fwdSStart = $fwdPrimer->{sstart};
+	        my $fwdSEnd   = $fwdPrimer->{send};
+	        my $fwdQEnd   = $fwdPrimer->{qend};
+	        my $fwdPrimerLength = $primerLength{$fwdPrimer->{qid}};
+	        for my $bwdPrimer (@{$refToBMatchesInScaff}) {
+	            my $bwdSStart = $bwdPrimer->{sstart};
+	            my $bwdSEnd   = $bwdPrimer->{send};
+	            my $bwdQEnd   = $bwdPrimer->{qend};
+	            my $bwdPrimerLength = $primerLength{$bwdPrimer->{qid}};
+	            if($fwdSStart < $fwdSEnd) {
+	                if($bwdSStart > $bwdSEnd) { # ---fwd-->    <--bwd---
+	                    my $intermediateFragmentLength = $bwdSEnd - $fwdSEnd - 1;
+	                    if($intermediateFragmentLength >= 0) {
+	                        my $amplen = $intermediateFragmentLength + $fwdQEnd + $bwdQEnd;
+	                        if($param_maxamplifiedlength <= 0 || $amplen <= $param_maxamplifiedlength) {
+	                            print "$primerbasename,$primerSequence{$fwdPrimer->{qid}},$primerSequence{$bwdPrimer->{qid}},$scaffoldName,$fwdSStart,$bwdSStart,$amplen";
+	                            unless($flag_nosequence) {
+	                                print ",", $primerSequence{$fwdPrimer->{qid}};
+	                                if($intermediateFragmentLength > 0) {
+	                                	unless($isFastaCMDMode) {
+			                                print substr($targetSequence{$scaffoldName}, $fwdSEnd + 1 - 1, $intermediateFragmentLength);
+			                            } else {
+			                            	print getTargetSequenceByNameAndRange($scaffoldName, $fwdSEnd, $fwdSEnd + $intermediateFragmentLength);
+			                            }
+		                            }
+	                                print reverseComplement($primerSequence{$bwdPrimer->{qid}});
+	                            }
+	                            print "\n";
+	                            $numFragmentsOutputInTheScaffold++;
+	                            $numTotalMatches++;
+	                            last FORALLPRIMERPAIRS if($param_maxfragmentspertarget > 0 && $numFragmentsOutputInTheScaffold >= $param_maxfragmentspertarget);
+	                        }
+	                    }
+	                }
+	            } else {
+	                if($bwdSStart < $bwdSEnd) { # ---bwd-->    <--fwd---
+	                    my $intermediateFragmentLength = $fwdSEnd - $bwdSEnd - 1;
+	                    if($intermediateFragmentLength >= 0) {
+	                        my $amplen = $intermediateFragmentLength + $fwdQEnd + $bwdQEnd;
+	                        if($param_maxamplifiedlength <= 0 || $amplen <= $param_maxamplifiedlength) {
+	                            print "$primerbasename,$primerSequence{$fwdPrimer->{qid}},$primerSequence{$bwdPrimer->{qid}},$scaffoldName,$fwdSStart,$bwdSStart,$amplen";
+	                            unless($flag_nosequence) {
+	                                print ",", $primerSequence{$fwdPrimer->{qid}};
+	                                if($intermediateFragmentLength > 0) {
+	                                	unless($isFastaCMDMode) {
+			                                print reverseComplement(substr($targetSequence{$scaffoldName}, $bwdSEnd + 1 - 1, $intermediateFragmentLength));
+			                            } else {
+			                            	print reverseComplement(getTargetSequenceByNameAndRange($scaffoldName, $bwdSEnd, $bwdSEnd + $intermediateFragmentLength));
+			                            }
+		                            }
+	                                print reverseComplement($primerSequence{$bwdPrimer->{qid}});
+	                            }
+	                            print "\n";
+	                            $numFragmentsOutputInTheScaffold++;
+	                            $numTotalMatches++;
+	                            last FORALLPRIMERPAIRS if($param_maxfragmentspertarget > 0 && $numFragmentsOutputInTheScaffold >= $param_maxfragmentspertarget);
+	                        }
+	                    }
+	                }
+	            }
+	        }
+	    }
+    }
+    if($numTotalMatches == 0 && $flag_dispnohit) {
+	    output_nohit_line_by_name($primerbasename);
+    }
+}
+
+=pod
+
+=head1 NAME
+
+ispcr - In-silico PCR
+
+=head1 SYNOPSIS
+
+ispcr [options...] <Primer File> <Target Sequence>
+
+Options:
+   -help             brief help message
+   -man              full documentation
+   -allowMismatch=n  number of mismatches allowed for hybridization
+   -maxLength=n      maximum length of amplified fragments
+   -numCPUs=n        specify the number of CPUs to use
+   -noSequence       do not output amplified sequences
+   -maxFragments=n   max number of fragments to be output per target sequence
+   -forceblast       force to run BLAST even if there already exist a blast result
+   -force            force to do everything (BLAST/formatdb) regardless of whether intermediate files exist or not
+   -noHeader         do not show a header
+   -maxPrimingSite=n maximum allowable number of non-specific priming sites
+   -displaynohit     output 'NO-HIT' column if no fragments are amplified
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-allowMismatch>
+
+Specify the number of mismatches allowed for primer hybridization.
+-allowMismatch=1 will allow at most one mismatch for each primer site.
+The default value is 0.
+
+=item B<-maxLength>
+
+Specify then maximum length of amplified fragments. Default is 15,000 bp.
+If you give -maxLength=5000, fragments of more than 5,000 bp are not considered.
+If you do not want to restrict by length, please give -maxLength=0, which
+will simply ignore fragment sizes.
+
+=item B<-noSequence>
+
+Do not output nucleotide sequences of amplified fragments.
+This options significantly reduce the size of the output file.
+If you want to check if they amplify something but you do not need their sequences, it will save much time and storage.
+
+=item B<-nowholesSequence>
+
+There are two ways to output amplified fragments. One is that the entire
+sequences are loaded on the memory and the amplified fragments are retreived
+from the memory. The other is that using fastacmd to reduce memory usage.
+The latter method is faster when the number of amplified fragments is
+far less than the number of sequences in the database. fastacmd is a part
+of (legacy) NCBI-BLAST package.
+
+=item B<-maxFragments>
+
+Specify the maximum number of fragments per target sequence to be output.
+This option avoids outputing too many fragments which usually arise from
+repetitive sequences especially when primers contains repetitive sequences.
+Default is non-limited.
+
+=item B<-maxPrimingSite>
+
+Specify the maxiumum number of priming sites.
+The default value is 330.
+Even when the primer pair is unique (there is only one instance where
+the two primers face each other and the distance between them is less than
+the threshold), a PCR experiment often fail if one of the two primers matches
+to thousands of locations on the genome. This option is aimed at filtering out
+such cases.
+
+=item B<-displaynohit>
+
+If no fragments are amplified by a given primer pair, nothing is output.
+Giving -displaynohit option changes this behavior to output a special line
+indicating that no fragments are amplified (in in-silico analysis).
+The sample output is shown below:
+
+    example,AACCTGACGAAGCGCGT,TCACGACGTGATCTGACG,NOHIT,-1,-1,-1
+
+=item B<-numCPUs>
+
+Specify the number of CPUs to use for BLAST search.
+It will be passed to BLAST using '-a' option.
+Note that (legacy) NCBI BLAST does not scale well beyond 2 to 4 threads.
+
+=item B<-noHeader>
+
+Do not show a header in output.
+
+=item B<-noNonSpecific>
+
+Do not output a line indicating a nonspecific band like this:
+
+    baz,AACCTTACGATGCACGT,TTACGACGGGATTTCATG,NONSPECIFIC,-1,-1,-1
+
+=item B<-force>
+
+Ingores any existing intermediate files.
+It will run formatdb even when there is formatted database already.
+It will run (legacy) NCBI BLAST even when there already is the result file of BLAST.
+
+=item B<-forceblast>
+
+Even if the result file of BLAST already exists, it runs BLAST to do sequence similarity search.
+The difference with B<-force> is that it does not force formatdb.
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-man>
+
+Prints the manual page and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+B<ispcr> reads the given primer file and output in-silico PCR fragments.
+Output is in CSV format. The first line is a comment line, which is just for human readability.
+Primers must be given in multi-FASTA format. A pair of primers must be named as 'foobar.fwd' and 'foobar.rev'.
+A forward primer and a reverse primer must appear successively in the file.
+If one is given but the other is not present in the given file, an error is reported.
+An example input is shown below:
+
+    >foobar.fwd
+    ACACACGGTACAAGTGCA
+    >foobar.rev
+    GGACAACCAAACATTTGGC
+    >baz.fwd
+    AACCTTACGATGCACGT
+    >baz.rev
+    TTACGACGGGATTTCATG
+
+Please note that a primer pair must NOT be separated. The following example is invalid:
+
+    >foobar.fwd
+    ACACACGGTACAAGTGCA
+    >baz.fwd
+    AACCTTACGATGCACGT
+    >foobar.rev
+    GGACAACCAAACATTTGGC
+    >baz.rev
+    TTACGACGGGATTTCATG
+
+Here is a sample output:
+
+    #Name, Forward Primer, Backward Primer, Target Name, Start Position, End Position, Amplified Length, Amplified Fragments
+    foobar,ACACACGGTACAAGTGCA,GGACAACCAAACATTTGGC,contig1,1023,1067,45,ACACACGGTACAAGTGCACGTGCATGCCAAATGTTTGGTTGTCC
+    foobar,ACACACGGTACAAGTGCA,GGACAACCAAACATTTGGC,contig1,3947,3902,46,ACACACGGTACAAGTGCACGTGCATTGCCAAATGTTTGGTTGTCC
+    baz,AACCTTACGATGCACGT,TTACGACGGGATTTCATG,NONSPECIFIC,-1,-1,-1
+
+If non-specific amplification is suspected for a primer pair, a warning line instead of the amplified fragments
+is output. The target name is 'NONSPECIFIC' and the positions are all -1 for non-specific amplification.
+
+To parse each output line, typical Perl code will be like this,
+
+	my ($primername, $forwardprimer, $backwardprimer, $targetname, $startpos, $endpos, $amplen, $ampfrag) = split(/,/);
+
+=cut
+

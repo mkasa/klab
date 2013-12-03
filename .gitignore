@@ -17,3 +17,8 @@
 .waf*
 build
 
+*.fa
+*.fa.index
+*.fq
+*.fq.index
+edit.*
