@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 """
 jsoncsv: a standalone utility to convert JSON objects into CSV
 

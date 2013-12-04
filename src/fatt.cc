@@ -727,7 +727,7 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
     }
     if(flag_html) {
         cout << "<tr><td></td><td>size (bp)</td><td>number</td></tr>\n";
-        cout << "<tr><td>max</td><td>" << max_length << "</td><td>1</td></tr>\n";
+        cout << "<tr><td>max</td><td>" << sep_comma(max_length) << "</td><td>1</td></tr>\n";
         cout << "<tr><td>N50</td><td>" << n50_length << "</td><td>" << (n50_sequence_index) << "</td></tr>\n";
         cout << "<tr><td>N70</td><td>" << n70_length << "</td><td>" << (n70_sequence_index) << "</td></tr>\n";
         cout << "<tr><td>N80</td><td>" << n80_length << "</td><td>" << (n80_sequence_index) << "</td></tr>\n";
@@ -747,17 +747,17 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
         cout << ",\"min\": " << min_length;
         cout << "}";
     } else {
-        cout << "Total # of bases = " << total_length << "\n";
+        cout << "Total # of bases = " << sep_comma(total_length) << "\n";
         const string scaffold_str = is_contig ? "contig" : "scaffold";
-        cout << "# of " << scaffold_str << "s = " << lengths.size() << "\n";
-        cout << "Max size = " << max_length << " (# = 1)\n";
-        cout << "N50 " << scaffold_str << " size = " << n50_length << " (# = " << (n50_sequence_index) << ")\n";
-        cout << "N70 " << scaffold_str << " size = " << n70_length << " (# = " << (n70_sequence_index) << ")\n";
-        cout << "N80 " << scaffold_str << " size = " << n80_length << " (# = " << (n80_sequence_index) << ")\n";
-        cout << "N90 " << scaffold_str << " size = " << n90_length << " (# = " << (n90_sequence_index) << ")\n";
-        cout << "Min size = " << min_length << "\n";
-        cout << "Total " << scaffold_str << " # = " << lengths.size() << "\n";
-        cout << "Avg size = " << avg_length << "\n";
+        cout << "# of " << scaffold_str << "s = " << sep_comma(lengths.size()) << "\n";
+        cout << "Max size = " << sep_comma(max_length) << " (# = 1)\n";
+        cout << "N50 " << scaffold_str << " size = " << sep_comma(n50_length) << " (# = " << sep_comma(n50_sequence_index) << ")\n";
+        cout << "N70 " << scaffold_str << " size = " << sep_comma(n70_length) << " (# = " << sep_comma(n70_sequence_index) << ")\n";
+        cout << "N80 " << scaffold_str << " size = " << sep_comma(n80_length) << " (# = " << sep_comma(n80_sequence_index) << ")\n";
+        cout << "N90 " << scaffold_str << " size = " << sep_comma(n90_length) << " (# = " << sep_comma(n90_sequence_index) << ")\n";
+        cout << "Min size = " << sep_comma(min_length) << "\n";
+        cout << "Total " << scaffold_str << " # = " << sep_comma(lengths.size()) << "\n";
+        cout << "Avg size = " << sep_comma(avg_length) << "\n";
     }
 }
 
