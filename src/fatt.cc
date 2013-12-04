@@ -728,13 +728,13 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
     if(flag_html) {
         cout << "<tr><td></td><td>size (bp)</td><td>number</td></tr>\n";
         cout << "<tr><td>max</td><td>" << sep_comma(max_length) << "</td><td>1</td></tr>\n";
-        cout << "<tr><td>N50</td><td>" << n50_length << "</td><td>" << (n50_sequence_index) << "</td></tr>\n";
-        cout << "<tr><td>N70</td><td>" << n70_length << "</td><td>" << (n70_sequence_index) << "</td></tr>\n";
-        cout << "<tr><td>N80</td><td>" << n80_length << "</td><td>" << (n80_sequence_index) << "</td></tr>\n";
-        cout << "<tr><td>N90</td><td>" << n90_length << "</td><td>" << (n90_sequence_index) << "</td></tr>\n";
-        cout << "<tr><td>min</td><td>" << min_length << "</td><td>" << lengths.size() << "</td></tr>\n";
-        cout << "<tr><td>avg</td><td>" << avg_length << "</td><td></td></tr>\n";
-        cout << "<tr><td>total</td><td>" << total_length << "</td><td></td></tr>\n";
+        cout << "<tr><td>N50</td><td>" << sep_comma(n50_length) << "</td><td>" << sep_comma(n50_sequence_index) << "</td></tr>\n";
+        cout << "<tr><td>N70</td><td>" << sep_comma(n70_length) << "</td><td>" << sep_comma(n70_sequence_index) << "</td></tr>\n";
+        cout << "<tr><td>N80</td><td>" << sep_comma(n80_length) << "</td><td>" << sep_comma(n80_sequence_index) << "</td></tr>\n";
+        cout << "<tr><td>N90</td><td>" << sep_comma(n90_length) << "</td><td>" << sep_comma(n90_sequence_index) << "</td></tr>\n";
+        cout << "<tr><td>min</td><td>" << sep_comma(min_length) << "</td><td>" << sep_comma(lengths.size()) << "</td></tr>\n";
+        cout << "<tr><td>avg</td><td>" << sep_comma(avg_length) << "</td><td></td></tr>\n";
+        cout << "<tr><td>total</td><td>" << sep_comma(total_length) << "</td><td></td></tr>\n";
     } else if(flag_json) {
         cout << "{\"total_length\": " << total_length;
         cout << ",\"count\": " << lengths.size();
