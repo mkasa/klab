@@ -58,6 +58,19 @@ static ostream& operator << (ostream& os, const vector<char>& v)
 	return os;
 }
 
+static string sep_comma(size_t val)
+{
+    char buf[32];
+    sprintf(buf, "%llu", val);
+    string retval;
+    size_t offset = (3 - strlen(buf) % 3) % 3;
+    for(char* p = buf; *p; p++) {
+        if(p != buf && (p - buf + offset) % 3 == 0) retval += ',';
+        retval += *p;
+    }
+    return retval;
+}
+
 static size_t strlen_without_n(const char * p)
 {
     size_t retval = 0;
@@ -721,6 +734,7 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
         cout << "<tr><td>N90</td><td>" << n90_length << "</td><td>" << (n90_sequence_index) << "</td></tr>\n";
         cout << "<tr><td>min</td><td>" << min_length << "</td><td>" << lengths.size() << "</td></tr>\n";
         cout << "<tr><td>avg</td><td>" << avg_length << "</td><td></td></tr>\n";
+        cout << "<tr><td>total</td><td>" << total_length << "</td><td></td></tr>\n";
     } else if(flag_json) {
         cout << "{\"total_length\": " << total_length;
         cout << ",\"count\": " << lengths.size();
