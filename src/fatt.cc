@@ -21,6 +21,8 @@
 #include <numeric>
 #include <getopt.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include "sqdb.h"
 //#include <stackdump.h>
 //#include <debug.h>
@@ -154,6 +156,12 @@ private:
         isFASTAMode = false;
         isFASTQMode = false;
     }
+    bool isDirectory(const char* fname) {
+        struct stat s;
+        const int ret = stat(fname, &s);
+        if(ret != 0) return false;
+        return S_ISDIR(s.st_mode);
+    }
 
 public:
     FileLineBufferWithAutoExpansion() {
@@ -170,6 +178,7 @@ public:
         delete[] b;
     }
     bool open(const char* file_name) {
+        if(isDirectory(file_name)) { return false; }
         if(is_first_open) {
             is_first_open = false;
             ist.rdbuf()->pubsetbuf(&*bufferForIFStream.begin(), bufferForIFStream.size());
