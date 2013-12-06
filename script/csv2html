@@ -1,0 +1,201 @@
+#!/usr/bin/env python
+"""
+csv2html: a standalone utility to convert CSV into HTML
+
+usage: cat example.csv | csv2html [options...] [column names and attributes]
+
+options:
+	-v	show the version and exit
+    -n  no header (i.e, the first line of CSV is not a header)
+
+This utility converts an input file of CSV format into an HTML.]
+Here is an example.
+
+(echo 'a,b,Salary,Performance'; echo 'John,Doe,12345,32.123456') | csv2html "First name/l" "Last name/l" /,r "/%.2"
+<table>
+<tr><th>First name</th><th>Last name</th><th>Salary</th><th>Performance</th></tr>
+<tr><td style="align: left">John</td><td style="align: left">Doe</td><td style="align: right">12,345</td><td>32.12%</td></tr>
+</table>
+
+A column attribute contains both the column name and its attribute, which are separated by '/'.
+If you do not need one of them, you can just omit it.
+The left side of '/' is the column name, while the right side is the attribute.
+If the attribute string contains '%', '%' is added to the column.
+If the attribute string contains ',', then figures are separated by ',' at every 3 digits.
+You can also specify 'printf-like' formatting string for floating numbers.
+'.3' means three digits after the decimal point, while '05' means padding zeroes to 5 digits.
+If you do want to specify an attribute for the header line, you can give it after '|' (still you need '/' before '|' in this case).
+
+"""
+
+version_string = "1.00"
+
+import os,sys,csv,argparse
+
+class HTMLWriter:
+    def styles_to_style_str(self, styles):
+        if len(styles) <= 0:
+            return ""
+        else:
+            return " style=\"" + ("; ".join(styles)) + "\""
+
+    def to_html_tag(self, tag_name, s, attrs):
+        # print "s = ", s, ", attrs = ", attrs
+        styles = []
+        if attrs['align'] != None:
+            styles.append('align: ' + attrs['align'])
+        if attrs['header']:
+            styles.append('border-bottom: 1px solid black')
+        retval = "<" + tag_name + self.styles_to_style_str(styles) + ">"
+        if attrs['fmtr']:
+            format_str = attrs['fmtr']
+            if format_str.find(".") == -1:
+                format_str += ".0"
+            s = ("%" + format_str + "f") % float(s)
+        if attrs['sepc']:
+            if s.find(".") == -1:
+                l = len(s)
+                rest = ''
+            else:
+                l = s.find(".")
+                rest = s[l:]
+            p = ''
+            offset = (3 - (l % 3)) % 3
+            i = 0
+            while i < l:
+                if i != 0 and (i + offset) % 3 == 0:
+                    p += ','
+                p += s[i]
+                i += 1
+            retval += p + rest
+        else:
+            retval += s
+        if attrs['ratio']:
+            retval += '%'
+        retval += "</" + tag_name + ">"
+        return retval
+
+    def writeheadrow(self, cols, attrs, col_names):
+        sys.stdout.write("<tr>")
+        for i, a, name in zip(cols, attrs, col_names):
+            # print "i = ", i, ", a = ", a, ", name = ", name
+            s = str(i) if name == None else name
+            a['header'] = True
+            sys.stdout.write(self.to_html_tag("th", s, a))
+        sys.stdout.write("</tr>\n")
+
+    def writerow(self, cols, attrs):
+        sys.stdout.write("<tr>")
+        for i, a in zip(cols, attrs):
+            a['header'] = False
+            sys.stdout.write(self.to_html_tag("td", str(i), a))
+        sys.stdout.write("</tr>\n")
+
+def w(a):
+    sys.stdout.write(a)
+
+def parse_attributes(cfs, col_num):
+    """ parses attribute strings, and returns a triplet of the column names, the header attributes and the data attributes """
+    cnames = []
+    hattr = []
+    dattr = []
+    def parse_attr_str(s):
+        d = {'align': None, 'sepc': False, 'ratio': False, 'fmtr': ""}
+        if len(s) < 1: return d
+        i = 0
+        while i < len(s):
+            c = s[i]
+            if "0123456789.-".find(c) != -1:
+                while i < len(s) and "0123456789.-".find(s[i]) != -1:
+                    d['fmtr'] += s[i]
+                    i += 1
+                i -= 1
+            elif c == ',':
+                d['sepc'] = True
+            elif c == 'l':
+                d['align'] = "left"
+            elif c == 'r':
+                d['align'] = "right"
+            elif c == 'c':
+                d['align'] = "center"
+            elif c == '%':
+                d['ratio'] = True
+            i += 1
+        return d
+    null_attributes = parse_attr_str("")
+    for v in cfs:
+        ri = v.rfind("/")
+        if ri == -1:
+            if v == ".":
+                cnames.append(None)
+            else:
+                cnames.append(v)
+            hattr.append(null_attributes)
+            dattr.append(null_attributes)
+        else:
+            if 0 <= ri - 1:
+                col_name = v[0: ri - 1]
+            else:
+                col_name = None
+            if col_name == "":
+                cnames.append(None)
+            else:
+                cnames.append(col_name)
+            attr_str = v[ri + 1:]
+            pi = attr_str.rfind("|")
+            if pi == -1:
+                hattr.append(null_attributes)
+                dattr.append(parse_attr_str(attr_str))
+            else:
+                if 0 <= pi - 1:
+                    dattr.append(parse_attr_str(attr_str[0: pi - 1]))
+                else:
+                    dattr.append(null_attributes)
+                hattr.append(parse_attr_str(attr_str[pi + 1:]))
+    while len(cnames) < col_num:
+        cnames.append(None)
+        hattr.append(null_attributes)
+        dattr.append(null_attributes)
+    return cnames, hattr, dattr
+
+def main():
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='Convert JSON (one JSON object, one line) into CSV')
+    parser.add_argument('colfmt', nargs='*', action='store', help="Column formats")
+    parser.add_argument('-n', '--noheader', action='store_true', help="Suppress a header")
+    parser.add_argument('-t', '--notabletag', action='store_true', help="Suppress a table tag")
+    parser.add_argument('-v', '--version',  action='store_true', help="Show version string")
+    args = parser.parse_args()
+
+    if args.version:
+        print "csv2html version %s" % version_string
+        sys.exit(0)
+    (column_names, header_attrs, data_attrs) = (None, None, None)
+    # Get keys in the first line (using jq)
+    if not args.notabletag: w("<table>\n")
+    writer = HTMLWriter()
+    line_count = 0
+    try:
+        line_count += 1
+        reader = csv.reader(sys.stdin)
+        is_first_line = True
+        for line in reader:
+            if is_first_line:
+                is_first_line = False
+                try:
+                    (column_names, header_attrs, data_attrs) = parse_attributes(args.colfmt, len(line))
+                except Exception, e:
+                    print >> sys.argvstderr, "ERROR: attribute parsing failed: ", e
+                    sys.exit(2)
+                if not args.noheader:
+                    writer.writeheadrow(line, header_attrs, column_names)
+                    continue
+            writer.writerow(line, data_attrs)
+    except Exception, e:
+        print >> sys.stderr, "ERROR: ", e, " at line %d" % line_count
+        sys.exit(3)
+    if not args.notabletag: w("</table>\n")
+
+if __name__ == '__main__':
+    main()
+
