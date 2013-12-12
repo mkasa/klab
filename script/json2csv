@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 """
 jsoncsv: a standalone utility to convert JSON objects into CSV
 
@@ -6,6 +6,7 @@ usage: cat example.json | jsoncsv [options...]
 
 options:
 	-t	output in TSV (instead of CSV)
+    -h  output in HTML (instead of CSV)
 	-n	supress a header
 	-v	show the version and exit
 	-c c1,c2,c3,...	specify the order of the columns in output
@@ -27,22 +28,33 @@ This utility heavily depends on jq, so you must have jq installed on your system
 
 """
 
-version_string = "1.01"
+version_string = "1.02"
 
 import os,sys,subprocess,csv,json,argparse
 
-def write_tsv_row(cols):
-    cols = [str(x) for x in cols]
-    print "\t".join(cols);
+class TSVWriter:
+    def writerow(self, cols):
+        cols = [str(x) for x in cols]
+        print "\t".join(cols);
 
-def convert_json_to_csv_or_tsv(jsonobj, array_of_keys, csv_writer, line_no):
+class HTMLWriter:
+    def writeheadrow(self, cols):
+        sys.stdout.write("<tr>")
+        for i in cols: sys.stdout.write("<th>" + str(i) + "</th>")
+        sys.stdout.write("</tr>\n")
+
+    def writerow(self, cols):
+        sys.stdout.write("<tr>")
+        for i in cols: sys.stdout.write("<td>" + str(i) + "</td>")
+        sys.stdout.write("</tr>\n")
+
+def convert_json_to_anotherformat(jsonobj, array_of_keys, writer, line_no):
     """
-        convert_json_to_csv_or_tsv takes a JSON object, an array of keys and csv_writer,
-        and outputs in CSV format the values in the order of the keys in the array.
+        convert_json_to_anotherformat takes a JSON object, an array of keys and writer,
+        and outputs in an appropriate format the values in the order of the keys in the array.
         (e.g., jsonobj = { "name": "bob", "age": "23" } and array_of_keys = [ "age", "name" ]
          will give "23", "bob")
 
-        When csv_writer is None, it outputs in Tab-separated value (TSV) format.
         line_no is the line number (only used for error messages).
     """
     csv_array = []
@@ -56,14 +68,11 @@ def convert_json_to_csv_or_tsv(jsonobj, array_of_keys, csv_writer, line_no):
     except Exception, e:
         print >>sys.stderr, "ERROR: ", e, "at line %d" % line_no
         sys.exit(2)
-    if csv_writer != None:
-        try:
-            csv_writer.writerow(csv_array)
-        except:
-            print >>sys.stderr, "ERROR: CSV output error at line %d" % line_no
-            sys.exit(2)
-    else:
-        write_tsv_row(csv_array)
+    try:
+        writer.writerow(csv_array)
+    except Exception, e:
+        print >>sys.stderr, "ERROR: Output error at line %d" % line_no, ": ", e
+        sys.exit(2)
 
 def main():
 
@@ -72,6 +81,7 @@ def main():
     parser.add_argument('-n', '--noheader', action='store_true', help="Suppress a header")
     parser.add_argument('-v', '--version',  action='store_true', help="Show version string")
     parser.add_argument('-t', '--tsv',  action='store_true', help="Output in Tab-Separated Values (TSV)")
+    parser.add_argument('-l', '--html',  action='store_true', help="Output in HTML")
     parser.add_argument('-c', '--columns', action='store', help="Specify the order of columns")
     args = parser.parse_args()
 
@@ -82,7 +92,7 @@ def main():
     # Get keys in the first line (using jq)
     first_line = sys.stdin.readline().strip()
     if len(first_line) < 2:
-        print >>sys.stderr, "ERROR: Input too short."
+        print >>sys.stderr, "ERROR: Input too short. Did put a JSON recond in a line? (if not, pass data through 'jq -c .')"
         sys.exit(1)
     if first_line[0] != '{' or first_line[-1] != '}':
         print >>sys.stderr, "ERROR: The first line of the input does not look like a JSON (hash) object."
@@ -113,32 +123,38 @@ def main():
             sys.exit(1)
 
     # Output the header (if needed)
-    csv_writer = csv.writer(sys.stdout)
+    if args.html:
+        sys.stdout.write("<table>")
+        writer = HTMLWriter()
+    elif args.tsv:
+        writer = TSVWriter()
+    else:
+        writer = csv.writer(sys.stdout)
     if not args.noheader:
-        if args.tsv:
-            write_tsv_row(array_of_keys)
-        else:
-            try:
-                csv_writer.writerow(array_of_keys)
-            except:
-                print >>sys.stderr, "ERROR: CSV writing error (header)"
-                sys.exit(1)
+        try:
+            if args.html:
+                writer.writeheadrow(array_of_keys)
+            else:
+                writer.writerow(array_of_keys)
+        except Exception, e:
+            print >>sys.stderr, "ERROR: Output error (header) :", e
+            sys.exit(1)
     # Output the CSV lines
     line_number = 1
     try:
         json_object_of_first_line = json.loads(first_line)
-        convert_json_to_csv_or_tsv(json_object_of_first_line, array_of_keys, None if args.tsv else csv_writer, line_number)
-    except Exception, e:
-        print >>sys.stderr, "ERROR: JSON parsing error at line %d" % line_number
-        sys.exit(1)
-    try:
+        convert_json_to_anotherformat(json_object_of_first_line, array_of_keys, writer, line_number)
         for line in sys.stdin:
             line_number += 1
             json_object = json.loads(line.strip())
-            convert_json_to_csv_or_tsv(json_object, array_of_keys, None if args.tsv else csv_writer, line_number)
-    except:
-        print >>sys.stderr, "ERROR: JSON parsing error at line %d" % line_number
+            convert_json_to_anotherformat(json_object, array_of_keys, writer, line_number)
+    except Exception, e:
+        print >>sys.stderr, "ERROR: JSON parsing error at line %d : " % line_number, e
         sys.exit(1)
+    # Output the footer (if needed)
+    if args.html:
+        sys.stdout.write("</table>\n")
+    sys.stdout.flush()
 
 if __name__ == '__main__':
     main()

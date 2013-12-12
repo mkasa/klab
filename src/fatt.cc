@@ -21,6 +21,8 @@
 #include <numeric>
 #include <getopt.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include "sqdb.h"
 //#include <stackdump.h>
 //#include <debug.h>
@@ -56,6 +58,19 @@ static ostream& operator << (ostream& os, const vector<char>& v)
         os << v[i];
     }
 	return os;
+}
+
+static string sep_comma(size_t val)
+{
+    char buf[32];
+    sprintf(buf, "%llu", val);
+    string retval;
+    size_t offset = (3 - strlen(buf) % 3) % 3;
+    for(char* p = buf; *p; p++) {
+        if(p != buf && (p - buf + offset) % 3 == 0) retval += ',';
+        retval += *p;
+    }
+    return retval;
 }
 
 static size_t strlen_without_n(const char * p)
@@ -121,6 +136,7 @@ class FileLineBufferWithAutoExpansion
     size_t currentBufferSize;
     size_t bufferOffsetToBeFill;
     size_t line_count; ///< 1-origin
+    off_t off_count;
     vector<char> headerID;
     vector<char> headerIDwithDesc;
     bool isFASTAMode;
@@ -140,12 +156,19 @@ private:
         isFASTAMode = false;
         isFASTQMode = false;
     }
+    bool isDirectory(const char* fname) {
+        struct stat s;
+        const int ret = stat(fname, &s);
+        if(ret != 0) return false;
+        return S_ISDIR(s.st_mode);
+    }
 
 public:
     FileLineBufferWithAutoExpansion() {
         b = new char[INITIAL_BUFFER_SIZE];
         currentBufferSize = INITIAL_BUFFER_SIZE;
         line_count = 0; // Just for safety
+        off_count = 0;
         headerID.reserve(INITIAL_BUFFER_SIZE);
         bufferForIFStream.resize(STREAM_BUFFER_SIZE);
         is_first_open = true;
@@ -155,6 +178,7 @@ public:
         delete[] b;
     }
     bool open(const char* file_name) {
+        if(isDirectory(file_name)) { return false; }
         if(is_first_open) {
             is_first_open = false;
             ist.rdbuf()->pubsetbuf(&*bufferForIFStream.begin(), bufferForIFStream.size());
@@ -163,6 +187,7 @@ public:
         }
         ist.open(file_name, ios::binary);
         line_count = 0;
+        off_count = 0;
         fileName = file_name;
         return ist;
     }
@@ -174,6 +199,7 @@ public:
         do {
             if(ist.getline(b + bufferOffsetToBeFill, currentBufferSize - bufferOffsetToBeFill)) {
                 line_count++;
+                off_count += strlen(b) + 1; // for the delimiter
                 const bool isFirstLine = line_count == 1;
                 if(isFirstLine) {
                     if(looksLikeFASTQHeader()) {
@@ -209,9 +235,10 @@ public:
     }
     size_t getLineCount() const { return line_count; }
     bool fail() { return ist.fail(); }
-    size_t tellg() { return ist.tellg(); }
+//    size_t tellg() { return ist.tellg(); }
+    off_t get_offset() {return off_count; }
     size_t len() { return strlen(b); }
-    void seekg(size_t offset) { ist.seekg(offset); }
+    void seekg(off_t offset) { ist.seekg(offset); }
     void registerHeaderLine() {
         const size_t len_with_gt = len();
         if(len_with_gt == 0u) return;
@@ -588,14 +615,14 @@ void create_index(const char* fname, bool flag_force)
             return;
         }
 		long long sequence_count = 0;
-        size_t last_pos = f.tellg();
+        off_t last_pos = f.get_offset();
         if(f.getline()) {
             #define INSERT_NAME_INTO_TABLE() { stmt.Bind(1, get_read_name_from_header(f.b)); stmt.Bind(2, static_cast<long long>(last_pos)); stmt.Bind(3, sequence_count); stmt.Next(); }
             INSERT_NAME_INTO_TABLE();
 			++sequence_count;
             size_t number_of_nucleotides_in_read = 0;
             if(!f.looksLikeFASTQHeader()) { 
-                last_pos = f.tellg();
+                last_pos = f.get_offset();
                 while(f.getline()) {
                     if(f.looksLikeFASTAHeader()) {
                         INSERT_NAME_INTO_TABLE();
@@ -604,10 +631,10 @@ void create_index(const char* fname, bool flag_force)
                     } else {
                         number_of_nucleotides_in_read += f.len();
                     }
-                    last_pos = f.tellg();
+                    last_pos = f.get_offset();
                 }
             } else {
-                last_pos = f.tellg();
+                last_pos = f.get_offset();
                 while(f.getline()) {
                     if(f.looksLikeFASTQSeparator()) {
                         long long n = number_of_nucleotides_in_read;
@@ -617,7 +644,7 @@ void create_index(const char* fname, bool flag_force)
                             if(n <= 0) break;
                         }
                         f.expectHeaderOfEOF();
-                        last_pos = f.tellg();
+                        last_pos = f.get_offset();
                         if(!f.getline()) break;
                         f.registerHeaderLine();
                         INSERT_NAME_INTO_TABLE();
@@ -627,7 +654,7 @@ void create_index(const char* fname, bool flag_force)
                         const size_t number_of_nucleotides_in_line = f.len();
                         number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                     }
-                    last_pos = f.tellg();
+                    last_pos = f.get_offset();
                 }
             }
             #undef INSERT_NAME_INTO_TABLE
@@ -709,13 +736,14 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
     }
     if(flag_html) {
         cout << "<tr><td></td><td>size (bp)</td><td>number</td></tr>\n";
-        cout << "<tr><td>max</td><td>" << max_length << "</td><td>1</td></tr>\n";
-        cout << "<tr><td>N50</td><td>" << n50_length << "</td><td>" << (n50_sequence_index) << "</td></tr>\n";
-        cout << "<tr><td>N70</td><td>" << n70_length << "</td><td>" << (n70_sequence_index) << "</td></tr>\n";
-        cout << "<tr><td>N80</td><td>" << n80_length << "</td><td>" << (n80_sequence_index) << "</td></tr>\n";
-        cout << "<tr><td>N90</td><td>" << n90_length << "</td><td>" << (n90_sequence_index) << "</td></tr>\n";
-        cout << "<tr><td>min</td><td>" << min_length << "</td><td>" << lengths.size() << "</td></tr>\n";
-        cout << "<tr><td>avg</td><td>" << avg_length << "</td><td></td></tr>\n";
+        cout << "<tr><td>max</td><td>" << sep_comma(max_length) << "</td><td>1</td></tr>\n";
+        cout << "<tr><td>N50</td><td>" << sep_comma(n50_length) << "</td><td>" << sep_comma(n50_sequence_index) << "</td></tr>\n";
+        cout << "<tr><td>N70</td><td>" << sep_comma(n70_length) << "</td><td>" << sep_comma(n70_sequence_index) << "</td></tr>\n";
+        cout << "<tr><td>N80</td><td>" << sep_comma(n80_length) << "</td><td>" << sep_comma(n80_sequence_index) << "</td></tr>\n";
+        cout << "<tr><td>N90</td><td>" << sep_comma(n90_length) << "</td><td>" << sep_comma(n90_sequence_index) << "</td></tr>\n";
+        cout << "<tr><td>min</td><td>" << sep_comma(min_length) << "</td><td>" << sep_comma(lengths.size()) << "</td></tr>\n";
+        cout << "<tr><td>avg</td><td>" << sep_comma(avg_length) << "</td><td></td></tr>\n";
+        cout << "<tr><td>total</td><td>" << sep_comma(total_length) << "</td><td></td></tr>\n";
     } else if(flag_json) {
         cout << "{\"total_length\": " << total_length;
         cout << ",\"count\": " << lengths.size();
@@ -728,17 +756,17 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
         cout << ",\"min\": " << min_length;
         cout << "}";
     } else {
-        cout << "Total # of bases = " << total_length << "\n";
+        cout << "Total # of bases = " << sep_comma(total_length) << "\n";
         const string scaffold_str = is_contig ? "contig" : "scaffold";
-        cout << "# of " << scaffold_str << "s = " << lengths.size() << "\n";
-        cout << "Max size = " << max_length << " (# = 1)\n";
-        cout << "N50 " << scaffold_str << " size = " << n50_length << " (# = " << (n50_sequence_index) << ")\n";
-        cout << "N70 " << scaffold_str << " size = " << n70_length << " (# = " << (n70_sequence_index) << ")\n";
-        cout << "N80 " << scaffold_str << " size = " << n80_length << " (# = " << (n80_sequence_index) << ")\n";
-        cout << "N90 " << scaffold_str << " size = " << n90_length << " (# = " << (n90_sequence_index) << ")\n";
-        cout << "Min size = " << min_length << "\n";
-        cout << "Total " << scaffold_str << " # = " << lengths.size() << "\n";
-        cout << "Avg size = " << avg_length << "\n";
+        cout << "# of " << scaffold_str << "s = " << sep_comma(lengths.size()) << "\n";
+        cout << "Max size = " << sep_comma(max_length) << " (# = 1)\n";
+        cout << "N50 " << scaffold_str << " size = " << sep_comma(n50_length) << " (# = " << sep_comma(n50_sequence_index) << ")\n";
+        cout << "N70 " << scaffold_str << " size = " << sep_comma(n70_length) << " (# = " << sep_comma(n70_sequence_index) << ")\n";
+        cout << "N80 " << scaffold_str << " size = " << sep_comma(n80_length) << " (# = " << sep_comma(n80_sequence_index) << ")\n";
+        cout << "N90 " << scaffold_str << " size = " << sep_comma(n90_length) << " (# = " << sep_comma(n90_sequence_index) << ")\n";
+        cout << "Min size = " << sep_comma(min_length) << "\n";
+        cout << "Total " << scaffold_str << " # = " << sep_comma(lengths.size()) << "\n";
+        cout << "Avg size = " << sep_comma(avg_length) << "\n";
     }
 }
 
@@ -1039,7 +1067,7 @@ void do_extract(int argc, char** argv)
                                     }
                                     sequence_index++;
                                     if(param_end <= sequence_index) break;
-                                    const long long line_start_pos = f.tellg();
+                                    const long long line_start_pos = f.get_offset();
                                     if(!f.getline()) {
                                         cerr << "WARNING: reached the end of file.\n";
                                         return;
@@ -2009,7 +2037,7 @@ class GenomeEditScript {
     typedef map<string, Sequence> SequenceMap;
     SequenceMap sequences;
 
-    static const size_t FOLD_WITH_THIS_SIZE = 70u;
+    static const size_t FOLD_WITH_THIS_SIZE;
 
     string trim(const string& s) {
         string::size_type f = s.find_first_not_of(" \t");
@@ -2859,6 +2887,7 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
 	}
 }
 
+const size_t GenomeEditScript::FOLD_WITH_THIS_SIZE = 70u;
 int main(int argc, char** argv)
 {
 	//GDB_On_SEGV gos(argv[0]);

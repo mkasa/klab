@@ -15,13 +15,24 @@ This package follows the standard installation process of waf::
 	$ ./waf build
 	$ ./waf install
 
-If you like GNU-style configure, you can instead do like this::
+If you like GNU autotools-style configure, you can instead do like this::
 
 	$ ./configure
 	$ make
 	$ make install
 
 although these commands are just a wrapper for the former commands.
+
+When you wish to use scripts that use Perl modules, you need to add
+`--enable-perl` for `waf configure`, namely::
+
+	$ ./waf configure --enable-perl
+
+or::
+
+	$ ./configure --enable-perl
+
+You may need to be root for installing the Perl libraries.
 
 List
 ----
@@ -46,6 +57,9 @@ browser</td><td>Requires grip (python module).</td></tr>
     <tr><td>rep</td><td>general</td><td>Repository utilitiy (one command, manage svn/cvs/git/hg at once!)</td><td></td></tr>
     <tr><td>gfwhere</td><td>general</td><td>Find inconsistently replicated files in GlusterFS</td><td></td></tr>
     <tr><td>json2csv</td><td>general</td><td>Convert JSON into CSV</td><td></td></tr>
+    <tr><td>csv2html</td><td>general</td><td>Convert CSV into HTML</td><td></td></tr>
+    <tr><td>csv2md</td><td>general</td><td>Convert CSV into a table in
+Markdown extra</td><td></td></tr>
     <tr><td></td><td></td><td></td><td></td></tr>
 </table>
 
