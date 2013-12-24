@@ -10,13 +10,15 @@ use Getopt::Long;
 use Cwd;
 use Term::ANSIColor;
 
-my $flag_debug   = 0;
-my $flag_help    = 0;
-my $flag_man     = 0;
+my $flag_debug      = 0;
+my $flag_help       = 0;
+my $flag_man        = 0;
+my $flag_noparallel = 0;
 
-GetOptions("debug"   => \$flag_debug,
-		   "help"    => \$flag_help,
-           "man"     => \$flag_man,
+GetOptions("debug"      => \$flag_debug,
+		   "help"       => \$flag_help,
+           "man"        => \$flag_man,
+           "noparallel" => \$flag_noparallel
 	);
 
 my $command = shift;
@@ -50,6 +52,7 @@ if($command eq 'which')   { cmd_which(); exit 0; }
 if($command eq 'list')    { cmd_list(); exit 0; }
 if($command eq 'pull')    { cmd_pull(); exit 0; }
 if($command eq 'pullall') { cmd_pullall(); exit 0; }
+if($command eq 'pullall_child') { my $dir = shift; cmd_pullall_child($dir); exit 0; }
 if($command eq 'stat' || $command eq 'status') {
 	cmd_status(); exit 0; 
 }
@@ -59,6 +62,10 @@ if($command eq 'statall' || $command eq 'statusall') {
 if($command eq 'outgoing') { print STDERR "Sorry, not implemented yet.\n"; exit 1; }
 if($command eq 'outgoingall' || $command eq 'ogall') {
 	cmd_outgoingall(); exit 0;
+}
+if($command eq 'outgoingall_child') {
+    my $dir = shift;
+    cmd_outgoingall_child($dir); exit 0;
 }
 if($command eq 'origin') { cmd_origin(); exit 0; }
 if($command eq 'originall' || $command eq 'orall') {
@@ -221,6 +228,26 @@ sub get_repo_type_of_current_dir()
 	return $type;
 }
 
+sub is_gnu_parallel_available()
+{
+    my $parallel_path = `which parallel`;
+    chomp $parallel_path;
+    if(-x $parallel_path) {
+        return $parallel_path;
+    }
+    return undef;
+}
+
+sub gnu_parallel
+{
+    my $cmd = "sem -j+2 ";
+    for(@_) {
+        print STDERR "\% $cmd $_\n" if(0 < $flag_debug);
+        system "$cmd $_";
+    }
+    `sem --wait`;
+}
+
 sub cmd_pull()
 {
 	my $type = get_repo_type_of_current_dir();
@@ -233,28 +260,56 @@ sub cmd_status()
 	status($type);
 }
 
+sub cmd_pullall_sub($$)
+{
+    my $dirname = shift;
+    my $base_dir = shift;
+    my $type = get_repo_type($dirname);
+    if(defined $type) {
+        if(chdir $dirname) {
+            print cl('green') . "$type" . cl('reset') . "\t$dirname\t";
+            pull($type);
+            unless(chdir $base_dir) {
+                print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
+                print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
+                exit 3;
+            }
+        } else {
+            print cl('red') . "denied" . cl('reset') . "\t$dirname\n";
+        }
+    } else {
+        print "unknown\t$dirname\n";
+    }
+}
+
+sub cmd_pullall_child($)
+{
+    my $dirname = shift;
+	my $base_dir = Cwd::getcwd();
+    cmd_pullall_sub($dirname, $base_dir);
+}
+
 sub cmd_pullall()
 {
 	my @dirnames = <*>;
 	my $base_dir = Cwd::getcwd();
-	for my $dirname (@dirnames) {
-		my $type = get_repo_type($dirname);
-		if(defined $type) {
-			if(chdir $dirname) {
-				print cl('green') . "$type" . cl('reset') . "\t$dirname\t";
-				pull($type);
-				unless(chdir $base_dir) {
-					print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
-					print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
-					exit 3;
-				}
-			} else {
-				print cl('red') . "denied" . cl('reset') . "\t$dirname\n";
-			}
-		} else {
-			print "unknown\t$dirname\n";
-		}
-	}
+    my $is_gnu_parallel_available = is_gnu_parallel_available();
+    unless($is_gnu_parallel_available && !$flag_noparallel) {
+        for my $dirname (@dirnames) {
+            cmd_pullall_sub($dirname, $base_dir);
+        }
+    } else {
+        my @parallel_commands;
+        for my $dirname (@dirnames) {
+            my $type = get_repo_type($dirname);
+            if(defined $type) {
+                push(@parallel_commands, "$0 pullall_child $dirname");
+            } else {
+                print "unknown\t$dirname\n";
+            }
+        }
+        gnu_parallel(@parallel_commands);
+    }
 }
 
 sub cmd_statusall()
@@ -296,73 +351,100 @@ sub git_get_current_branch
 	return undef;
 }
 
+sub cmd_outgoingall_sub
+{
+    my ($dirname, $base_dir) = @_;
+    my $type = get_repo_type($dirname);
+    if(defined $type) {
+        if(chdir $dirname) {
+            my $ret_status = return_status_silently($type);
+            if($ret_status == 0) {
+                if($type eq 'hg') {
+                    my @s = `hg outgoing`;
+                    if(($? >> 8) == 0) {
+                        print cl('green') . "O" . cl('reset');
+                    } else {
+                        print " ";
+                    }
+                } elsif ($type eq 'git') {
+                    my @s = `git fetch`;
+                    my $current_branch = git_get_current_branch();
+                    unless(defined $current_branch) {
+                        print cl('red') . "X" . cl('reset');
+                    } else {
+                        my $remoterep = `git config branch.$current_branch.remote`; chomp $remoterep;
+                        if((!defined $remoterep) || ($remoterep eq '')) {
+                            print cl('red') . "X" . cl('reset');
+                        } else {
+                            my $remotebra = `git config branch.$current_branch.merge`; chomp $remotebra;
+                            $remotebra =~ s|^[^/]*/[^/]*/||;
+                            my @result = `git log $remoterep/$remotebra.. | cat`;
+                            if(1 < @result) { # outputs just one line if nothing is outgoing
+                                print cl('green') . "O" . cl('reset');
+                            } else {
+                                print " ";
+                            }
+                        }
+                    }
+                } elsif ($type eq 'svn') {
+                    my @s = `svn status -u`;
+                    if($?) {
+                        print cl('red') . "X" . cl('reset');
+                    } else {
+                        if(scalar(@s) > 1) {
+                            print cl('green') . "O" . cl('reset');
+                        } else {
+                            print " ";
+                        }
+                    }
+                } else {
+                    print cl('red') . "U" . cl('reset');
+                }
+            } else {
+                print cl('green') . "M" . cl('reset');
+            }
+            print "\t$type\t$dirname\n";
+            unless(chdir $base_dir) {
+                print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
+                print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
+                exit 3;
+            }
+        } else {
+            print cl('red') . "X" . cl('reset') . "\tdenied\t$dirname\n";
+        }
+    } else {
+        print cl('red') . "-" . cl('reset') . "\tunknown\t$dirname\n";
+    }
+}
+
+sub cmd_outgoingall_child
+{
+	my $dirname = shift;
+	my $base_dir = Cwd::getcwd();
+    cmd_outgoingall_sub($dirname, $base_dir);
+}
+
 sub cmd_outgoingall
 {
 	my @dirnames = <*>;
 	my $base_dir = Cwd::getcwd();
-	for my $dirname (@dirnames) {
-		my $type = get_repo_type($dirname);
-		if(defined $type) {
-			if(chdir $dirname) {
-				my $ret_status = return_status_silently($type);
-				if($ret_status == 0) {
-					if($type eq 'hg') {
-						my @s = `hg outgoing`;
-						if(($? >> 8) == 0) {
-							print cl('green') . "O" . cl('reset');
-						} else {
-							print " ";
-						}
-					} elsif ($type eq 'git') {
-						my @s = `git fetch`;
-						my $current_branch = git_get_current_branch();
-						unless(defined $current_branch) {
-							print cl('red') . "X" . cl('reset');
-						} else {
-							my $remoterep = `git config branch.$current_branch.remote`; chomp $remoterep;
-							if((!defined $remoterep) || ($remoterep eq '')) {
-								print cl('red') . "X" . cl('reset');
-							} else {
-								my $remotebra = `git config branch.$current_branch.merge`; chomp $remotebra;
-								$remotebra =~ s|^[^/]*/[^/]*/||;
-								my @result = `git log $remoterep/$remotebra.. | cat`;
-								if(1 < @result) { # outputs just one line if nothing is outgoing
-									print cl('green') . "O" . cl('reset');
-								} else {
-									print " ";
-								}
-							}
-						}
-					} elsif ($type eq 'svn') {
-						my @s = `svn status -u`;
-						if($?) {
-							print cl('red') . "X" . cl('reset');
-						} else {
-							if(scalar(@s) > 1) {
-								print cl('green') . "O" . cl('reset');
-							} else {
-								print " ";
-							}
-						}
-					} else {
-						print cl('red') . "U" . cl('reset');
-					}
-				} else {
-					print cl('green') . "M" . cl('reset');
-				}
-				print "\t$type\t$dirname\n";
-				unless(chdir $base_dir) {
-					print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
-					print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
-					exit 3;
-				}
-			} else {
-				print cl('red') . "X" . cl('reset') . "\tdenied\t$dirname\n";
-			}
-		} else {
-			print cl('red') . "-" . cl('reset') . "\tunknown\t$dirname\n";
-		}
-	}
+    my $is_gnu_parallel_available = is_gnu_parallel_available();
+    unless($is_gnu_parallel_available && !$flag_noparallel) {
+        for my $dirname (@dirnames) {
+            cmd_outgoingall_sub($dirname, $base_dir);
+        }
+    } else {
+        my @parallel_commands;
+        for my $dirname (@dirnames) {
+            my $type = get_repo_type($dirname);
+            if(defined $type) {
+                push(@parallel_commands, "$0 outgoingall_child $dirname");
+            } else {
+                print "unknown\t$dirname\n";
+            }
+        }
+        gnu_parallel(@parallel_commands);
+    }
 }
 
 sub show_origin()
