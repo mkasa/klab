@@ -84,11 +84,14 @@ sub dosh($)
 	my $shellcmd = shift;
 	print "\$ $shellcmd\n";
 	system $shellcmd;
-	if($?) {
-		my $c = $? >> 8;
-		print cl('red') . "ERROR: retcode = $c" . cl('reset') . "\n";
+    if($? == -1) {
+        print cl('red') . "ERROR: an error occurred while executing the above command line." . cl('reset') . "\n";
+    } elsif($?) {
+		my $code = $? >> 8;
+		print cl('red') . "ERROR: retcode = $code" . cl('reset') . "\n";
+        return $code;
 	}
-	return $?;
+	return 0;
 }
 
 sub get_repo_type($)
