@@ -63,6 +63,10 @@ if($command eq 'outgoing') { print STDERR "Sorry, not implemented yet.\n"; exit 
 if($command eq 'outgoingall' || $command eq 'ogall') {
     cmd_outgoingall(); exit 0;
 }
+if($command eq 'statusall_sub') {
+    my $subarg = shift;
+    cmd_statusall_sub($subarg); exit 0;
+}
 if($command eq 'outgoingall_child') {
     my $dir = shift;
     cmd_outgoingall_child($dir); exit 0;
@@ -309,31 +313,46 @@ sub cmd_pullall()
     }
 }
 
+sub cmd_statusall_sub($)
+{
+    my $dirname = shift;
+    my $type = get_repo_type($dirname);
+    if(defined $type) {
+        if(chdir $dirname) {
+            my $ret_status = return_status_silently($type);
+            if($ret_status == 0) {
+                print " \t$type\t$dirname\n";
+            } else {
+                print cl('green') . "M" . cl('reset') . "\t$type\t$dirname\n";
+            }
+        } else {
+            print cl('red') . "X" . cl('reset') . "\tdenied\t$dirname\n";
+        }
+    } else {
+        print cl('red') . "-" . cl('reset') . "\tunknown\t$dirname\n";
+    }
+}
+
 sub cmd_statusall()
 {
     my @dirnames = <*>;
     my $base_dir = Cwd::getcwd();
-    for my $dirname (@dirnames) {
-        my $type = get_repo_type($dirname);
-        if(defined $type) {
-            if(chdir $dirname) {
-                my $ret_status = return_status_silently($type);
-                if($ret_status == 0) {
-                    print " \t$type\t$dirname\n";
-                } else {
-                    print cl('green') . "M" . cl('reset') . "\t$type\t$dirname\n";
-                }
-                unless(chdir $base_dir) {
-                    print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
-                    print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
-                    exit 3;
-                }
-            } else {
-                print cl('red') . "X" . cl('reset') . "\tdenied\t$dirname\n";
+    my $is_gnu_parallel_available = is_gnu_parallel_available();
+    unless(0 && $is_gnu_parallel_available && !$flag_noparallel) {
+        for my $dirname (@dirnames) {
+            cmd_statusall_sub($dirname);
+            unless(chdir $base_dir) {
+                print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
+                print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
+                exit 3;
             }
-        } else {
-            print cl('red') . "-" . cl('reset') . "\tunknown\t$dirname\n";
         }
+    } else {
+        my @parallel_commands;
+        for my $dirname (@dirnames) {
+            push(@parallel_commands, "$0 statusall_sub $dirname");
+        }
+        gnu_parallel(@parallel_commands);
     }
 }
 
