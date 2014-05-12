@@ -16,36 +16,36 @@ my $flag_man        = 0;
 my $flag_noparallel = 0;
 
 GetOptions("debug"      => \$flag_debug,
-		   "help"       => \$flag_help,
+           "help"       => \$flag_help,
            "man"        => \$flag_man,
            "noparallel" => \$flag_noparallel
-	);
+    );
 
 my $command = shift;
 
 if($flag_help || $command =~ /^help$/i) {
-	my $is_in_synopsis = 0;
-	while(<DATA>) {
-		if($is_in_synopsis) {
-			if(m|^=|) {
-				$is_in_synopsis = 0;
-			} else {
-				print STDERR;
-			}
-		} else {
-			if(m|SYNOPSIS|) {
-				$is_in_synopsis = 1;
-			}
-		}
-	}
-	exit 2;
+    my $is_in_synopsis = 0;
+    while(<DATA>) {
+        if($is_in_synopsis) {
+            if(m|^=|) {
+                $is_in_synopsis = 0;
+            } else {
+                print STDERR;
+            }
+        } else {
+            if(m|SYNOPSIS|) {
+                $is_in_synopsis = 1;
+            }
+        }
+    }
+    exit 2;
 }
 pod2usage(-verbose => 2) if($flag_man  || $command =~ /^man$/i);
 
 unless(defined $command) {
-	print STDERR "Usage: rep <command> [options]\n";
-	print STDERR "rep -help, or rep -man to get more information.\n";
-	exit 0;
+    print STDERR "Usage: rep <command> [options]\n";
+    print STDERR "rep -help, or rep -man to get more information.\n";
+    exit 0;
 }
 
 if($command eq 'which')   { cmd_which(); exit 0; }
@@ -54,14 +54,18 @@ if($command eq 'pull')    { cmd_pull(); exit 0; }
 if($command eq 'pullall') { cmd_pullall(); exit 0; }
 if($command eq 'pullall_child') { my $dir = shift; cmd_pullall_child($dir); exit 0; }
 if($command eq 'stat' || $command eq 'status') {
-	cmd_status(); exit 0; 
+    cmd_status(); exit 0; 
 }
 if($command eq 'statall' || $command eq 'statusall') {
-	cmd_statusall(); exit 0;
+    cmd_statusall(); exit 0;
 }
 if($command eq 'outgoing') { print STDERR "Sorry, not implemented yet.\n"; exit 1; }
 if($command eq 'outgoingall' || $command eq 'ogall') {
-	cmd_outgoingall(); exit 0;
+    cmd_outgoingall(); exit 0;
+}
+if($command eq 'statusall_sub') {
+    my $subarg = shift;
+    cmd_statusall_sub($subarg); exit 0;
 }
 if($command eq 'outgoingall_child') {
     my $dir = shift;
@@ -69,7 +73,7 @@ if($command eq 'outgoingall_child') {
 }
 if($command eq 'origin') { cmd_origin(); exit 0; }
 if($command eq 'originall' || $command eq 'orall') {
-	cmd_originall(); exit 0;
+    cmd_originall(); exit 0;
 }
 if($command eq 'ignore') { my $sub_arg = shift; cmd_ignore($sub_arg); exit 0; }
 
@@ -78,12 +82,12 @@ exit 1;
 
 sub cl($)
 {
-	my $s = shift;
-	if(-t STDOUT && $ENV{'TERM'} ne 'dumb') {
-		return color($s);
-	} else {
-		return "";
-	}
+    my $s = shift;
+    if(-t STDOUT && $ENV{'TERM'} ne 'dumb') {
+        return color($s);
+    } else {
+        return "";
+    }
 }
 
 sub dosh($)
@@ -103,129 +107,129 @@ sub dosh($)
 
 sub get_repo_type($)
 {
-	my $dir = shift;
-	chop while($dir =~ m|/$|);
-	return "git" if(-e $dir . "/.git");
-	return "cvs" if(-e $dir . "/CVSROOT");
-	return "svn" if(-e $dir . "/.svn");
-	return "rcs" if(-e $dir . "/RCS");
-	while(1) {
-		return "hg" if(-e $dir . "/.hg");
-		unless($dir =~ s|/[^/]*$||) { last }
-	}
-	return undef;
+    my $dir = shift;
+    chop while($dir =~ m|/$|);
+    return "git" if(-e $dir . "/.git");
+    return "cvs" if(-e $dir . "/CVSROOT");
+    return "svn" if(-e $dir . "/.svn");
+    return "rcs" if(-e $dir . "/RCS");
+    while(1) {
+        return "hg" if(-e $dir . "/.hg");
+        unless($dir =~ s|/[^/]*$||) { last }
+    }
+    return undef;
 }
 
 sub cmd_which()
 {
-	my $type = get_repo_type(".");
-	unless(defined $type) {
-		print "unknown\t.\n";
-	} else {
-		print cl('green') . $type . cl('reset') . "\t.\n";
-	}
+    my $type = get_repo_type(".");
+    unless(defined $type) {
+        print "unknown\t.\n";
+    } else {
+        print cl('green') . $type . cl('reset') . "\t.\n";
+    }
 }
 
 sub cmd_list()
 {
-	my @dirnames = <*>;
-	for my $dirname (@dirnames) {
-		my $type = get_repo_type($dirname);
-		unless(defined $type) {
-			print "unknown\t$dirname\n";
-		} else {
-			print cl('green') . $type . cl('reset') . "\t$dirname\n";
-		}
-	}
+    my @dirnames = <*>;
+    for my $dirname (@dirnames) {
+        my $type = get_repo_type($dirname);
+        unless(defined $type) {
+            print "unknown\t$dirname\n";
+        } else {
+            print cl('green') . $type . cl('reset') . "\t$dirname\n";
+        }
+    }
 }
 
 sub pull($)
 {
-	my $type = shift;
-	if($type eq 'git') {
-		my @s = `git remote`; die "Couldn't 'git remote'" if($?);
-		if(@s > 0) {
-			dosh("git pull");
-		} else {
-			print "It looks like a local repository.\n";
-		}
-	} elsif($type eq 'cvs') {
-		dosh("cvs up");
-	} elsif($type eq 'svn') {
-		dosh("svn up");
-	} elsif($type eq 'rcs') {
-		print "Nothing to do\n";
-	} elsif($type eq 'hg') {
-		my @s = `grep default .hg/hgrc`;
-		if($? == 0) {
-			my $rs = return_status_silently($type);
-			if(0 < $rs) {
-				print "You have modifiled files.\n";
-			} else {
-				dosh("hg pull -u");
-			}
-		} else {
-			print "It looks like a local repository.\n";
-		}
-	} else {
-		print STDERR cl('red') . "ERROR: Internal error (pull)." . cl('reset') . "\n";
-		exit 3;
-	}
+    my $type = shift;
+    if($type eq 'git') {
+        my @s = `git remote`; die "Couldn't 'git remote'" if($?);
+        if(@s > 0) {
+            dosh("git pull");
+        } else {
+            print "It looks like a local repository.\n";
+        }
+    } elsif($type eq 'cvs') {
+        dosh("cvs up");
+    } elsif($type eq 'svn') {
+        dosh("svn up");
+    } elsif($type eq 'rcs') {
+        print "Nothing to do\n";
+    } elsif($type eq 'hg') {
+        my @s = `grep default .hg/hgrc`;
+        if($? == 0) {
+            my $rs = return_status_silently($type);
+            if(0 < $rs) {
+                print "You have modifiled files.\n";
+            } else {
+                dosh("hg pull -u");
+            }
+        } else {
+            print "It looks like a local repository.\n";
+        }
+    } else {
+        print STDERR cl('red') . "ERROR: Internal error (pull)." . cl('reset') . "\n";
+        exit 3;
+    }
 }
 
 sub status($)
 {
-	my $type = shift;
-	if($type eq 'git') {
-		dosh("git status");
-	} elsif($type eq 'cvs') {
-		dosh("cvs status");
-	} elsif($type eq 'svn') {
-		dosh("svn status");
-	} elsif($type eq 'rcs') {
-		print "Not implemented.\n";
-	} elsif($type eq 'hg') {
-		dosh("hg status");
-	} else {
-		print STDERR "ERROR: Internal error (status).\n";
-		exit 3;
-	}
+    my $type = shift;
+    if($type eq 'git') {
+        dosh("git status");
+    } elsif($type eq 'cvs') {
+        dosh("cvs status");
+    } elsif($type eq 'svn') {
+        dosh("svn status");
+    } elsif($type eq 'rcs') {
+        print "Not implemented.\n";
+    } elsif($type eq 'hg') {
+        dosh("hg status");
+    } else {
+        print STDERR "ERROR: Internal error (status).\n";
+        exit 3;
+    }
 }
 
 sub return_status_silently($)
 {
-	my $type = shift;
-	if($type eq 'git') {
-		my @s = `git status`;
-		if($?) { die; }
-		return $s[-1] !~ m|working directory clean|;
-	} elsif($type eq 'cvs') {
+    my $type = shift;
+    if($type eq 'git') {
+        my @s = `git status`;
+        if($?) { die; }
+        return $s[-1] !~ m|working directory clean|;
+    } elsif($type eq 'cvs') {
         print "Not implemented.\n";
-	} elsif($type eq 'svn') {
+    } elsif($type eq 'svn') {
         my @s = `svn status`;
         if($?) { die; }
         return @s != 0;
-	} elsif($type eq 'rcs') {
+    } elsif($type eq 'rcs') {
         print "Not implemented.\n";
-	} elsif($type eq 'hg') {
+    } elsif($type eq 'hg') {
         my @s = `hg status`;
-		if($?) { die; }
-		return @s != 0;
-	} else {
-		print STDERR "ERROR: Internal error (status).\n";
-		exit 3;
-	}
+        if($?) { die; }
+        return @s != 0;
+    } else {
+        print STDERR "ERROR: Internal error (status).\n";
+        exit 3;
+    }
 }
 
 sub get_repo_type_of_current_dir()
 {
-	my $type = get_repo_type(".");
-	unless(defined $type) {
-		print STDERR cl('red') . "ERROR: Repository type is not known.\n";
-		print STDERR             "       Maybe just the current directory is not a repository?" . cl('reset') . "\n";
-		exit 1;
-	}
-	return $type;
+    my $type = get_repo_type(".");
+    unless(defined $type) {
+        print STDERR cl('red') . "ERROR: Repository type is not known.\n";
+        print STDERR             "       Maybe just the current directory is not a repository?" . cl('reset') . "\n";
+        exit 1;
+    }
+    return $type;
 }
 
 sub is_gnu_parallel_available()
@@ -250,14 +254,14 @@ sub gnu_parallel
 
 sub cmd_pull()
 {
-	my $type = get_repo_type_of_current_dir();
-	pull($type);
+    my $type = get_repo_type_of_current_dir();
+    pull($type);
 }
 
 sub cmd_status()
 {
-	my $type = get_repo_type_of_current_dir();
-	status($type);
+    my $type = get_repo_type_of_current_dir();
+    status($type);
 }
 
 sub cmd_pullall_sub($$)
@@ -285,14 +289,14 @@ sub cmd_pullall_sub($$)
 sub cmd_pullall_child($)
 {
     my $dirname = shift;
-	my $base_dir = Cwd::getcwd();
+    my $base_dir = Cwd::getcwd();
     cmd_pullall_sub($dirname, $base_dir);
 }
 
 sub cmd_pullall()
 {
-	my @dirnames = <*>;
-	my $base_dir = Cwd::getcwd();
+    my @dirnames = <*>;
+    my $base_dir = Cwd::getcwd();
     my $is_gnu_parallel_available = is_gnu_parallel_available();
     unless($is_gnu_parallel_available && !$flag_noparallel) {
         for my $dirname (@dirnames) {
@@ -312,43 +316,58 @@ sub cmd_pullall()
     }
 }
 
+sub cmd_statusall_sub($)
+{
+    my $dirname = shift;
+    my $type = get_repo_type($dirname);
+    if(defined $type) {
+        if(chdir $dirname) {
+            my $ret_status = return_status_silently($type);
+            if($ret_status == 0) {
+                print " \t$type\t$dirname\n";
+            } else {
+                print cl('green') . "M" . cl('reset') . "\t$type\t$dirname\n";
+            }
+        } else {
+            print cl('red') . "X" . cl('reset') . "\tdenied\t$dirname\n";
+        }
+    } else {
+        print cl('red') . "-" . cl('reset') . "\tunknown\t$dirname\n";
+    }
+}
+
 sub cmd_statusall()
 {
-	my @dirnames = <*>;
-	my $base_dir = Cwd::getcwd();
-	for my $dirname (@dirnames) {
-		my $type = get_repo_type($dirname);
-		if(defined $type) {
-			if(chdir $dirname) {
-				my $ret_status = return_status_silently($type);
-				if($ret_status == 0) {
-					print " \t$type\t$dirname\n";
-				} else {
-					print cl('green') . "M" . cl('reset') . "\t$type\t$dirname\n";
-				}
-				unless(chdir $base_dir) {
-					print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
-					print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
-					exit 3;
-				}
-			} else {
-				print cl('red') . "X" . cl('reset') . "\tdenied\t$dirname\n";
-			}
-		} else {
-			print cl('red') . "-" . cl('reset') . "\tunknown\t$dirname\n";
-		}
-	}
+    my @dirnames = <*>;
+    my $base_dir = Cwd::getcwd();
+    my $is_gnu_parallel_available = is_gnu_parallel_available();
+    unless(0 && $is_gnu_parallel_available && !$flag_noparallel) {
+        for my $dirname (@dirnames) {
+            cmd_statusall_sub($dirname);
+            unless(chdir $base_dir) {
+                print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
+                print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
+                exit 3;
+            }
+        }
+    } else {
+        my @parallel_commands;
+        for my $dirname (@dirnames) {
+            push(@parallel_commands, "$0 statusall_sub $dirname");
+        }
+        gnu_parallel(@parallel_commands);
+    }
 }
 
 sub git_get_current_branch
 {
-	my @lines = `git branch`;
-	for(@lines) {
-		if(/^\*\s(.*)$/) {
-			return $1;
-		}
-	}
-	return undef;
+    my @lines = `git branch`;
+    for(@lines) {
+        if(/^\*\s(.*)$/) {
+            return $1;
+        }
+    }
+    return undef;
 }
 
 sub cmd_outgoingall_sub
@@ -419,15 +438,15 @@ sub cmd_outgoingall_sub
 
 sub cmd_outgoingall_child
 {
-	my $dirname = shift;
-	my $base_dir = Cwd::getcwd();
+    my $dirname = shift;
+    my $base_dir = Cwd::getcwd();
     cmd_outgoingall_sub($dirname, $base_dir);
 }
 
 sub cmd_outgoingall
 {
-	my @dirnames = <*>;
-	my $base_dir = Cwd::getcwd();
+    my @dirnames = <*>;
+    my $base_dir = Cwd::getcwd();
     my $is_gnu_parallel_available = is_gnu_parallel_available();
     unless($is_gnu_parallel_available && !$flag_noparallel) {
         for my $dirname (@dirnames) {
@@ -449,87 +468,87 @@ sub cmd_outgoingall
 
 sub show_origin()
 {
-	my $type = get_repo_type(".");
-	if($type eq 'git') {
-		my @s = `git remote -v | grep '(fetch)'`;
-		if(@s == 0) {
-			print "local\n";
-		} else {
-			my $t = $s[0]; chomp $t;
-			$t =~ s|^\S+\s+||;
-			$t =~ s|\s+\(fetch\)$||;
-			print "$t\n";
-		}
-	} elsif($type eq 'hg') {
-		my @s = `cat .hg/hgrc`;
-		for(@s) {
-			chomp;
-			if(/^\s*default\s*=\s*(\S.*)$/) {
-				print "$1\n"; return;
-			}
-		}
-		print "local\n";
-	} else {
-		print "not supported\n";
-	}
+    my $type = get_repo_type(".");
+    if($type eq 'git') {
+        my @s = `git remote -v | grep '(fetch)'`;
+        if(@s == 0) {
+            print "local\n";
+        } else {
+            my $t = $s[0]; chomp $t;
+            $t =~ s|^\S+\s+||;
+            $t =~ s|\s+\(fetch\)$||;
+            print "$t\n";
+        }
+    } elsif($type eq 'hg') {
+        my @s = `cat .hg/hgrc`;
+        for(@s) {
+            chomp;
+            if(/^\s*default\s*=\s*(\S.*)$/) {
+                print "$1\n"; return;
+            }
+        }
+        print "local\n";
+    } else {
+        print "not supported\n";
+    }
 }
 
 sub cmd_origin()
 {
-	my $type = 	my $type = get_repo_type_of_current_dir();
-	print ".\t" . cl('green') . $type . cl('reset') . "\t";
-	show_origin();
+    my $type =  my $type = get_repo_type_of_current_dir();
+    print ".\t" . cl('green') . $type . cl('reset') . "\t";
+    show_origin();
 }
 
 sub cmd_originall()
 {
-	my @dirnames = <*>;
-	my $base_dir = Cwd::getcwd();
-	my $longest_dirname_len = 0;
-	for my $dirname (@dirnames) {
-		$longest_dirname_len = length($dirname) if(length($dirname) > $longest_dirname_len);
-	}
-	for my $dirname (@dirnames) {
-		my $type = get_repo_type($dirname);
-		print "$dirname" . (" "x($longest_dirname_len - length($dirname) + 1));
-		if(defined $type) {
-			if(chdir $dirname) {
-				print cl('green') . "$type" . cl('reset') . "\t";
-				show_origin();
-				unless(chdir $base_dir) {
-					print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
-					print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
-					exit 3;
-				}
-			} else {
-				print "$dirname\terror (chdir1)\n";
-			}
-		} else {
-			print "unknown\n";
-		}
-	}
+    my @dirnames = <*>;
+    my $base_dir = Cwd::getcwd();
+    my $longest_dirname_len = 0;
+    for my $dirname (@dirnames) {
+        $longest_dirname_len = length($dirname) if(length($dirname) > $longest_dirname_len);
+    }
+    for my $dirname (@dirnames) {
+        my $type = get_repo_type($dirname);
+        print "$dirname" . (" "x($longest_dirname_len - length($dirname) + 1));
+        if(defined $type) {
+            if(chdir $dirname) {
+                print cl('green') . "$type" . cl('reset') . "\t";
+                show_origin();
+                unless(chdir $base_dir) {
+                    print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
+                    print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
+                    exit 3;
+                }
+            } else {
+                print "$dirname\terror (chdir1)\n";
+            }
+        } else {
+            print "unknown\n";
+        }
+    }
 }
 
 sub cmd_ignore($)
 {
-	my $subarg = shift;
-	my $type = 	my $type = get_repo_type_of_current_dir();
-	if($type eq 'git') {
-		if($subarg eq 'c') {
-			if(-e '.gitignore') {
-				print STDERR "It seems you already have .gitignore. Aborts for safety.\n";
-			} else {
-				open my $fh, ">", ".gitignore" or die;
-				print $fh <<'EOF';
+    my $subarg = shift;
+    my $type =  my $type = get_repo_type_of_current_dir();
+    if($type eq 'git') {
+        if($subarg eq 'c') {
+            if(-e '.gitignore') {
+                print STDERR "It seems you already have .gitignore. Aborts for safety.\n";
+            } else {
+                open my $fh, ">", ".gitignore" or die;
+                print $fh <<'EOF';
 # Ignore backup files
 *~
 # Ignore dot files\n";
 .*
 EOF
-				close $fh;
-			}
-		} else {
-			print <<'EOF';
+                close $fh;
+            }
+        } else {
+            print <<'EOF';
 # place this as \$REPOSITORY/.gitignore
 # lines starting with '#' are comments.
 #
@@ -547,34 +566,34 @@ EOF
 # Please do 'rep ignore c' to create a template .gitignore file.
 # Do not forget to do 'git add .gitignore' when you store it in the repository.
 EOF
-		}
-	} elsif($type eq 'hg') {
-		if($subarg eq 'cg') {
-			if(-e '.hgignore') {
-				print STDERR "It seems you already have .hgignore. Aborts for safety.\n";
-			} else {
-				open my $fh, ">", ".hgignore" or die;
-				print $fh <<'EOF';
+        }
+    } elsif($type eq 'hg') {
+        if($subarg eq 'cg') {
+            if(-e '.hgignore') {
+                print STDERR "It seems you already have .hgignore. Aborts for safety.\n";
+            } else {
+                open my $fh, ">", ".hgignore" or die;
+                print $fh <<'EOF';
 syntax: glob
 #
 *~
 EOF
-				close $fh;
+                close $fh;
             }
-		} elsif($subarg eq 'cr') {
-			if(-e '.hgignore') {
-				print STDERR "It seems you already have .hgignore. Aborts for safety.\n";
-			} else {
-				open my $fh, ">", ".hgignore" or die;
-				print $fh <<'EOF';
+        } elsif($subarg eq 'cr') {
+            if(-e '.hgignore') {
+                print STDERR "It seems you already have .hgignore. Aborts for safety.\n";
+            } else {
+                open my $fh, ">", ".hgignore" or die;
+                print $fh <<'EOF';
 syntax: regexp
 #
 ^.*~$
 EOF
-				close $fh;
+                close $fh;
             }
-		} else {
-			print <<'EOF';
+        } else {
+            print <<'EOF';
 # place this as \$REPOSITORY/.hgignore
 # you can either select glob or regexp styles
 #
@@ -593,7 +612,7 @@ syntax: regexp
 # Please do 'rep ignore cr' to create a regexp-style template of .hgignore.
 # Do not forget to do 'hg add .hgignore' when you store it in the repository.
 EOF
-		}
+        }
     } 
 }
 

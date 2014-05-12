@@ -238,7 +238,7 @@ public:
 //    size_t tellg() { return ist.tellg(); }
     off_t get_offset() {return off_count; }
     size_t len() { return strlen(b); }
-    void seekg(off_t offset) { ist.seekg(offset); }
+    void seekg(off_t offset) {ist.clear(); ist.seekg(offset); } // clear eofbit before seeking
     void registerHeaderLine() {
         const size_t len_with_gt = len();
         if(len_with_gt == 0u) return;
