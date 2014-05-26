@@ -97,10 +97,14 @@ static string get_index_file_name(const char* fastq_file_name)
 static bool index_older_than_file(const string file_name, const string index_file_name)
 {
     struct stat s, s2;
-    int retf = stat(file_name.c_str(), &s);
-    if(retf != 0) return false;
-    retf = stat(index_file_name.c_str(), &s2);
-    if(retf != 0) return false;
+    {
+        int retf = stat(file_name.c_str(), &s);
+        if(retf != 0) return false;
+    }
+    {
+        int retf = stat(index_file_name.c_str(), &s2);
+        if(retf != 0) return false;
+    }
     return s.st_mtime > s2.st_mtime;
 }
 
