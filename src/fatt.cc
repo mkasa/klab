@@ -89,7 +89,6 @@ static void output_read_name(const char* header)
 {
 	if(*header++ == '\0') return;
 	while(*header != '\0' && *header != ' ') cout << *header++;
-	cout << '\n';
 }
 
 static string get_index_file_name(const char* fastq_file_name)
@@ -375,7 +374,7 @@ bool calculate_n50_statistics(const char* fname,
     return true;
 }
 
-void show_read_names_in_file(const char* fname, bool show_name) // if show_name is false, output read length
+void show_read_names_in_file(const char* fname, bool show_name, bool show_length)
 {
     FileLineBufferWithAutoExpansion f;
 	if(!f.open(fname)) {
@@ -388,17 +387,17 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
         if(!f.looksLikeFASTQHeader()) { 
             while(f.getline()) {
                 if(f.looksLikeFASTAHeader()) {
-                    if(show_name)
-                        output_read_name(f.b);
-                    else
-                        cout << number_of_nucleotides_in_read << "\n";
+                    if(show_length) {
+                        if(show_name) cout << "\t";
+                        cout << number_of_nucleotides_in_read;
+                    }
+                    cout << "\n";
+                    if(show_name) output_read_name(f.b);
                     number_of_nucleotides_in_read = 0;
                 } else {
                     number_of_nucleotides_in_read += f.len();
                 }
 			}
-            if(!show_name && 0 < number_of_nucleotides_in_read)
-                cout << number_of_nucleotides_in_read << "\n";
 		} else {
             while(f.getline()) {
                 if(f.looksLikeFASTQSeparator()) {
@@ -411,19 +410,24 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
                     f.expectHeaderOfEOF();
                     if(!f.getline()) break;
                     f.registerHeaderLine();
-					if(show_name)
-                        output_read_name(f.b);
-                    else
-                        cout << number_of_nucleotides_in_read << "\n";
+                    if(show_length) {
+                        if(show_name) cout << "\t";
+                        cout << number_of_nucleotides_in_read;
+                    }
+                    cout << "\n";
+                    if(show_name) output_read_name(f.b);
                     number_of_nucleotides_in_read = 0;
                 } else {
                     const size_t number_of_nucleotides_in_line = f.len();
                     number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                 }
             }
-            if(!show_name && 0 < number_of_nucleotides_in_read)
-                cout << number_of_nucleotides_in_read << "\n";
 		}
+        if(show_length) {
+            if(show_name) cout << "\t";
+            cout << number_of_nucleotides_in_read;
+        }
+        cout << "\n";
 	}
 }
 
@@ -691,14 +695,32 @@ void do_count(int argc, char** argv)
 void do_name(int argc, char** argv)
 {
 	for(int i = 2; i < argc; ++i) {
-		show_read_names_in_file(argv[i], true);
+		show_read_names_in_file(argv[i], true, false);
 	}
 }
 
 void do_len(int argc, char** argv)
 {
-	for(int i = 2; i < argc; ++i) {
-		show_read_names_in_file(argv[i], false);
+	bool flag_output_name = false;
+    static struct option long_options[] = {
+        {"name", no_argument, 0, 'n'},
+        {0, 0, 0, 0} // end of long options
+    };
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+        case 'n':
+            flag_output_name = true;
+            break;
+        }
+	}
+	for(int i = optind + 1; i < argc; ++i) {
+		show_read_names_in_file(argv[i], flag_output_name, true);
 	}
 }
 
@@ -2855,7 +2877,7 @@ void show_help(const char* subcommand)
     }
     if(subcmd == "len") {
         cerr << "Usage: fatt len [options...] <FAST(A|Q) files>\n\n";
-        cerr << "Currently, no options available.\n\n";
+        cerr << "--name\tAdd the name of the sequences in the second column.\n\n";
         cerr << "It outputs the length of the sequences in given files.\n";
         return;
     }
