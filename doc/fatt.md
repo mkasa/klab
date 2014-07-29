@@ -164,6 +164,16 @@ It calculates all 1- to 3-mer frequencies in the given files.
 It recognizes 'A' and 'a' as different characters by default. To ignore
 cases, add '--ignorecase'.
 
+split
+------
+Splits (possibly) huge files into smaller chunks of files.
+
+    fatt split --num=10 huge.fastq
+
+huge.fastq will be split into 10 files of similar sizes.
+fatt counts all nucleotides by default, but you can tell it to ignore
+N's (ignorecase) when you give --excn option.
+
 edit
 -----
 It allows us to edit FASTA/FASTQ files. It takes a Genome Edit Script

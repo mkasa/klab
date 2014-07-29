@@ -43,6 +43,11 @@ struct CSVEscape
 	CSVEscape(const char* p) : p(p) {}
 };
 
+inline bool isN(char c)
+{
+    return c == 'N' || c == 'n';
+}
+
 static ostream& operator << (ostream& os, const CSVEscape& c)
 {
 	for(const char* p = c.p; *p; ++p) {
@@ -950,6 +955,8 @@ void do_split(int argc, char** argv)
                         } else {
                             ost << f.b << "\n";
                             number_of_nucleotides_in_output_file += f.len();
+                            if(flag_exclude_n)
+                                number_of_nucleotides_in_output_file -= count_if(f.b, f.b + f.len(), isN);
                         }
                     }
                 } else {
@@ -973,6 +980,8 @@ void do_split(int argc, char** argv)
                         } else {
                             const size_t number_of_nucleotides_in_line = f.len();
                             number_of_nucleotides_in_output_file += number_of_nucleotides_in_line;
+                            if(flag_exclude_n)
+                                number_of_nucleotides_in_output_file -= count_if(f.b, f.b + f.len(), isN);
                             number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                             ost << f.b << "\n";
                         }
