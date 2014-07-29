@@ -860,14 +860,18 @@ void do_split(int argc, char** argv)
     bool flag_num = false;
     bool flag_max = false;
     bool flag_exclude_n = false;
-    long long specified_num = -1;
-    long long specified_max = -1;
+    bool flag_return_number_of_partitions_by_errcode = false;
+    long long param_specified_num = -1;
+    long long param_specified_max = -1;
+    string status_file_name;
     string output_file_prefix;
     static struct option long_options[] = {
         {"num", required_argument, 0, 'n'},
         {"max", required_argument, 0, 'm'},
         {"excn", no_argument, 0, 'e'},
         {"prefix", required_argument, 0, 'p'},
+        {"retstat", no_argument, 0, 's'},
+        {"filestat", required_argument, 0, 'f'},
         {0, 0, 0, 0} // end of long options
     };
     while(true) {
@@ -880,17 +884,23 @@ void do_split(int argc, char** argv)
 			break;
 		case 'n':
             flag_num = true;
-            specified_num = atoll(optarg);
+            param_specified_num = atoll(optarg);
 			break;
         case 'm':
             flag_max = true;
-            specified_max = atoll(optarg);
+            param_specified_max = atoll(optarg);
             break;
         case 'e':
             flag_exclude_n = true;
             break;
         case 'p':
             output_file_prefix = optarg;
+            break;
+        case 's':
+            flag_return_number_of_partitions_by_errcode = true;
+            break;
+        case 'f':
+            status_file_name = optarg;
             break;
         }
 	}
@@ -906,7 +916,11 @@ void do_split(int argc, char** argv)
         cerr << "ERROR: You can use either --max or --num, but not both.\n";
         return;
     }
-    if(flag_num) {
+    int out_file_index = 0;
+    long bases_per_file = -1;
+    if(flag_max) {
+        bases_per_file = param_specified_max;
+    } else if(flag_num) {
         vector<size_t> length_of_scaffolds_wgap;
         vector<size_t> length_of_scaffolds_wogap;
         vector<size_t> length_of_contigs;
@@ -916,17 +930,18 @@ void do_split(int argc, char** argv)
         }
         cerr << "\n";
         if(!(length_of_scaffolds_wgap.size() == length_of_scaffolds_wogap.size())) {
-            cerr << "Assertion failed. Maybe you found a bug! Please report to the author.\n";
+            cerr << "Assertion failed. Maybe you have found a bug! Please report to the author.\n";
             return;
         }
         const long long total_bases = flag_exclude_n ?
             accumulate(length_of_scaffolds_wogap.begin(), length_of_scaffolds_wogap.end(), 0ll):
             accumulate(length_of_scaffolds_wgap.begin(),  length_of_scaffolds_wgap.end(),  0ll);
-        const long long bases_per_file = (total_bases + specified_num - 1) / specified_num;
+        const long long bases_per_file = (total_bases + param_specified_num - 1) / param_specified_num;
         cerr << "Total " << total_bases << " bases (" << (flag_exclude_n ? "wo/ gaps" : "w/ gaps") << ") ";
         cerr << bases_per_file << " bases per file\n" << flush;
+    } else { /* never come here */ cerr << "ERROR: Please report to the author." << endl; exit(-1); }
+    {
         size_t number_of_nucleotides_in_output_file = bases_per_file + 1;
-        int out_file_index = 0;
         ofstream ost;
         for(int findex = optind + 1; findex < argc; ++findex) {
             const char* file_name = argv[findex];
@@ -990,15 +1005,23 @@ void do_split(int argc, char** argv)
             }
 #undef OPEN_NEXT_FILE_IF_NEEDED
         }
-        if(out_file_index <= 0) {
-            cerr << "No output.\n";
-        } else {
-            cerr << out_file_index << " files output.\n";
-        }
-    } else {
-        cerr << "ERROR: Sorry, --max option is not implemented.\n";
-        return;
     }
+    if(out_file_index <= 0) {
+        cerr << "No output.\n";
+    } else {
+        cerr << out_file_index << " files output.\n";
+    }
+    if(!status_file_name.empty()) {
+        ofstream ost(status_file_name.c_str());
+        if(!ost) {
+            cerr << "ERROR: cannot open a status file '" << status_file_name << "'" << endl;
+        } else {
+            ost << out_file_index << endl;
+        }
+    }
+    if(flag_return_number_of_partitions_by_errcode)
+        exit(out_file_index < 100 ? out_file_index : 100);
+    exit(0);
 }
 
 void do_index(int argc, char** argv)
@@ -3056,7 +3079,7 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     }
     if(commandString == "split") {
         do_split(argc, argv);
-        return;
+        return; // NOTE: do_split never returns.
     }
     // Help or error.
     if(commandString != "help") {

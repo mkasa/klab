@@ -171,8 +171,45 @@ Splits (possibly) huge files into smaller chunks of files.
     fatt split --num=10 huge.fastq
 
 huge.fastq will be split into 10 files of similar sizes.
+Alternatively you can tell the maxinum number of bases for a single
+output file. The following example splits huge.fastq into files of
+equal to or slightly larger than 10 Mbp (except for the last file).
+
+    fatt split --max=10000000000 huge.fastq
+
 fatt counts all nucleotides by default, but you can tell it to ignore
-N's (ignorecase) when you give --excn option.
+N's (ignorecase) when you give --excn option. This might help you when
+the file contains lots of N's.
+
+It usually outputs the exact number of files, but sometimes it cannot;
+such an extreme example is giving --num=100 for human chromosomes, for
+which the number of the sequences is less than 100.
+
+To get the exact number of the output files, you can do one of the
+followings.
+
+Output files are named prefix.1, prefix.2, ..., and so on. You can check
+whether they exist from prefix.1 and you will find the number if you
+failed to find a file with a particular suffix.
+
+Another way to do that is giving --retstat. With this, fatt will return
+the number by the exit code. The following loop in bash will process the split
+files. The exit code is only 7 bits in width, so you cannot use this
+method when the number of partitions exceeds 100.
+
+    fatt split --num=10 --retstat huge.fastq
+    for i in 1..$?; do
+        do something with huge.fastq.$i
+    done
+
+Last but not the least, you can use --retfile option to return the
+number of partitions by file. The following example might tell you in a
+second.
+
+    fatt split --num=1000 --filestat splitnum.txt huge.fastq
+    for i in 1..`cat splitnum.txt`; do
+        do something with huge.fastq.$i
+    done
 
 edit
 -----
