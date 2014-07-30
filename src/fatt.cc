@@ -98,6 +98,20 @@ static string get_index_file_name(const char* fastq_file_name)
     return index_file_name;
 }
 
+static bool index_older_than_file(const string file_name, const string index_file_name)
+{
+    struct stat s, s2;
+    {
+        int retf = stat(file_name.c_str(), &s);
+        if(retf != 0) return false;
+    }
+    {
+        int retf = stat(index_file_name.c_str(), &s2);
+        if(retf != 0) return false;
+    }
+    return s.st_mtime > s2.st_mtime;
+}
+
 static bool doesIndexExist(const char* fastq_file_name)
 {
     return access(get_index_file_name(fastq_file_name).c_str(), F_OK) == 0;
@@ -1200,6 +1214,10 @@ void do_extract(int argc, char** argv)
         if(use_index) {
             const bool is_fastq = is_file_fastq(file_name);
             const string index_file_name = get_index_file_name(file_name);
+            if(index_older_than_file(file_name, index_file_name)){
+                cerr << "Warning: index file " << index_file_name << 
+                      " is older than " << file_name << endl;
+            }
             try {
                 sqdb::Db db(index_file_name.c_str());
                 if(param_start == -1) {
