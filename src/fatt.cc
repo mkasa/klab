@@ -1796,9 +1796,27 @@ void investigate_composition(const char* file_name, bool ignore_case, bool flag_
                 }
             }
         }
+        freq_2_mer[previousCharacters[0]]['\0']++;
+        freq_3_mer[previousCharacters[1]][previousCharacters[0]]['\0']++;
+        freq_3_mer[previousCharacters[0]]['\0']['\0']++;
+    }
+    // if you do not need the counts from both ends,
+    if(!flag_count_ends) {
+        freq_1_mer[0] = 0;
+        for(size_t i = 0; i < N; ++i) {
+            freq_2_mer[i][0] = 0;
+            freq_2_mer[0][i] = 0;
+        }
+        for(size_t i = 0; i < N; ++i) for(size_t j = 0; j < N; ++j) {
+            freq_3_mer[0][i][j] = 0;
+            freq_3_mer[i][0][j] = 0;
+            freq_3_mer[i][j][0] = 0;
+        }
     }
     // show the results
     const size_t total_n_nmers = accumulate(freq_1_mer, freq_1_mer + sizeof(freq_1_mer) / sizeof(size_t), 0llu);
+    const size_t total_n2_nmers = accumulate(reinterpret_cast<size_t*>(freq_2_mer), reinterpret_cast<size_t*>(freq_2_mer) + sizeof(freq_2_mer) / sizeof(size_t), 0llu);
+    const size_t total_n3_nmers = accumulate(reinterpret_cast<size_t*>(freq_3_mer), reinterpret_cast<size_t*>(freq_3_mer) + sizeof(freq_3_mer) / sizeof(size_t), 0llu);
     cout << "Total # n-mers\n\t" << total_n_nmers << "\n";
     cout.setf(ios_base::fixed, ios_base::floatfield);
     if(!flag_only_trimer && !flag_only_bimer && !flag_dapi_check) {
@@ -1811,7 +1829,7 @@ void investigate_composition(const char* file_name, bool ignore_case, bool flag_
         cout << "2-mer stats\n";
         for(size_t i = 0; i < N; ++i) {
             for(size_t j = 0; j < N; ++j) {
-                if(freq_2_mer[i][j] != 0) cout << "\t" << asterisk_if_nulchar(i) << asterisk_if_nulchar(j) << "\t" << freq_2_mer[i][j] << "\t" << (double(freq_2_mer[i][j]) / total_n_nmers) << "\n";
+                if(freq_2_mer[i][j] != 0) cout << "\t" << asterisk_if_nulchar(i) << asterisk_if_nulchar(j) << "\t" << freq_2_mer[i][j] << "\t" << (double(freq_2_mer[i][j]) / total_n2_nmers) << "\n";
             }
         }
     }
@@ -1820,7 +1838,7 @@ void investigate_composition(const char* file_name, bool ignore_case, bool flag_
         for(size_t i = 0; i < N; ++i) {
             for(size_t j = 0; j < N; ++j) {
                 for(size_t k = 0; k < N; ++k) {
-                    if(freq_3_mer[i][j][k] != 0) cout << "\t" << asterisk_if_nulchar(i) << asterisk_if_nulchar(j) << asterisk_if_nulchar(k) << "\t" << freq_3_mer[i][j][k] << "\t" << (double(freq_3_mer[i][j][k]) / total_n_nmers) << "\n";
+                    if(freq_3_mer[i][j][k] != 0) cout << "\t" << asterisk_if_nulchar(i) << asterisk_if_nulchar(j) << asterisk_if_nulchar(k) << "\t" << freq_3_mer[i][j][k] << "\t" << (double(freq_3_mer[i][j][k]) / total_n3_nmers) << "\n";
                 }
             }
         }
@@ -2769,7 +2787,7 @@ void show_help(const char* subcommand)
         cerr << "--random\tChange into A/C/G/T randomly\n";
         return;
     }
-    if(subcmd == "compisition") {
+    if(subcmd == "composition") {
         cerr << "Usage: fatt composition [options...] <FAST(A|Q) files>\n\n";
         cerr << "--ignorecase\tIgnore case ('A' and 'a' will be considered as identical)\n";
         cerr << "--monomer\tShow only monomers\n";
@@ -2812,6 +2830,7 @@ void show_help(const char* subcommand)
 	cerr << "\tcount\tcount the number of reads/nucleotides\n";
 	cerr << "\tname\toutput the names of reads\n";
     cerr << "\tchksamename\toutput the names of reads if the read name is duplicated\n";
+    cerr << "\tcomposition\tcalculate the 1-, 2-, 3-mer composition.\n";
 	cerr << "\textract\textract a set of reads with condition\n";
 	cerr << "\tlen\toutput the lengths of reads\n";
     cerr << "\tstat\tshow the statistics of input sequences\n";
