@@ -63,7 +63,7 @@ static ostream& operator << (ostream& os, const vector<char>& v)
 static string sep_comma(size_t val)
 {
     char buf[32];
-    sprintf(buf, "%llu", val);
+    sprintf(buf, "%lu", val);
     string retval;
     size_t offset = (3 - strlen(buf) % 3) % 3;
     for(char* p = buf; *p; p++) {
@@ -1719,7 +1719,7 @@ static char asterisk_if_nulchar(int i)
     return '*';
 }
 
-void investigate_composition(const char* file_name, bool ignore_case, bool flag_only_monomer, bool flag_only_bimer, bool flag_only_trimer, bool flag_dapi_check)
+void investigate_composition(const char* file_name, bool ignore_case, bool flag_only_monomer, bool flag_only_bimer, bool flag_only_trimer, bool flag_dapi_check, bool flag_count_ends)
 {
     FileLineBufferWithAutoExpansion f;
     if(!f.open(file_name)) {
@@ -1996,12 +1996,14 @@ void do_composition(int argc, char** argv)
     bool flag_only_bimer   = false;
     bool flag_only_trimer  = false;
     bool flag_dapi_check   = false;
+    bool flag_count_ends   = false;
     static struct option long_options[] = {
         {"ignorecase", no_argument, 0, 'i'},
         {"monomer", no_argument, 0, '1'},
         {"bimer", no_argument, 0, '2'},
         {"trimer", no_argument, 0, '3'},
         {"dapicheck", no_argument, 0, 'd'},
+        {"countends", no_argument, 0, 'c'},
         {0, 0, 0, 0} // end of long options
     };
     while(true) {
@@ -2027,10 +2029,13 @@ void do_composition(int argc, char** argv)
         case 'd':
             flag_dapi_check = true;
             break;
+        case 'c':
+            flag_count_ends = true;
+            break;
         }
     }
     for(int i = optind + 1; i < argc; ++i) {
-        investigate_composition(argv[i], flag_ignore_case, flag_only_monomer, flag_only_bimer, flag_only_trimer, flag_dapi_check);
+        investigate_composition(argv[i], flag_ignore_case, flag_only_monomer, flag_only_bimer, flag_only_trimer, flag_dapi_check, flag_count_ends);
     }
 }
 
