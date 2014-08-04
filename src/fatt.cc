@@ -43,6 +43,11 @@ struct CSVEscape
 	CSVEscape(const char* p) : p(p) {}
 };
 
+inline bool isN(char c)
+{
+    return c == 'N' || c == 'n';
+}
+
 static ostream& operator << (ostream& os, const CSVEscape& c)
 {
 	for(const char* p = c.p; *p; ++p) {
@@ -84,7 +89,6 @@ static void output_read_name(const char* header)
 {
 	if(*header++ == '\0') return;
 	while(*header != '\0' && *header != ' ') cout << *header++;
-	cout << '\n';
 }
 
 static string get_index_file_name(const char* fastq_file_name)
@@ -291,7 +295,8 @@ public:
     }
 };
 
-void calculate_n50_statistics(const char* fname,
+// returns true if succeeded.
+bool calculate_n50_statistics(const char* fname,
                               vector<size_t>& length_of_scaffolds_wgap,
                               vector<size_t>& length_of_scaffolds_wogap,
                               vector<size_t>& length_of_contigs)
@@ -299,7 +304,7 @@ void calculate_n50_statistics(const char* fname,
     FileLineBufferWithAutoExpansion f;
     if(!f.open(fname)) {
         cerr << "Cannot open '" << fname << "'" << endl;
-        return;
+        return false;
     }
     if(f.getline()) {
         size_t length_as_scaffolds_wgap = 0;
@@ -380,9 +385,10 @@ void calculate_n50_statistics(const char* fname,
             }
 		}
 	}
+    return true;
 }
 
-void show_read_names_in_file(const char* fname, bool show_name) // if show_name is false, output read length
+void show_read_names_in_file(const char* fname, bool show_name, bool show_length)
 {
     FileLineBufferWithAutoExpansion f;
 	if(!f.open(fname)) {
@@ -395,17 +401,17 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
         if(!f.looksLikeFASTQHeader()) { 
             while(f.getline()) {
                 if(f.looksLikeFASTAHeader()) {
-                    if(show_name)
-                        output_read_name(f.b);
-                    else
-                        cout << number_of_nucleotides_in_read << "\n";
+                    if(show_length) {
+                        if(show_name) cout << "\t";
+                        cout << number_of_nucleotides_in_read;
+                    }
+                    cout << "\n";
+                    if(show_name) output_read_name(f.b);
                     number_of_nucleotides_in_read = 0;
                 } else {
                     number_of_nucleotides_in_read += f.len();
                 }
 			}
-            if(!show_name && 0 < number_of_nucleotides_in_read)
-                cout << number_of_nucleotides_in_read << "\n";
 		} else {
             while(f.getline()) {
                 if(f.looksLikeFASTQSeparator()) {
@@ -418,19 +424,24 @@ void show_read_names_in_file(const char* fname, bool show_name) // if show_name 
                     f.expectHeaderOfEOF();
                     if(!f.getline()) break;
                     f.registerHeaderLine();
-					if(show_name)
-                        output_read_name(f.b);
-                    else
-                        cout << number_of_nucleotides_in_read << "\n";
+                    if(show_length) {
+                        if(show_name) cout << "\t";
+                        cout << number_of_nucleotides_in_read;
+                    }
+                    cout << "\n";
+                    if(show_name) output_read_name(f.b);
                     number_of_nucleotides_in_read = 0;
                 } else {
                     const size_t number_of_nucleotides_in_line = f.len();
                     number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                 }
             }
-            if(!show_name && 0 < number_of_nucleotides_in_read)
-                cout << number_of_nucleotides_in_read << "\n";
 		}
+        if(show_length) {
+            if(show_name) cout << "\t";
+            cout << number_of_nucleotides_in_read;
+        }
+        cout << "\n";
 	}
 }
 
@@ -698,14 +709,32 @@ void do_count(int argc, char** argv)
 void do_name(int argc, char** argv)
 {
 	for(int i = 2; i < argc; ++i) {
-		show_read_names_in_file(argv[i], true);
+		show_read_names_in_file(argv[i], true, false);
 	}
 }
 
 void do_len(int argc, char** argv)
 {
-	for(int i = 2; i < argc; ++i) {
-		show_read_names_in_file(argv[i], false);
+	bool flag_output_name = false;
+    static struct option long_options[] = {
+        {"name", no_argument, 0, 'n'},
+        {0, 0, 0, 0} // end of long options
+    };
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+        case 'n':
+            flag_output_name = true;
+            break;
+        }
+	}
+	for(int i = optind + 1; i < argc; ++i) {
+		show_read_names_in_file(argv[i], flag_output_name, true);
 	}
 }
 
@@ -816,9 +845,16 @@ void do_stat(int argc, char** argv)
     vector<size_t> length_of_scaffolds_wgap;
     vector<size_t> length_of_scaffolds_wogap;
     vector<size_t> length_of_contigs;
+    int number_of_successfully_processed_files = 0;
 	for(int i = optind + 1; i < argc; ++i) {
-		calculate_n50_statistics(argv[i], length_of_scaffolds_wgap, length_of_scaffolds_wogap, length_of_contigs);
+		if(calculate_n50_statistics(argv[i], length_of_scaffolds_wgap, length_of_scaffolds_wogap, length_of_contigs)) {
+            number_of_successfully_processed_files++;
+        }
 	}
+    if(number_of_successfully_processed_files <= 0) {
+        cerr << "ERROR: All file(s) could not be opened." << endl;
+        return;
+    }
     if(!(length_of_scaffolds_wgap.size() == length_of_scaffolds_wogap.size())) {
         cerr << "Assertion failed. Maybe you found a bug! Please report to the author.\n";
         return;
@@ -853,6 +889,175 @@ void do_stat(int argc, char** argv)
     } else if(flag_json) {
         cout << "}\n";
     }
+}
+
+void do_split(int argc, char** argv)
+{
+    bool flag_num = false;
+    bool flag_max = false;
+    bool flag_exclude_n = false;
+    bool flag_return_number_of_partitions_by_errcode = false;
+    long long param_specified_num = -1;
+    long long param_specified_max = -1;
+    string status_file_name;
+    string output_file_prefix;
+    static struct option long_options[] = {
+        {"num", required_argument, 0, 'n'},
+        {"max", required_argument, 0, 'm'},
+        {"excn", no_argument, 0, 'e'},
+        {"prefix", required_argument, 0, 'p'},
+        {"retstat", no_argument, 0, 's'},
+        {"filestat", required_argument, 0, 'f'},
+        {0, 0, 0, 0} // end of long options
+    };
+    while(true) {
+		int option_index = 0;
+		int c = getopt_long(argc, argv, "", long_options, &option_index);
+		if(c == -1) break;
+		switch(c) {
+		case 0:
+			// you can see long_options[option_index].name/flag and optarg (null if no argument).
+			break;
+		case 'n':
+            flag_num = true;
+            param_specified_num = atoll(optarg);
+			break;
+        case 'm':
+            flag_max = true;
+            param_specified_max = atoll(optarg);
+            break;
+        case 'e':
+            flag_exclude_n = true;
+            break;
+        case 'p':
+            output_file_prefix = optarg;
+            break;
+        case 's':
+            flag_return_number_of_partitions_by_errcode = true;
+            break;
+        case 'f':
+            status_file_name = optarg;
+            break;
+        }
+	}
+    if(output_file_prefix.empty()) {
+        if(optind + 1 < argc) {
+            output_file_prefix = argv[optind + 1];
+        } else {
+            cerr << "ERROR: No input files." << endl;
+            return;
+        }
+    }
+    if(flag_max && flag_num) {
+        cerr << "ERROR: You can use either --max or --num, but not both.\n";
+        return;
+    }
+    int out_file_index = 0;
+    long bases_per_file = -1;
+    if(flag_max) {
+        bases_per_file = param_specified_max;
+    } else if(flag_num) {
+        vector<size_t> length_of_scaffolds_wgap;
+        vector<size_t> length_of_scaffolds_wogap;
+        vector<size_t> length_of_contigs;
+        for(int i = optind + 1; i < argc; ++i) {
+            cerr << "Counting the number of bases ('" << argv[i] << "')\r" << flush;
+            calculate_n50_statistics(argv[i], length_of_scaffolds_wgap, length_of_scaffolds_wogap, length_of_contigs);
+        }
+        cerr << "\n";
+        if(!(length_of_scaffolds_wgap.size() == length_of_scaffolds_wogap.size())) {
+            cerr << "Assertion failed. Maybe you have found a bug! Please report to the author.\n";
+            return;
+        }
+        const long long total_bases = flag_exclude_n ?
+            accumulate(length_of_scaffolds_wogap.begin(), length_of_scaffolds_wogap.end(), 0ll):
+            accumulate(length_of_scaffolds_wgap.begin(),  length_of_scaffolds_wgap.end(),  0ll);
+        const long long bases_per_file = (total_bases + param_specified_num - 1) / param_specified_num;
+        cerr << "Total " << total_bases << " bases (" << (flag_exclude_n ? "wo/ gaps" : "w/ gaps") << ") ";
+        cerr << bases_per_file << " bases per file\n" << flush;
+    } else { /* never come here */ cerr << "ERROR: Please report to the author." << endl; exit(-1); }
+    {
+        size_t number_of_nucleotides_in_output_file = bases_per_file + 1;
+        ofstream ost;
+        for(int findex = optind + 1; findex < argc; ++findex) {
+            const char* file_name = argv[findex];
+            FileLineBufferWithAutoExpansion f;
+            if(!f.open(file_name)) {
+                cerr << "Cannot open '" << file_name << "'" << endl;
+                continue;
+            }
+#define OPEN_NEXT_FILE_IF_NEEDED() if(bases_per_file <= number_of_nucleotides_in_output_file) { \
+                                       ost.close(); \
+                                       number_of_nucleotides_in_output_file = 0; \
+                                       out_file_index++; \
+                                       char buf[16]; sprintf(buf, "%d", out_file_index); \
+                                       const string output_file_name = output_file_prefix + "." + buf; \
+                                       ost.open(output_file_name.c_str()); \
+                                       if(!ost) { cerr << "ERROR: cannot open an output file '" << output_file_name << "'" << endl; return; } \
+                                   }
+            if(f.getline()) {
+                OPEN_NEXT_FILE_IF_NEEDED();
+                ost << f.b << "\n";
+                if(!f.looksLikeFASTQHeader()) { 
+                    while(f.getline()) {
+                        if(f.looksLikeFASTAHeader()) {
+                            OPEN_NEXT_FILE_IF_NEEDED();
+                            ost << f.b << "\n";
+                        } else {
+                            ost << f.b << "\n";
+                            number_of_nucleotides_in_output_file += f.len();
+                            if(flag_exclude_n)
+                                number_of_nucleotides_in_output_file -= count_if(f.b, f.b + f.len(), isN);
+                        }
+                    }
+                } else {
+                    long long number_of_nucleotides_in_read = 0;
+                    while(f.getline()) {
+                        if(f.looksLikeFASTQSeparator()) {
+                            long long n = number_of_nucleotides_in_read;
+                            ost << f.b << "\n";
+                            while(f.getline()) {
+                                const size_t number_of_qvchars_in_line = f.len();
+                                n -= number_of_qvchars_in_line;
+                                ost << f.b << "\n";
+                                if(n <= 0) break;
+                            }
+                            f.expectHeaderOfEOF();
+                            number_of_nucleotides_in_read = 0;
+                            if(!f.getline()) break;
+                            f.registerHeaderLine();
+                            OPEN_NEXT_FILE_IF_NEEDED();
+                            ost << f.b << "\n";
+                        } else {
+                            const size_t number_of_nucleotides_in_line = f.len();
+                            number_of_nucleotides_in_output_file += number_of_nucleotides_in_line;
+                            if(flag_exclude_n)
+                                number_of_nucleotides_in_output_file -= count_if(f.b, f.b + f.len(), isN);
+                            number_of_nucleotides_in_read += number_of_nucleotides_in_line;
+                            ost << f.b << "\n";
+                        }
+                    }
+                }
+            }
+#undef OPEN_NEXT_FILE_IF_NEEDED
+        }
+    }
+    if(out_file_index <= 0) {
+        cerr << "No output.\n";
+    } else {
+        cerr << out_file_index << " files output.\n";
+    }
+    if(!status_file_name.empty()) {
+        ofstream ost(status_file_name.c_str());
+        if(!ost) {
+            cerr << "ERROR: cannot open a status file '" << status_file_name << "'" << endl;
+        } else {
+            ost << out_file_index << endl;
+        }
+    }
+    if(flag_return_number_of_partitions_by_errcode)
+        exit(out_file_index < 100 ? out_file_index : 100);
+    exit(0);
 }
 
 void do_index(int argc, char** argv)
@@ -2713,7 +2918,7 @@ void show_help(const char* subcommand)
     }
     if(subcmd == "len") {
         cerr << "Usage: fatt len [options...] <FAST(A|Q) files>\n\n";
-        cerr << "Currently, no options available.\n\n";
+        cerr << "--name\tAdd the name of the sequences in the second column.\n\n";
         cerr << "It outputs the length of the sequences in given files.\n";
         return;
     }
@@ -2820,6 +3025,23 @@ void show_help(const char* subcommand)
         cerr << "\nFiles given in the command line will be loaded by loadall command before executing the edit script.\n";
         return;
     }
+    if(subcmd == "split") {
+        cerr << "Usage: fatt split --num=n <FAST(A|Q) file>\n";
+        cerr << "                split the file into n files.\n";
+        cerr << "       fatt split --max=n <FAST(A|Q) file>\n";
+        cerr << "                split the file into files of around n bytes\n";
+        cerr << "Split the input files into multiple files.\n\n";
+        cerr << "--prefix=name\tSpecify the prefix of output file name. If not specified, it will be the first input file\n";
+        cerr << "\n";
+        cerr << "'fatt split --num=3 huge.fastq' will split huge.fastq into 3 files.\n";
+        cerr << "fatt counts the number of bases in huge.fastq in the first phase.\n";
+        cerr << "Then, fatt copies sequences in the input to a chunk until the chunk has more than (total/3) bases.\n";
+        cerr << "The last chunk is usually smaller than the other chunks. Note that the number of output chunks\n";
+        cerr << "might be smaller than the specified number in some cases (e.g., --num=10 for 7 sequences).\n";
+        cerr << "The output chunks will be huge.fastq.1, huge.fastq.2, ..., and so on.\n";
+        cerr << "You can specify the prefix for output files by giving --prefix option.\n";
+        return;
+    }
     if(subcmd == "help") {
         cerr << "Uh? No detailed help for help.\n";
         cerr << "Read the manual, or ask the author.\n";
@@ -2843,6 +3065,7 @@ void show_help(const char* subcommand)
     cerr << "\tunfold\tunfold sequences\n";
     cerr << "\ttofasta\tconvert a FASTQ file into a FASTA file\n";
     cerr << "\tedit\tedit sequences by DSL (domain-specific language)\n";
+    cerr << "\tsplit\tsplit sequences into multiple files\n";
     cerr << "\thelp\tshow help message\n";
     cerr << "\nType 'fatt help <command>' to show the detail of the command.\n";
 }
@@ -2917,6 +3140,10 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     if(commandString == "edit") {
         do_edit(argc, argv);
         return;
+    }
+    if(commandString == "split") {
+        do_split(argc, argv);
+        return; // NOTE: do_split never returns.
     }
     // Help or error.
     if(commandString != "help") {
