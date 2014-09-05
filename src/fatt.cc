@@ -2804,7 +2804,7 @@ public:
                 }
                 printSequence(subargs);
             } else if(cmd == "split") {
-                if(subargs.size() != 3) {
+                if(subargs.size() != 4) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: split <sequence name> <split position (0-origin)> <left sequence name> <right sequence name>\n";
                     cerr << "The base at the split position goes to the right sequence.\n" << endl;
