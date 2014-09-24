@@ -3013,7 +3013,7 @@ void show_help(const char* subcommand)
         cerr << "\t\tloadall\tload entire sequences in a file (arg1) into memory\n";
         cerr << "\t\tsaveall\tsave entire sequences in memory into a file (arg1)\n";
         cerr << "\t\tloadone\tload a specified sequence in a file (arg1) with name arg2 into memory (index is used when available)\n";
-        cerr << "\t\tsaveone\tsave a specified sequence in memory with name arg1 into a file (arg2)\n";
+        cerr << "\t\tsaveone\ta specified sequence (arg2) in a file (arg1)\n";
         cerr << "\t\trename\trename a sequence (arg1) into arg2\n";
         cerr << "\t\tsetdesc\tset a description (arg2) to a specified sequence (arg1)\n";
         cerr << "\t\ttrim5\ttrim the 5'-end of a specified sequence (arg1) in memory by arg2 bp\n";
