@@ -2463,6 +2463,7 @@ public:
             ost << '>' << s.name;
             if(!s.description.empty()) ost << ' ' << s.description;
             ost << '\n';
+            ost << s.sequence << endl;
         }
         return true;
     }
