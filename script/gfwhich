@@ -482,8 +482,11 @@ gfwhich - Checking the hostnames in which files in the current directory are sto
 =head1 SYNOPSIS
 
 gfwhich [options]
+
 gfwhich --fix <filename> <host>
+
 gfwhich --dirfix <dirname>
+
 gfwhich --quickfix
 
 =head1 OPTIONS
