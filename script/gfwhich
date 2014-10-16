@@ -142,6 +142,13 @@ sub fix_dir
     print_and_do("mv $tmp_dir_name $dir_name");
 }
 
+sub shell_escape
+{
+    my $s = shift;
+    $s =~ s|(['"\\])|\\$1|g;
+    return $s;
+}
+
 sub execute_command
 {
     my ($gpath, $cwd, $command, @bricks) = @_;
@@ -152,8 +159,11 @@ sub execute_command
         $cmd .= "-t " if($flag_sudo);
         $cmd .= "$host ";
         $cmd .= "sudo " if($flag_sudo);
-        $command =~ s|:P|$path/$cwd|;
-        $cmd .= "$command";
+        {
+            $command =~ s|:P|$path/$cwd|;
+            my $pcmd = "sh -c \"cd $path/$cwd; " . shell_escape($command) . "\"";
+            $cmd .= "\"" . shell_escape($pcmd) ."\"";
+        }
         print "\$ $cmd\n" if($debug);
         print "On host $host:\n";
         system $cmd;
@@ -587,6 +597,28 @@ You can check the GFID of the parent directory of the specified file/directory b
 =item B<-qgfid>
 B<-qgfid> queries the GFID of a given file. For example, 'gfwhich -sudo -qgfid abc' will show the GFID of a file (or directory) abc.
 This option requires a root priviledge--you need a root account or at least that you can do sudo.
+
+=item B<-cmd>
+B<-cmd> executes a specified command on all of the bricks on the remote hosts.
+For example, the following command will show you the path of the remote directories::
+
+    $ cwd
+    /gluster/foo/bar/baz
+    $ gfwhich -cmd pwd
+    On host host00:
+    /export/g/foo/bar/baz
+    On host host01:
+    /export/g/foo/bar/baz
+    On host host02:
+    /export/g/foo/bar/baz
+    On host host03:
+    /export/g/foo/bar/baz
+
+You may need to escape spaces and parentheses if any::
+
+    $ gfwhich -cmd 'ls -al'
+
+If the command includes ':P' (without parens), it is expanded into the corresponding physical path (on a brick) of the current directory.
 
 =back
 
