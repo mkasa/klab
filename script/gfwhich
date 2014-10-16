@@ -23,6 +23,7 @@ my $flag_df = 0;
 my $flag_whole = 0;
 my $param_gfid = undef;
 my $param_gfid_query = undef;
+my $param_command = undef;
 
 GetOptions(
     "debug"    => \$debug,
@@ -40,6 +41,7 @@ GetOptions(
     "r=i"      => \$param_num_replica,
     "gfid=s"   => \$param_gfid,
     "qgfid=s"  => \$param_gfid_query,
+    "cmd=s"    => \$param_command,
     "sudo"     => \$flag_sudo
 );
 
@@ -138,6 +140,24 @@ sub fix_dir
     print_and_do("mv $dir_name/* $tmp_dir_name");
     print_and_do("rmdir $dir_name");
     print_and_do("mv $tmp_dir_name $dir_name");
+}
+
+sub execute_command
+{
+    my ($gpath, $cwd, $command, @bricks) = @_;
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        my $path = $brick->{"path"};
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        $command =~ s|:P|$path/$cwd|;
+        $cmd .= "$command";
+        print "\$ $cmd\n" if($debug);
+        print "On host $host:\n";
+        system $cmd;
+    }
 }
 
 sub print_disk_free_space
@@ -250,6 +270,10 @@ if($flag_fix) {
 }
 if($flag_dirfix) {
     fix_dir($param_fix_file);
+    exit 0;
+}
+if(defined $param_command) {
+    execute_command($gluster_path, $cwd, $param_command, @bricks);
     exit 0;
 }
 
