@@ -169,6 +169,7 @@ sub print_disk_free_space
 sub print_gfid_dir
 {
     my ($gfid, $suffix, @bricks) = @_;
+    $gfid =~ s|^0x||;
     $gfid =~ tr/A-Z/a-z/;
     unless($gfid =~ m|^([\da-f][\da-f])([\da-f][\da-f])|) {
         print STDERR "ERROR: '$gfid' does not look like a gfid.\n";
@@ -227,6 +228,10 @@ if(defined $param_gfid) {
 }
 my $cwd = getcwd();
 if(defined $param_gfid_query) {
+    if($ENV{'USER'} ne 'root' && !$flag_sudo) {
+        print STDERR "ERROR: you need to be root, or add -sudo option.\n";
+        exit 1;
+    }
     print_gfid_of_file_or_dir($gluster_path, $cwd, $param_gfid_query, @bricks);
     exit 0;
 }
@@ -545,6 +550,16 @@ then please give B<-clean>. The original (split-brain and possibly
 corrupted) file will be removed, and never gets back. You should be
 careful when you use this option. You can just type "rm *.orig" to
 do the same thing even after running it with B<--fix> and without B<-clean>.
+
+=item B<-gfid>
+B<-gfid> shows the underlying files (or directories) behind the specified file or directory.
+If the specified is a file, you will see replicated files in physical bricks.
+If the specified is a directory, you will see the directory replicated in all of the physical bricks.
+You can check the GFID of the parent directory of the specified file/directory by this option.
+
+=item B<-qgfid>
+B<-qgfid> queries the GFID of a given file. For example, 'gfwhich -sudo -qgfid abc' will show the GFID of a file (or directory) abc.
+This option requires a root priviledge--you need a root account or at least that you can do sudo.
 
 =back
 
