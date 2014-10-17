@@ -137,7 +137,7 @@ sub fix_dir
     my $dir_name = shift;
     my $tmp_dir_name = "$dir_name.tmp.$$";
     print_and_do("mkdir '$tmp_dir_name'");
-    print_and_do("sh -c 'mv \"$dir_name/*\" \"$dir_name/.[0-9a-z]*\" \"$tmp_dir_name/\"'");
+    print_and_do("sh -c 'mv \"$dir_name\"/* \"$dir_name\"/.[0-9a-z]* \"$tmp_dir_name/\"'");
     print_and_do("rmdir '$dir_name'");
     print_and_do("mv '$tmp_dir_name' '$dir_name'");
 }
