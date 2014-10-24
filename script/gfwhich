@@ -241,7 +241,7 @@ sub print_gfid_dir
         $cmd .= "-t " if($flag_sudo);
         $cmd .= "$host ";
         $cmd .= "sudo " if($flag_sudo);
-        $cmd .= "env LANG=C ls -ald $path/$lpath";
+        $cmd .= "env LANG=C ls -iald $path/$lpath";
         $cmd .= "/$suffix" if(defined $suffix && $suffix ne '');
         print "\$ $cmd\n" if($debug);
         system $cmd;
