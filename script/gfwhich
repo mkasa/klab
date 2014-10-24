@@ -20,6 +20,7 @@ my $flag_fix = 0;
 my $flag_dirfix = 0;
 my $flag_clean = 0;
 my $flag_df = 0;
+my $flag_show_xattr = 0;
 my $flag_whole = 0;
 my $param_gfid = undef;
 my $param_gfid_query = undef;
@@ -38,6 +39,7 @@ GetOptions(
     "w"        => \$flag_whole,
     "clean"    => \$flag_clean,
     "df"       => \$flag_df,
+    "lsattr"   => \$flag_show_xattr,
     "r=i"      => \$param_num_replica,
     "gfid=s"   => \$param_gfid,
     "qgfid=s"  => \$param_gfid_query,
@@ -239,6 +241,22 @@ sub print_gfid_dir
     }
 }
 
+sub print_indices_xattr
+{
+    my @bricks = @_;
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        my $path = $brick->{"path"};
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        $cmd .= "env LANG=C ls -ald $path/.glusterfs/indices/xattrop";
+        print "\$ $cmd\n" if($debug);
+        system $cmd;
+    }
+}
+
 sub print_gfid_of_file_or_dir
 {
     my ($gluster_path, $cwd, $lpath, @bricks) = @_;
@@ -263,6 +281,15 @@ sub print_gfid_of_file_or_dir
     }
 }
 
+sub ensure_you_have_root
+{
+    if($ENV{'USER'} ne 'root' && !$flag_sudo) {
+        print STDERR "ERROR: you need to be root, or add -sudo option.\n";
+        exit 1;
+    }
+    0;
+}
+
 my $ini = read_config();
 my $gluster_path = $ini->{"gluster_path"};
 my @bricks = @{$ini->{"bricks"}};
@@ -270,21 +297,21 @@ if($flag_df) {
     print_disk_free_space(@bricks);
     exit 0;
 }
+
 if(defined $param_gfid) {
-    if($ENV{'USER'} ne 'root' && !$flag_sudo) { # Replicated below
-        print STDERR "ERROR: you need to be root, or add -sudo option.\n";
-        exit 1;
-    }
+    ensure_you_have_root();
     print_gfid_dir($param_gfid, "", @bricks);
     exit 0;
 }
 my $cwd = getcwd();
 if(defined $param_gfid_query) {
-    if($ENV{'USER'} ne 'root' && !$flag_sudo) { # Replicated above
-        print STDERR "ERROR: you need to be root, or add -sudo option.\n";
-        exit 1;
-    }
+    ensure_you_have_root();
     print_gfid_of_file_or_dir($gluster_path, $cwd, $param_gfid_query, @bricks);
+    exit 0;
+}
+if($flag_show_xattr) {
+    ensure_you_have_root();
+    print_indices_xattr(@bricks);
     exit 0;
 }
 
@@ -616,8 +643,16 @@ If the specified is a file, you will see replicated files in physical bricks.
 If the specified is a directory, you will see the directory replicated in all of the physical bricks.
 You can check the GFID of the parent directory of the specified file/directory by this option.
 
+This option requires a root priviledge--you need a root account or at least that you can do sudo.
+
 =item B<-qgfid>
 B<-qgfid> queries the GFID of a given file. For example, 'gfwhich -sudo -qgfid abc' will show the GFID of a file (or directory) abc.
+
+This option requires a root priviledge--you need a root account or at least that you can do sudo.
+
+=item B<-lsattr>
+B<-lsattr> shows the GFIDs of pending operations (such as self-heal) 
+
 This option requires a root priviledge--you need a root account or at least that you can do sudo.
 
 =item B<-cmd>
