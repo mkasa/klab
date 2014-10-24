@@ -26,6 +26,7 @@ my $param_gfid = undef;
 my $param_gfid_query = undef;
 my $param_command = undef;
 my $param_resolve_gfid = undef;
+my $param_remove_xattrop = undef;
 
 GetOptions(
     "debug"         => \$debug,
@@ -42,6 +43,7 @@ GetOptions(
     "df"            => \$flag_df,
     "lsattr"        => \$flag_show_xattr,
     "resolvegfid=s" => \$param_resolve_gfid,
+    "removexattrop=s" => \$param_remove_xattrop,
     "r=i"           => \$param_num_replica,
     "gfid=s"        => \$param_gfid,
     "qgfid=s"       => \$param_gfid_query,
@@ -221,6 +223,7 @@ sub print_disk_free_space
 sub print_gfid_dir
 {
     my ($gfid, $suffix, @bricks) = @_;
+    $gfid =~ s|^xattrop-||;
     $gfid =~ s|^0x||;
     $gfid =~ tr/A-Z/a-z/;
     unless($gfid =~ m|^([\da-f][\da-f])([\da-f][\da-f])|) {
@@ -285,6 +288,27 @@ sub print_gfid_of_file_or_dir
         $cmd .= "sudo " if($flag_sudo);
         $cmd .= "env LANG=C getfattr -m trusted.gfid -d -e hex $path/$lpath";
         $cmd .= " | grep trusted.gfid";
+        print "\$ $cmd\n" if($debug);
+        system $cmd;
+    }
+}
+
+sub remove_xattrop
+{
+    my ($fname, $spec_host, @bricks) = @_;
+    if($fname =~ /^\s*$/) {
+        print STDERR "USAGE gfwhich -removexattrop host fname\n";
+        exit 1;
+    }
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        next if($spec_host ne $host);
+        my $path = $brick->{"path"};
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        $cmd .= "env LANG=C rm $path/.glusterfs/indices/xattrop/$fname";
         print "\$ $cmd\n" if($debug);
         system $cmd;
     }
@@ -397,6 +421,12 @@ if($flag_show_xattr) {
 if(defined $param_resolve_gfid) {
     ensure_you_have_root();
     resolve_gfid($param_resolve_gfid, @bricks);
+    exit 0;
+}
+if(defined $param_remove_xattrop) {
+    ensure_you_have_root();
+    my $fname = shift;
+    remove_xattrop($fname, $param_remove_xattrop, @bricks);
     exit 0;
 }
 
@@ -757,6 +787,12 @@ The following example shows the paths (for user) for files being self-healed.
 
 Initially, gfwhich -resolvegfid inputs file names from the stdin. However, using a non-tty stdin led to
 rejection in sudo command, which was unacceptable for resolving GFIDs requiring a root priviledge.
+
+=item B<-removexattrop>
+B<-removexattrop> removes a specified xattrop file. An example is here::
+
+    host2% gfwhich -removexattrop host1 xattrop-2b1232dc-79f9-4880-a55e-98488b0fa7f3
+    host2% gfwhich -removexattrop host2 f723067f-fcce-4b94-8db2-598d763592ab
 
 =item B<-cmd>
 B<-cmd> executes a specified command on all of the bricks on the remote hosts.
