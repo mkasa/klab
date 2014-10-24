@@ -226,6 +226,13 @@ sub print_gfid_dir
         exit 3;
     }
     my $p1 = $1; my $p2 = $2;
+    if(length($gfid) < 36) {   # reformat gfid
+        $gfid = substr($gfid,  0, 8) . "-" .
+                substr($gfid,  8, 4) . "-" .
+                substr($gfid, 12, 4) . "-" .
+                substr($gfid, 16, 4) . "-" .
+                substr($gfid, 20)
+    }
     my $lpath = ".glusterfs/$p1/$p2/$gfid";
     for my $brick (@bricks) {
         my $host = $brick->{"host"};
