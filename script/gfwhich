@@ -355,6 +355,7 @@ sub resolve_gfid
         for my $inum (@{$host_2_inums->{$host}}) {
             $cmd .= " -o -inum $inum";
         }
+        $cmd .= " -print";
         print "\$ $cmd\n" if($debug);
         system "$cmd";
     }
