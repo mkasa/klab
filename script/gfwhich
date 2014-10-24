@@ -377,9 +377,8 @@ sub resolve_gfid
         $cmd .= "sudo " if($flag_sudo);
         $cmd .= "env LANG=C find $path -name .glusterfs -prune";
         for my $inum (@{$host_2_inums->{$host}}) {
-            $cmd .= " -o -inum $inum";
+            $cmd .= " -o -inum $inum -print";
         }
-        $cmd .= " -print";
         $path .= "/" unless($path =~ m|/$|);
         $mount_point .= "/" unless($mount_point =~ m|/$|);
         $cmd .= " | perl -ple 's|^$path|$mount_point|'";
