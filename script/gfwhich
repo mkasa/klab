@@ -25,26 +25,28 @@ my $flag_whole = 0;
 my $param_gfid = undef;
 my $param_gfid_query = undef;
 my $param_command = undef;
+my $param_resolve_gfid = undef;
 
 GetOptions(
-    "debug"    => \$debug,
-    "help"     => \$flag_help,
-    "man"      => \$flag_man,
-    "l=i"      => \$param_left_column_size,
-    "i"        => \$flag_omit_consistent,
-    "d"        => \$flag_show_detail,
-    "fix"      => \$flag_fix,
-    "quickfix" => \$flag_quick_fix,
-    "dirfix"   => \$flag_dirfix,
-    "w"        => \$flag_whole,
-    "clean"    => \$flag_clean,
-    "df"       => \$flag_df,
-    "lsattr"   => \$flag_show_xattr,
-    "r=i"      => \$param_num_replica,
-    "gfid=s"   => \$param_gfid,
-    "qgfid=s"  => \$param_gfid_query,
-    "cmd=s"    => \$param_command,
-    "sudo"     => \$flag_sudo
+    "debug"         => \$debug,
+    "help"          => \$flag_help,
+    "man"           => \$flag_man,
+    "l=i"           => \$param_left_column_size,
+    "i"             => \$flag_omit_consistent,
+    "d"             => \$flag_show_detail,
+    "fix"           => \$flag_fix,
+    "quickfix"      => \$flag_quick_fix,
+    "dirfix"        => \$flag_dirfix,
+    "w"             => \$flag_whole,
+    "clean"         => \$flag_clean,
+    "df"            => \$flag_df,
+    "lsattr"        => \$flag_show_xattr,
+    "resolvegfid=s" => \$param_resolve_gfid,
+    "r=i"           => \$param_num_replica,
+    "gfid=s"        => \$param_gfid,
+    "qgfid=s"       => \$param_gfid_query,
+    "cmd=s"         => \$param_command,
+    "sudo"          => \$flag_sudo
 );
 
 my $param_fix_file;
@@ -288,6 +290,76 @@ sub print_gfid_of_file_or_dir
     }
 }
 
+sub resolve_gfid
+{
+    my ($attr_fname, @bricks) = @_;
+    my @gfids = ();
+    open my $fh, "<", $attr_fname or die "Could not open '$attr_fname'";
+    while(<$fh>) {
+        chomp;
+        while(m|([\da-f]+)-([\da-f]+)-([\da-f]+)-([\da-f]+)-([\da-f]+)|ig) {
+            push(@gfids, "$1-$2-$3-$4-$5");
+            print STDERR "Found GFID '" . $gfids[-1] . "'\n" if($debug > 0);
+        }
+    }
+    close $fh;
+    my $host_2_inums = {};
+    print STDERR "Gathering GFID info...\n";
+    for my $gfid (@gfids) {
+        unless($gfid =~ m|^([\da-f][\da-f])([\da-f][\da-f])|) {
+            print STDERR "ERROR: '$gfid' does not look like a gfid.\n";
+            next;
+        }
+        my $p1 = $1; my $p2 = $2;
+        my $lpath = ".glusterfs/$p1/$p2/$gfid";
+        for my $brick (@bricks) {
+            my $host = $brick->{"host"};
+            my $path = $brick->{"path"};
+            my $cmd = "ssh ";
+            $cmd .= "-t " if($flag_sudo);
+            $cmd .= "$host ";
+            $cmd .= "sudo " if($flag_sudo);
+            $cmd .= "env LANG=C ls -iald $path/$lpath";
+            print "\$ $cmd\n" if($debug);
+            use File::Temp qw/tempfile/;
+            my ($fh, $fname) = tempfile("gfwhichXXXXXX", DIR => "/tmp", UNLINK => 0);
+            system "$cmd > $fname";
+            for(`cat $fname`) {
+                if(/^\s*(\d+)/) {
+                    my $inode_number = $1;
+                    push(@{$host_2_inums->{$host}}, $inode_number);
+                    print STDERR "Found inum $inode_number at host $host\n" if($debug > 0);
+                }
+            }
+            unlink $fname;
+        }
+    }
+    my $number_of_inodes_found = 0;
+    while(my ($k, $v) = each %$host_2_inums) {
+        $number_of_inodes_found += length(@$v);
+    }
+    if($number_of_inodes_found <= 0) {
+        print STDERR "No inode number found. Abort.\n";
+        return;
+    }
+    print STDERR "$number_of_inodes_found inode numbers found.\n";
+    print STDERR "Searching files with specified GFID. This may take a long time.n";
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        my $path = $brick->{"path"};
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        $cmd .= "env LANG=C find $path .glusterfs -prune";
+        for my $inum (@{$host_2_inums->{$host}}) {
+            $cmd .= " -o -inum $inum";
+        }
+        print "\$ $cmd\n" if($debug);
+        system "$cmd";
+    }
+}
+
 sub ensure_you_have_root
 {
     if($ENV{'USER'} ne 'root' && !$flag_sudo) {
@@ -319,6 +391,11 @@ if(defined $param_gfid_query) {
 if($flag_show_xattr) {
     ensure_you_have_root();
     print_indices_xattr(@bricks);
+    exit 0;
+}
+if(defined $param_resolve_gfid) {
+    ensure_you_have_root();
+    resolve_gfid($param_resolve_gfid, @bricks);
     exit 0;
 }
 
@@ -661,6 +738,24 @@ This option requires a root priviledge--you need a root account or at least that
 B<-lsattr> shows the GFIDs of pending operations (such as self-heal) 
 
 This option requires a root priviledge--you need a root account or at least that you can do sudo.
+
+=item B<-resolvegfid>
+B<-resolvegfid> resolves GFIDs in the specified input file into gluster paths.
+Here is an example::
+
+    host1% echo f5a34588-1ea3-4c9d-8252-ac0241921627 > /tmp/foo
+    host1% gfwhich -resolvegfid /tmp/foo
+
+The input file is matched against the GUID regular expression, and the matched strings are
+used as input GFIDs. In other words, you do not have to remove non-GUID (non-GFID) strings
+before you give it to gfwhich. Therefore you can easily feed the output of other tools into gfwhich B<-resolvegfid>.
+The following example shows the paths (for user) for files being self-healed.
+
+    host1% gfwhich -lsattr > somefile
+    host1% gfwhich -resolvegfid somefile
+
+Initially, gfwhich -resolvegfid inputs file names from the stdin. However, using a non-tty stdin led to
+rejection in sudo command, which was unacceptable for resolving GFIDs requiring a root priviledge.
 
 =item B<-cmd>
 B<-cmd> executes a specified command on all of the bricks on the remote hosts.
