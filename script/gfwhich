@@ -343,7 +343,7 @@ sub resolve_gfid
         return;
     }
     print STDERR "$number_of_inodes_found inode numbers found.\n";
-    print STDERR "Searching files with specified GFID. This may take a long time.n";
+    print STDERR "Searching files with specified GFID. This may take a long time.\n";
     for my $brick (@bricks) {
         my $host = $brick->{"host"};
         my $path = $brick->{"path"};
@@ -351,7 +351,7 @@ sub resolve_gfid
         $cmd .= "-t " if($flag_sudo);
         $cmd .= "$host ";
         $cmd .= "sudo " if($flag_sudo);
-        $cmd .= "env LANG=C find $path .glusterfs -prune";
+        $cmd .= "env LANG=C find $path -name .glusterfs -prune";
         for my $inum (@{$host_2_inums->{$host}}) {
             $cmd .= " -o -inum $inum";
         }
