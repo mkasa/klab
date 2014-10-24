@@ -271,12 +271,16 @@ if($flag_df) {
     exit 0;
 }
 if(defined $param_gfid) {
+    if($ENV{'USER'} ne 'root' && !$flag_sudo) { # Replicated below
+        print STDERR "ERROR: you need to be root, or add -sudo option.\n";
+        exit 1;
+    }
     print_gfid_dir($param_gfid, "", @bricks);
     exit 0;
 }
 my $cwd = getcwd();
 if(defined $param_gfid_query) {
-    if($ENV{'USER'} ne 'root' && !$flag_sudo) {
+    if($ENV{'USER'} ne 'root' && !$flag_sudo) { # Replicated above
         print STDERR "ERROR: you need to be root, or add -sudo option.\n";
         exit 1;
     }
