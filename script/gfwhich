@@ -316,7 +316,7 @@ sub remove_xattrop
 
 sub resolve_gfid
 {
-    my ($attr_fname, @bricks) = @_;
+    my ($attr_fname, $mount_point, @bricks) = @_;
     my @gfids = ();
     open my $fh, "<", $attr_fname or die "Could not open '$attr_fname'";
     while(<$fh>) {
@@ -380,6 +380,9 @@ sub resolve_gfid
             $cmd .= " -o -inum $inum";
         }
         $cmd .= " -print";
+        $path .= "/" unless($path =~ m|/$|);
+        $mount_point .= "/" unless($mount_point =~ m|/$|);
+        $cmd .= " | perl -ple 's|^$path|$mount_point|'";
         print "\$ $cmd\n" if($debug);
         system "$cmd";
     }
@@ -420,7 +423,7 @@ if($flag_show_xattr) {
 }
 if(defined $param_resolve_gfid) {
     ensure_you_have_root();
-    resolve_gfid($param_resolve_gfid, @bricks);
+    resolve_gfid($param_resolve_gfid, $gluster_path, @bricks);
     exit 0;
 }
 if(defined $param_remove_xattrop) {
