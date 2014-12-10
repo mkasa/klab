@@ -127,6 +127,19 @@ static bool is_file_fastq(const char* fastq_file_name)
     return true;
 }
 
+class FileBuffering
+{
+    vector<char> buffer;
+public:
+    FileBuffering(size_t size = 256 * 1024u * 1024u) {
+        buffer.resize(size);
+    }
+    void connectToStream(ostream& os) {
+        os.rdbuf()->pubsetbuf(&*buffer.begin(), buffer.size());
+        std::ios_base::sync_with_stdio(false);
+    }
+};
+
 class CoutBuffering
 {
     vector<char> buffer;
@@ -2463,6 +2476,7 @@ public:
             ost << '>' << s.name;
             if(!s.description.empty()) ost << ' ' << s.description;
             ost << '\n';
+            ost << s.sequence << endl;
         }
         return true;
     }
@@ -2804,7 +2818,7 @@ public:
                 }
                 printSequence(subargs);
             } else if(cmd == "split") {
-                if(subargs.size() != 3) {
+                if(subargs.size() != 4) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: split <sequence name> <split position (0-origin)> <left sequence name> <right sequence name>\n";
                     cerr << "The base at the split position goes to the right sequence.\n" << endl;
@@ -3013,7 +3027,7 @@ void show_help(const char* subcommand)
         cerr << "\t\tloadall\tload entire sequences in a file (arg1) into memory\n";
         cerr << "\t\tsaveall\tsave entire sequences in memory into a file (arg1)\n";
         cerr << "\t\tloadone\tload a specified sequence in a file (arg1) with name arg2 into memory (index is used when available)\n";
-        cerr << "\t\tsaveone\tsave a specified sequence in memory with name arg1 into a file (arg2)\n";
+        cerr << "\t\tsaveone\tsave a specified sequence (arg2) into a file (arg1)\n";
         cerr << "\t\trename\trename a sequence (arg1) into arg2\n";
         cerr << "\t\tsetdesc\tset a description (arg2) to a specified sequence (arg1)\n";
         cerr << "\t\ttrim5\ttrim the 5'-end of a specified sequence (arg1) in memory by arg2 bp\n";
