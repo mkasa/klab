@@ -8,6 +8,15 @@ def file_name_looks_like_hard_to_compress_file(file_name):
     return False
 
 def recompress(file_name, base_name, uncompress_command):
+    if file_name == '' or file_name == None:
+        print "ERROR (file name is empty). Skipped.\n"
+        return 1
+    if base_name == '' or base_name == None:
+        print "ERROR (base file name is empty). Skipped.\n";
+        return 1
+    if uncompress_command == '' or uncompress_command == None:
+        print "ERROR (uncompress command is empty). Skipped.\n";
+        return 1
     if file_name == (base_name + ".xz"):
         print "ERROR (file name is wrong). Skipped.\n"
         return 1
@@ -39,9 +48,11 @@ def recompress(file_name, base_name, uncompress_command):
 
 def recompress_by_xz(file_names):
     for file_name in file_names:
+        if file_name == None or file_name == '':
+            continue
         print file_name,
         if not os.path.exists(file_name):
-            print "does not exist. Skpiied."
+            print "does not exist. Skipped."
             continue
         if not os.path.isfile(file_name):
             print "is not a file. Skipped."

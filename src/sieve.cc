@@ -79,10 +79,11 @@ int main(int argc, char *argv[]) {
 	int c;
 	int param_percent = -1;
 	int param_lines   = -1;
+    double param_take_to_this_threshold = -1;
 	while(1) {
 		static struct option long_options[] = {
-			{"debug", no_argument      , &flag_debug, 1   /*value to set*/}, // note that int_flag must be static
-			//{"sflag",    no_argument      ,         0, 's' /*equiv. short flag*/},
+			{"debug", no_argument       , &flag_debug,   1 /*value to set*/}, // note that int_flag must be static
+			{"thres", required_argument ,           0, 't' /*equiv. short flag*/},
 			//{"opt",      optional_argument,         0, 'o' /*equiv. short flag*/},
 			//{"file",     required_argument,         0, 'f' /*equiv. short flag*/},
 			{0, 0, 0, 0} // end of long options
@@ -108,7 +109,14 @@ int main(int argc, char *argv[]) {
 	}
 	if(argc < optind + 1 /* # of non-option arguments */) {
 		cerr << "usage: sieve -p 30 <file(s)>     Take 30% of the lines in the file.\n";
-		cerr << "       sieve -c 40 <file(s)>     Take 40 lines of the lines in the file.\n" << flush;
+		cerr << "       sieve -c 40 <file(s)>     Take 40 lines of the lines in the file.\n";
+        cerr << "       sieve -t 30000 -k 3 <condition> <file(s)>\n";
+        cerr << "                                 Use the 3rd column for the key in the input TSV files.\n";
+        cerr << "                                 Take lines until the condition holds.\n";
+        cerr << "                                 The list of available conditions are as follows:\n";
+        cerr << "                                     --random        randomly\n";
+        cerr << "                                     --descending    in descending order.\n";
+        cerr << "                                     --ascending     in ascending order.\n";
 		return 1;
 	}
 	if(param_percent != -1 && param_lines != -1) {
