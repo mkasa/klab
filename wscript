@@ -1,7 +1,7 @@
 
 # -*- python -*-
 APPNAME = 'kalab'
-VERSION = '1.34'
+VERSION = '1.35'
 
 def options(opt):
     opt.load(['compiler_c', 'compiler_cxx', 'python', 'perl'])
@@ -22,7 +22,7 @@ def build(bld):
     bld(features = 'cxx c cxxprogram', source = ['src/fatt.cc', 'src/sqlite3.c', 'src/sqdb.cc'], target = 'fatt')
     executables = ['convertsequence', 'fixshebang', 'icc-color', 'gcc-color',
                   'mydaemon', 'rep', 'sq', 'mddoc', 'gmddoc', 'sha_scan', 'gfwhich', 'json2csv', 'csv2html', 'csv2md',
-                   'ods2xls', 'ods2xlsx', 'pbjellysummary2json', 'ispcr', 'headtail']
+                   'ods2xls', 'ods2xlsx', 'pbjellysummary2json', 'ispcr', 'headtail', 'recompressbyxz']
     bld.install_files('${PREFIX}/bin', ['script/' + x for x in executables], chmod=0755)
     if bld.options.enable_perl:
         bld.install_files('${ARCHDIR_PERL}', ['script/BLASTM8Parse.pm'])
