@@ -21,22 +21,26 @@ def recompress(file_name, base_name, uncompress_command):
         print "ERROR (file name is wrong). Skipped.\n"
         return 1
     print "compressing...\r",
+    # print >> sys.stderr, "%s %s | xz > %s.xz" % (uncompress_command, file_name, base_name)
     r = os.system("%s %s | xz > %s.xz" % (uncompress_command, file_name, base_name))
     if r != 0:
         print file_name, "was not compressed   "
         return r
     print file_name, "compressed. Veryfying...\r",
+    # print >> sys.stderr, "xzcat %s.xz > %s.xz.uncompressed" % (base_name, base_name)
     r2 = os.system("xzcat %s.xz > %s.xz.uncompressed" % (base_name, base_name))
     if r2 != 0:
         print file_name, "was compressed, but not verified (1)."
         os.unlink("%s.xz.uncompressed" % base_name)
         return r2
+    # print >> sys.stderr, "%s %s > %s.uncompressed" % (uncompress_command, file_name, file_name)
     r3 = os.system("%s %s > %s.uncompressed" % (uncompress_command, file_name, file_name))
     if r3 != 0:
         print file_name, "was compressed, but not verified (2)."
         os.unlink("%s.xz.uncompressed" % base_name)
         os.unlink("%s.uncompressed" % file_name)
         return r2
+    # print >> sys.stderr, "cmp %s.xz.uncompressed %s.uncompressed" % (base_name, file_name)
     r4 = os.system("cmp %s.xz.uncompressed %s.uncompressed" % (base_name, file_name))
     if r4 == 0:
         print file_name, "was compressed, and verified."
@@ -79,7 +83,7 @@ def recompress_by_xz(file_names):
 
 def ensure_tools_are_available():
     for tool in ["xz", "xzcat", "bunzip2", "zcat"]:
-        if os.system("%s --help" % tool) != 0:
+        if os.system("%s --help 2&>1 > /dev/null" % tool) != 0:
             print >> sys.stderr, "ERROR %s is not available." % tool
             sys.exit(2)
 
