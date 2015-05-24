@@ -3,7 +3,7 @@
 import os, sys
 
 def file_name_looks_like_hard_to_compress_file(file_name):
-    for ext in ["png", "jpg", "jpeg", "bam", "avi", "mp4", "mkv", "webm", "7z", "cab", "rar", "bcf", "bw", "bigwig", "bb", "bigbed"]:
+    for ext in ["png", "jpg", "jpeg", "bam", "avi", "mp4", "mkv", "webm", "7z", "cab", "rar", "bcf", "bw", "bigwig", "bb", "bigbed", "srf"]:
         if file_name.endswith("." + ext): return True
     return False
 
