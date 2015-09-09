@@ -751,7 +751,7 @@ void do_len(int argc, char** argv)
 	}
 }
 
-void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_json, const bool is_contig = false)
+void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_json, const char * contig_or_scaff = "scaffold")
 {
     sort(lengths.rbegin(), lengths.rend());
     const size_t total_length = accumulate(lengths.begin(), lengths.end(), 0ull);
@@ -813,44 +813,56 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
         cout << "}";
     } else {
         cout << "Total # of bases = " << sep_comma(total_length) << "\n";
-        const string scaffold_str = is_contig ? "contig" : "scaffold";
-        cout << "# of " << scaffold_str << "s = " << sep_comma(lengths.size()) << "\n";
+        cout << "# of " << contig_or_scaff << "s = " << sep_comma(lengths.size()) << "\n";
         cout << "Max size = " << sep_comma(max_length) << " (# = 1)\n";
-        cout << "N50 " << scaffold_str << " size = " << sep_comma(n50_length) << " (# = " << sep_comma(n50_sequence_index) << ")\n";
-        cout << "N70 " << scaffold_str << " size = " << sep_comma(n70_length) << " (# = " << sep_comma(n70_sequence_index) << ")\n";
-        cout << "N80 " << scaffold_str << " size = " << sep_comma(n80_length) << " (# = " << sep_comma(n80_sequence_index) << ")\n";
-        cout << "N90 " << scaffold_str << " size = " << sep_comma(n90_length) << " (# = " << sep_comma(n90_sequence_index) << ")\n";
+        cout << "N50 " << contig_or_scaff << " size = " << sep_comma(n50_length) << " (# = " << sep_comma(n50_sequence_index) << ")\n";
+        cout << "N70 " << contig_or_scaff << " size = " << sep_comma(n70_length) << " (# = " << sep_comma(n70_sequence_index) << ")\n";
+        cout << "N80 " << contig_or_scaff << " size = " << sep_comma(n80_length) << " (# = " << sep_comma(n80_sequence_index) << ")\n";
+        cout << "N90 " << contig_or_scaff << " size = " << sep_comma(n90_length) << " (# = " << sep_comma(n90_sequence_index) << ")\n";
         cout << "Min size = " << sep_comma(min_length) << "\n";
-        cout << "Total " << scaffold_str << " # = " << sep_comma(lengths.size()) << "\n";
+        cout << "Total " << contig_or_scaff << " # = " << sep_comma(lengths.size()) << "\n";
         cout << "Avg size = " << sep_comma(avg_length) << "\n";
     }
 }
 
 void do_stat(int argc, char** argv)
 {
-	bool flag_html = false;
+    bool flag_html = false;
     bool flag_json = false;
+    bool flag_contig = false;
+    bool flag_scaffold = false;
+    bool flag_all = true;
     static struct option long_options[] = {
         {"html", no_argument, 0, 'h'},
         {"json", no_argument, 0, 'j'},
+        {"contig", no_argument, 0, 'c'},
+        {"scaffold", no_argument, 0, 's'},
         {0, 0, 0, 0} // end of long options
     };
     while(true) {
-		int option_index = 0;
-		int c = getopt_long(argc, argv, "", long_options, &option_index);
-		if(c == -1) break;
-		switch(c) {
-		case 0:
-			// you can see long_options[option_index].name/flag and optarg (null if no argument).
-			break;
-		case 'h':
-            flag_html = true;
-			break;
-        case 'j':
-            flag_json = true;
-            break;
+    	int option_index = 0;
+    	int c = getopt_long(argc, argv, "", long_options, &option_index);
+    	if(c == -1) break;
+    	switch(c) {
+            case 0:
+           // you can see long_options[option_index].name/flag and optarg (null if no argument).
+                break;
+            case 'h':
+                flag_html = true;
+                break;
+            case 'j':
+                flag_json = true;
+                break;
+            case 'c':
+                flag_contig = true;
+                flag_all = false;
+                break;
+            case 's':
+                flag_scaffold = true;
+                flag_all = false;
+                break;
         }
-	}
+    }
     if(flag_html && flag_json) {
         cerr << "ERROR: You can use either --html or --json\n";
         return;
@@ -859,11 +871,11 @@ void do_stat(int argc, char** argv)
     vector<size_t> length_of_scaffolds_wogap;
     vector<size_t> length_of_contigs;
     int number_of_successfully_processed_files = 0;
-	for(int i = optind + 1; i < argc; ++i) {
-		if(calculate_n50_statistics(argv[i], length_of_scaffolds_wgap, length_of_scaffolds_wogap, length_of_contigs)) {
+    for(int i = optind + 1; i < argc; ++i) {
+    	if(calculate_n50_statistics(argv[i], length_of_scaffolds_wgap, length_of_scaffolds_wogap, length_of_contigs)) {
             number_of_successfully_processed_files++;
         }
-	}
+    }
     if(number_of_successfully_processed_files <= 0) {
         cerr << "ERROR: All file(s) could not be opened." << endl;
         return;
@@ -872,31 +884,37 @@ void do_stat(int argc, char** argv)
         cerr << "Assertion failed. Maybe you found a bug! Please report to the author.\n";
         return;
     }
-    if(flag_html) {
-        cout << "<table border=\"2\" bgcolor=\"#ffffff\">\n";
-        cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (w/gap) statistics</th></tr>\n";
-    } else if(flag_json) {
-        cout << "{\"scaffold_wgap\": ";
-    } else {
-        cout << "Scaffold (w/gap) statistics\n";
+    if(flag_all || flag_scaffold) {
+        if(flag_html) {
+            cout << "<table border=\"2\" bgcolor=\"#ffffff\">\n";
+            cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (w/gap) statistics</th></tr>\n";
+        } else if(flag_json) {
+            cout << "{\"scaffold_wgap\": ";
+        } else {
+            cout << "Scaffold (w/gap) statistics\n";
+        }
+        print_n50(length_of_scaffolds_wgap, flag_html, flag_json, "scaffold");
     }
-    print_n50(length_of_scaffolds_wgap, flag_html, flag_json, false);
-    if(flag_html) {
-        cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (wo/gap) statistics</th></tr>\n";
-    } else if(flag_json) {
-        cout << ",\"scaffold_wogap\": ";
-    } else {
-        cout << "\nScaffold (wo/gap) statistics\n";
+    if(flag_all) {
+        if(flag_html) {
+            cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (wo/gap) statistics</th></tr>\n";
+        } else if(flag_json) {
+            cout << ",\"scaffold_wogap\": ";
+        } else {
+            cout << "\nScaffold (wo/gap) statistics\n";
+        }
+        print_n50(length_of_scaffolds_wogap, flag_html, flag_json, "scaffold");
     }
-    print_n50(length_of_scaffolds_wogap, flag_html, flag_json, false);
-    if(flag_html) {
-        cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Contig statistics</th></tr>\n";
-    } else if(flag_json) {
-        cout << ",\"contig\": ";
-    } else {
-        cout << "\nContig statistics\n";
+    if(flag_all || flag_contig) {
+        if(flag_html) {
+            cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Contig statistics</th></tr>\n";
+        } else if(flag_json) {
+            cout << ",\"contig\": ";
+        } else {
+            cout << "\nContig statistics\n";
+        }
+        print_n50(length_of_contigs, flag_html, flag_json, "contig");
     }
-    print_n50(length_of_contigs, flag_html, flag_json, true);
     if(flag_html) {
         cout << "</table>\n";
     } else if(flag_json) {
@@ -2940,6 +2958,9 @@ void show_help(const char* subcommand)
         cerr << "Usage: fatt stat [options...] <FAST(A|Q) files>\n\n";
         cerr << "--html\tOutput in HTML format.\n";
         cerr << "--json\tOutput in JSON format.\n";
+        cerr << "--contig\tOutput contig statistics.\n";
+        cerr << "--scaffold\tOutput statistics of scaffold with gaps.\n";
+        cerr << "If neither of --contig nor --scaffold is specified, statistics of scaffold with gaps, scaffold without gaps, and contigs are reported.\n";
         return;
     }
     if(subcmd == "index") {
