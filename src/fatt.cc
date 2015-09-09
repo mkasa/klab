@@ -2958,6 +2958,9 @@ void show_help(const char* subcommand)
         cerr << "Usage: fatt stat [options...] <FAST(A|Q) files>\n\n";
         cerr << "--html\tOutput in HTML format.\n";
         cerr << "--json\tOutput in JSON format.\n";
+        cerr << "--contig\tOutput contig statistics.\n";
+        cerr << "--scaffold\tOutput statistics of scaffold with gaps.\n";
+        cerr << "If neither of --contig nor --scaffold is specified, statistics of scaffold with gaps, scaffold without gaps, and contigs are reported.\n";
         return;
     }
     if(subcmd == "index") {
