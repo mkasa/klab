@@ -751,7 +751,7 @@ void do_len(int argc, char** argv)
 	}
 }
 
-void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_json, const bool is_contig = false)
+void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_json, const char * contig_or_scaff = "scaffold")
 {
     sort(lengths.rbegin(), lengths.rend());
     const size_t total_length = accumulate(lengths.begin(), lengths.end(), 0ull);
@@ -813,15 +813,14 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
         cout << "}";
     } else {
         cout << "Total # of bases = " << sep_comma(total_length) << "\n";
-        const string scaffold_str = is_contig ? "contig" : "scaffold";
-        cout << "# of " << scaffold_str << "s = " << sep_comma(lengths.size()) << "\n";
+        cout << "# of " << contig_or_scaff << "s = " << sep_comma(lengths.size()) << "\n";
         cout << "Max size = " << sep_comma(max_length) << " (# = 1)\n";
-        cout << "N50 " << scaffold_str << " size = " << sep_comma(n50_length) << " (# = " << sep_comma(n50_sequence_index) << ")\n";
-        cout << "N70 " << scaffold_str << " size = " << sep_comma(n70_length) << " (# = " << sep_comma(n70_sequence_index) << ")\n";
-        cout << "N80 " << scaffold_str << " size = " << sep_comma(n80_length) << " (# = " << sep_comma(n80_sequence_index) << ")\n";
-        cout << "N90 " << scaffold_str << " size = " << sep_comma(n90_length) << " (# = " << sep_comma(n90_sequence_index) << ")\n";
+        cout << "N50 " << contig_or_scaff << " size = " << sep_comma(n50_length) << " (# = " << sep_comma(n50_sequence_index) << ")\n";
+        cout << "N70 " << contig_or_scaff << " size = " << sep_comma(n70_length) << " (# = " << sep_comma(n70_sequence_index) << ")\n";
+        cout << "N80 " << contig_or_scaff << " size = " << sep_comma(n80_length) << " (# = " << sep_comma(n80_sequence_index) << ")\n";
+        cout << "N90 " << contig_or_scaff << " size = " << sep_comma(n90_length) << " (# = " << sep_comma(n90_sequence_index) << ")\n";
         cout << "Min size = " << sep_comma(min_length) << "\n";
-        cout << "Total " << scaffold_str << " # = " << sep_comma(lengths.size()) << "\n";
+        cout << "Total " << contig_or_scaff << " # = " << sep_comma(lengths.size()) << "\n";
         cout << "Avg size = " << sep_comma(avg_length) << "\n";
     }
 }
@@ -894,7 +893,7 @@ void do_stat(int argc, char** argv)
         } else {
             cout << "Scaffold (w/gap) statistics\n";
         }
-        print_n50(length_of_scaffolds_wgap, flag_html, flag_json, false); /* false for scaffold*/
+        print_n50(length_of_scaffolds_wgap, flag_html, flag_json, "scaffold");
     }
     if(flag_all) {
         if(flag_html) {
@@ -904,7 +903,7 @@ void do_stat(int argc, char** argv)
         } else {
             cout << "\nScaffold (wo/gap) statistics\n";
         }
-        print_n50(length_of_scaffolds_wogap, flag_html, flag_json, false);
+        print_n50(length_of_scaffolds_wogap, flag_html, flag_json, "scaffold");
     }
     if(flag_all || flag_contig) {
         if(flag_html) {
@@ -914,7 +913,7 @@ void do_stat(int argc, char** argv)
         } else {
             cout << "\nContig statistics\n";
         }
-        print_n50(length_of_contigs, flag_html, flag_json, true); /* true for contig */
+        print_n50(length_of_contigs, flag_html, flag_json, "contig");
     }
     if(flag_html) {
         cout << "</table>\n";
