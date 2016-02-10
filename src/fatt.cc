@@ -2307,6 +2307,48 @@ struct Sequence {
     }
 };
 
+char complement_char(char c)
+{
+//      'atgcrymkdhvbswn'
+//      'tacgyrkmhdbvswn'
+// a compiler might optimize to a table lookup...
+  switch(c){
+    case 'a': return 't';
+    case 'c': return 'g';
+    case 'g': return 'c';
+    case 't': return 'a';
+    case 'A': return 'T';
+    case 'C': return 'G';
+    case 'G': return 'C';
+    case 'T': return 'A';
+
+    case 'n': return 'n';
+    case 'N': return 'N';
+
+    case 'r': return 'y';
+    case 'y': return 'r';
+    case 'm': return 'k';
+    case 'k': return 'm';
+    case 'd': return 'h';
+    case 'h': return 'd';
+    case 'v': return 'b';
+    case 'b': return 'v';
+    case 's': return 's';
+    case 'w': return 'w';
+
+    case 'R': return 'Y';
+    case 'Y': return 'R';
+    case 'M': return 'K';
+    case 'K': return 'M';
+    case 'D': return 'H';
+    case 'H': return 'D';
+    case 'V': return 'B';
+    case 'B': return 'V';
+    case 'S': return 'S';
+    case 'W': return 'W';
+  }
+  return c;
+}
 class GenomeEditScript {
     bool is_fastq;
     bool has_file_type_determined;
@@ -2593,6 +2635,25 @@ public:
         sequences[new_name].name = new_name;
         return true;
     }
+    bool complementSequence(const string& old_name, const string& new_name) {
+        if(sequences.count(old_name) == 0) {
+            cerr << "Could not find a sequence '" << old_name << "', which you tried to duplicate to '" << new_name << "'\n"; return false;
+        }
+        if(sequences.count(new_name)) {
+            cerr << "There is already a sequence '" << new_name << "', to which you tried to duplicate a sequence '" << old_name << "'\n"; return false;
+        }
+        size_t length = sequences[old_name].sequence.size();
+        sequences[new_name].name = new_name;
+        sequences[new_name].description = sequences[old_name].description;
+        sequences[new_name].sequence = vector<char>(length);
+        for(int i = 0; i < length; ++i) {
+          char c = complement_char(sequences[old_name].sequence[i]);
+          sequences[new_name].sequence[length-1-i] = c;
+        }
+        sequences[new_name].qv = sequences[old_name].qv;
+        reverse(sequences[new_name].qv.begin(),sequences[new_name].qv.end());
+        return true;
+    }
     bool joinSequence(const string& left_sequence_name, const string& right_sequence_name, const string& new_sequence_name) {
         if(sequences.count(left_sequence_name) == 0) {
             cout << "Could not find a sequence '" << left_sequence_name << "', which you tried to join to '" << new_sequence_name << "'\n"; return false;
@@ -2856,6 +2917,16 @@ public:
                     cerr << "ERROR: an error occurred." << endl;
                     exit(2);
                 }
+            } else if(cmd == "complement") {
+                if(subargs.size() != 2) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: complement <sequence name> <new sequence name>\n";
+                    return;
+                }
+                if(!complementSequence(subargs[0], subargs[1])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
             } else if(cmd == "join") {
                 if(subargs.size() != 3) {
                     cerr << "ERROR: # of the argument is invalid.\n";
@@ -3056,6 +3127,7 @@ void show_help(const char* subcommand)
         cerr << "\t\tprint\tprint a specified sequence (arg1) in memory; range [arg2, arg3) is optional\n";
         cerr << "\t\tsplit\tsplit a specified sequence (arg1) at position (arg2; 0-origin; the base at arg2 belongs to the latter fragment) into arg3 and arg4\n";
         cerr << "\t\tdupseq\tduplicate a specified sequence (arg1) and name it arg2\n";
+        cerr << "\t\tcomplement\tconstruct reverse complement of a specified sequence (arg1) and name it arg2\n";
         cerr << "\t\tjoin\tjoin two specified sequences (arg1, arg2) into one (arg3)\n";
         cerr << "\nFiles given in the command line will be loaded by loadall command before executing the edit script.\n";
         return;
