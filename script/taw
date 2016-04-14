@@ -1,0 +1,717 @@
+#!/usr/bin/env perl
+# vim: ts=4:sw=4:expandtab :
+
+use strict;
+use Getopt::Long;
+use Pod::Usage;
+use File::Temp qw(tempfile);
+use JSON;
+
+# Option state
+
+my $flag_output_json   = 0;
+my $flag_output_csv    = 0;
+my $flag_output_pretty = 1;
+my $flag_output_raw    = 0;
+my $flag_no_header     = 0;
+my $flag_help          = 0;
+my $flag_man           = 0;
+my $debug = 0;
+my $debug_leave_file = 0;
+my $param_region;
+
+# Constants
+our %region_name_2_region_str = (
+    "us-east-1"      => "virginia",
+    "us-west-1"      => "california",
+    "us-west-2"      => "oregon",
+    "sa-east-1"      => "sanpaulo",
+    "eu-west-1"      => "ireland",
+    "ap-southeast-1" => "singapore",
+    "ap-northeast-1" => "tokyo"
+);
+
+# Prototypes
+sub is_region_name_sane($);
+sub convert_region_nick_name($);
+sub exec_and_return_array($$);
+sub cmd_help($);
+sub cmd_list();
+sub cmd_images();
+sub cmd_setdns($$);
+sub cmd_showregions();
+sub cmd_createinstance($$$$);
+sub ensure_command($);
+sub save_to_tmp_file_and_return_file_name(@);
+
+# Program starts here
+GetOptions(
+    "json"       => \$flag_output_json,
+    "csv"        => \$flag_output_csv,
+    "pretty|p"   => \$flag_output_pretty,
+    "raw"        => \$flag_output_raw,
+    "noheader|n" => \$flag_no_header,
+    "region=s"   => \$param_region,
+    "help"       => \$flag_help,
+    "man"        => \$flag_man,
+    "debug"      => \$debug,
+    "leavefile"  => \$debug_leave_file
+);
+
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man; 
+
+if(defined $param_region) {
+    $param_region = convert_region_nick_name($param_region);
+    unless(is_region_name_sane($param_region)) {
+        print STDERR "ERROR: region name '" . $param_region . "' is unknown.\n";
+        exit 1;
+    }
+    $ENV{'AWS_DEFAULT_REGION'} = $param_region;
+    print STDERR "AWS_DEFAULT_REGION is set to '$param_region'\n" if($debug);
+}
+
+my $subcommand = shift;
+cmd_help(undef) unless(defined $subcommand);
+if($subcommand =~ m|^help$|i) {
+    my $subsubcmd = shift;
+    cmd_help($subsubcmd);
+}
+cmd_list() if($subcommand =~ m|^list$|i);
+cmd_showregions() if($subcommand =~ m|^showregions?$|i);
+cmd_images() if($subcommand =~ m|^images?$|i);
+if($subcommand =~ m|^ssh$|i) {
+    my $hostname = shift;
+    cmd_ssh($hostname);
+}
+if($subcommand =~ m|^scp$|i) {
+    my $src = shift;
+    my $dest = shift;
+    cmd_scp($src, $dest);
+}
+if($subcommand =~ m|^mosh$|i) {
+    my $hostname = shift;
+    cmd_mosh($hostname);
+}
+if($subcommand =~ m|^setdns$|i) {
+    my $hostname = shift;
+    my $domainname = shift;
+    cmd_setdns($hostname, $domainname);
+}
+if($subcommand =~ m|^createinstance$|i) {
+    my $hostname = shift;
+    my $image_id = shift;
+    my $keyname = shift;
+    my $securitygroup = shift;
+    cmd_createinstance($hostname, $image_id, $keyname, $securitygroup);
+}
+
+print STDERR "Unknown Subcommand '$subcommand'.\n";
+print STDERR "Type 'taw help' to list the available subcommands.\n";
+exit 1;
+
+sub cmd_help($)
+{
+    my $subcommand = shift;
+    unless(defined $subcommand) {
+        print STDERR "Usage: taw <subcommand> [options..] [arguments..]\n\n";
+        print STDERR "Subcommands:\n";
+        print STDERR "\thelp\tthis message\n";
+        print STDERR "\tlist\tlist the instances\n";
+        print STDERR "\tssh\tssh to a specified instance\n";
+        print STDERR "\tscp\tscp to a specified instance\n";
+        print STDERR "\tmosh\tmosh to a specified instance\n";
+        print STDERR "\tsetdns\tset an A record to DNS (hosted by Route 53)\n";
+        print STDERR "\timages\tlist the images\n";
+        print STDERR "\tcreateinstance\tcreate a new instance\n";
+        print STDERR "\tshowregions\tshow the region names\n";
+        print STDERR "\nGlobal options:\n";
+        print STDERR "\t--debug\tenable debugging. (may be helpful when debugging)\n";
+        print STDERR "\t--region\tspecify the region to work with\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^list$|i) {
+        print STDERR "Usage: taw list [options..]\n\n";
+        print STDERR "Options:\n";
+        print STDERR "\t-csv\toutput in CSV\n";
+        print STDERR "\t-n\tno header (works only when -csv is given)\n";
+        print STDERR "\t-json\toutput in JSON\n";
+        print STDERR "\t-pretty\toutput in pretty table (may need a wide screen)\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^createinstance$|i) {
+        print STDERR "Usage: taw createinstance <name> <ami-id/ami-name> <key-name> <security-group> [options...] [-- additional options for aws ec2 run-instances]\n\n";
+        print STDERR "Example:\n";
+        print STDERR "\ttaw createinstance web1 ami-0123abcd mysshkey default\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^ssh$|i) {
+        print STDERR "Usage: taw ssh <name> [options...] [-- options for SSH]\n\n";
+        print STDERR "Example:\n";
+        print STDERR "\ttaw ssh foo --region=california -- -l myuser -I ~/.ssh/mykey.pem\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^mosh$|i) {
+        print STDERR "Usage: taw mosh <name> [options...] [-- options for mosh]\n\n";
+        print STDERR "Example:\n";
+        print STDERR "\ttaw mosh foo --region=california -- -l myuser\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^scp$|i) {
+        print STDERR "Usage: taw scp <src> <dest> [options...] [-- options for scp]\n\n";
+        print STDERR "Example:\n";
+        print STDERR "\ttaw scp local.dir awsnodename:/home/ec2user/ -- -r\n";
+        print STDERR "\ttaw scp awsnodename:/home/ec2user/test.conf ./\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^setdns$|i) {
+        print STDERR "Usage: taw setdns <name> <full domain name> [-- options for cli53]\n";
+        print STDERR "       taw setdns <IP address> <full domain name> [-- options for cli53]\n\n";
+        print STDERR "Example:\n";
+        print STDERR "\ttaw setdns nginxinstance www.example.com -- --ttl 3600 --weight 10 --replace\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^images$|i) {
+        print STDERR "Usage: taw images\n\n";
+        print STDERR "Options:\n";
+        print STDERR "\tNone available\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^showregions?$|i) {
+        print STDERR "Usage: taw showregions\n\n";
+        print STDERR "Options:\n";
+        print STDERR "\tNone available\n";
+        exit 0;
+    }
+    print STDERR "Unknown Subcommand '$subcommand'.\n";
+    print STDERR "Type 'taw help' to list the available subcommands.\n";
+    exit 0;
+}
+
+sub cmd_list()
+{
+    print STDERR "CMD_LIST\n" if($debug);
+    ensure_command('aws');
+    ensure_command('jq');
+    ensure_command('json2csv');
+    my $cmd = "aws ec2 describe-instances";
+    my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
+    if($flag_output_raw) {
+        print join('', @awscli_result);
+        exit 0;
+    }
+    my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
+    print "TMPFILE: $tmpfile\n" if($debug);
+    my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | " .
+               "{id: .InstanceId, state: .State.Name, pubip: .PublicIpAddress, name: .Tags[] | select(.Key==\"Name\").Value, key: .KeyName, type: .InstanceType, reason: .StateReason.Message, az: .Placement.AvailabilityZone} else {noinstance: \"No instances\"} end'";
+    if($flag_output_csv) {
+        $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason";
+        $ncmd .= " -n" if($flag_no_header);
+    } elsif($flag_output_pretty) {
+        ensure_command('csvlook');
+        $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason | csvlook";
+    } elsif(!$flag_output_json) {
+        print "Instance ID\tName\tPublic DNS\tPublic IP\tState\n";
+        print "="x75, "\n";
+        $ncmd .= "| json2csv --tsv -n";
+    }
+    exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
+    unlink($tmpfile) unless($debug_leave_file);
+    exit 0;
+}
+
+sub get_instance_id_from_name($)
+{
+    my $name = shift;
+    ensure_command('aws');
+    ensure_command('jq');
+    ensure_command('json2csv');
+    my $cmd = "aws ec2 describe-instances";
+    my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
+    my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
+    my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | {id: .InstanceId, state: .State.Name, pubdns: .PublicDnsName, pubip: .PublicIpAddress, keyname: .KeyName, name: .Tags[] | select(.Key==\"Name\").Value, root: ((.Tags[] | select(.Key == \"root\").Value) // \"\")} else {noinstance: \"No instances\"} end'";
+    my @jq_result = exec_and_return_array($ncmd, "jq had an error.");
+    unlink($tmpfile) unless($debug_leave_file);
+    error_if_jq_result_is_too_small(@jq_result);
+    my $first_line_json_obj = decode_json($jq_result[0]);
+    if(exists $first_line_json_obj->{"noinstance"}) {
+        print STDERR "ERROR: no instances available in the region.\n";
+        print STDERR "       Probably you specified a wrong region?\n";
+        exit 1;
+    }
+    for my $json_string (@jq_result) {
+        my $json_obj = decode_json($json_string);
+        print STDERR "Matching '$name' with $json_obj->{'name'} ...\n" if($debug);
+        if($json_obj->{'name'} eq $name) {
+            return $json_obj;
+        }
+    }
+    return undef;
+}
+
+sub cmd_ssh($)
+{
+    print STDERR "CMD_SSH\n" if($debug);
+    my $name = shift;
+    unless(defined $name) {
+        print STDERR "ERROR: taw ssh to where?\n";
+        print STDERR "       Type 'taw help ssh' for help.\n";
+        exit 1;
+    }
+    if($debug) {
+        print STDERR "SSH to $name\n";
+        print STDERR "Arguments are:\n\t";
+        print STDERR join("\n\t", @ARGV), "\n";
+    }
+    my $instance_json = get_instance_id_from_name($name);
+    unless(defined $instance_json) {
+        print STDERR "ERROR: No such instance (name '$name') available\n";
+        exit 1;
+    }
+    print "SSH to $instance_json->{pubip}\n";
+    print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
+    my $root_account = $instance_json->{root}; $root_account = "ec2-user" if($root_account eq '');
+    my $cmd = "ssh $instance_json->{pubip} -l $root_account ";
+    {
+        my $key_file = $ENV{'HOME'} . "/.ssh/" . $instance_json->{keyname} . ".pem";
+        print STDERR "Try key file : $key_file\n" if($debug);
+        if(-e $key_file) {
+            $cmd .= "-i $key_file ";
+        }
+    }
+    $cmd .= join(' ', @ARGV); # TODO: shell escaping
+    print STDERR "CMD: $cmd\n" if($debug);
+    system $cmd;
+    if($? == 127) {
+        # User pushed CTRL+D
+    } elsif($? >> 8) {
+        my $exit_code = $? >> 8;
+        if($exit_code != 255) {
+            print STDERR "taw: an error occurred. exit = $exit_code\n";
+            exit $exit_code;
+        }
+    }
+    exit 0;
+}
+
+sub cmd_mosh($)
+{
+    print STDERR "CMD_MOSH\n" if($debug);
+    my $name = shift;
+    unless(defined $name) {
+        print STDERR "ERROR: taw mosh to where?\n";
+        print STDERR "       Type 'taw help mosh' for help.\n";
+        exit 1;
+    }
+    if($debug) {
+        print STDERR "mosh to $name\n";
+        print STDERR "Arguments are:\n\t";
+        print STDERR join("\n\t", @ARGV), "\n";
+    }
+    my $instance_json = get_instance_id_from_name($name);
+    unless(defined $instance_json) {
+        print STDERR "ERROR: No such instance (name '$name') available\n";
+        exit 1;
+    }
+    print "SSH to $instance_json->{pubip}\n";
+    print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
+    my $root_account = $instance_json->{root}; $root_account = "ec2-user" if($root_account eq '');
+    my $cmd = "mosh $instance_json->{pubip} --ssh 'ssh -l $root_account";
+    {
+        my $key_file = $ENV{'HOME'} . "/.ssh/" . $instance_json->{keyname} . ".pem";
+        print STDERR "Try key file : $key_file\n" if($debug);
+        if(-e $key_file) {
+            $cmd .= " -i $key_file";
+        }
+    }
+    $cmd .= "' ";
+    $cmd .= join(' ', @ARGV); # TODO: shell escaping
+    print STDERR "CMD: $cmd\n" if($debug);
+    system $cmd;
+    if($? == 127) {
+        # User pushed CTRL+D
+    } elsif($? >> 8) {
+        print STDERR "taw: an error occurred.\n";
+        exit ($? >> 8);
+    }
+    exit 0;
+}
+
+sub cmd_scp($$)
+{
+    my ($src, $dest) = @_;
+    print STDERR "CMD_SCP $src $dest\n" if($debug);
+    unless(defined $src && defined $dest) {
+        print STDERR "ERROR: taw scp to where?\n";
+        print STDERR "       Type 'taw help scp' for help.\n";
+        exit 1;
+    }
+    my $ctca = $src =~ /:/; my $ctcb = $dest =~ /:/;
+    unless($ctca ^ $ctcb) {
+        print STDERR "ERROR: either of the source or the destination must be remote.\n";
+        print STDERR "       Use the normal cp for local copy.\n";
+        exit 1;
+    }
+    if($debug) {
+        print STDERR "SCP from $src TO $dest\n";
+        print STDERR "Arguments are:\n\t";
+        print STDERR join("\n\t", @ARGV), "\n";
+    }
+    my $key_name;
+    if($src =~ m|^(.*?):(.*)$|) {
+        my ($name, $path) = ($1, $2);
+        my $instance_json = get_instance_id_from_name($name);
+        unless(defined $instance_json) {
+            print STDERR "ERROR: No such instance (name '$name') available\n";
+            exit 1;
+        }
+        print "SCP SRC $instance_json->{pubip}\n";
+        print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
+        my $root_account = $instance_json->{root}; $root_account = "ec2-user" if($root_account eq '');
+        $src = "$root_account\@$instance_json->{pubip}:$path";
+        $key_name = $instance_json->{keyname};
+    }
+    if($dest =~ m|^(.*?):(.*)$|) {
+        my ($name, $path) = ($1, $2);
+        my $instance_json = get_instance_id_from_name($name);
+        unless(defined $instance_json) {
+            print STDERR "ERROR: No such instance (name '$name') available\n";
+            exit 1;
+        }
+        print "SCP DEST $instance_json->{pubip}\n";
+        print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
+        my $root_account = $instance_json->{root}; $root_account = "ec2-user" if($root_account eq '');
+        $dest = "$root_account\@$instance_json->{pubip}:$path";
+        $key_name = $instance_json->{keyname};
+    }
+    my $cmd = "scp ";
+    {
+        my $key_file = $ENV{'HOME'} . "/.ssh/" . $key_name . ".pem";
+        print STDERR "Try key file : $key_file\n" if($debug);
+        if(-e $key_file) {
+            $cmd .= "-i $key_file ";
+        }
+    }
+    $cmd .= join(' ', @ARGV); # TODO: shell escaping
+    $cmd .= " $src $dest";
+    print STDERR "CMD: $cmd\n" if($debug);
+    system $cmd;
+    if($? == 127) {
+        # User pushed CTRL+D
+    } elsif($? >> 8) {
+        print STDERR "taw scp: an error occurred.\n";
+        exit ($? >> 8);
+    }
+    exit 0;
+}
+
+sub error_if_jq_result_is_too_small
+{
+    my @jq_result = @_;
+    if(@jq_result < 1) {
+        print STDERR "ERROR: jq ended unexpectedly (please report it to the author).\n";
+        if($debug) {
+            print STDERR "jq results:\nSTARTHERE\n";
+            print STDERR join("\n", @jq_result), "\nENDHERE\n";
+        } else {
+            print STDERR "       It might be helpful to rerun the command with --debug and include the results in the report.\n";
+        }
+        exit 1;
+    }
+}
+
+sub cmd_images()
+{
+    print STDERR "CMD_IMAGES\n" if($debug);
+    ensure_command('aws');
+    ensure_command('jq');
+    ensure_command('json2csv');
+    my $cmd = "aws ec2 describe-images --owners=self";
+    my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
+    my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
+    my $ncmd = "cat $tmpfile | jq -c 'if (.Images | length != 0) then .Images[] | {id: .ImageId, name: .Name, state: .State, kernelid: .KernelId, arch: .Architecture, type: .RootDeviceType, desc: .Description} else {noinstance: \"No instances\"} end'";
+    my $column_opt = "--columns=id,name,state,kernelid,arch,type,desc";
+    if($flag_output_csv) {
+        $ncmd .= "| json2csv $column_opt";
+        $ncmd .= " -n" if($flag_no_header);
+    } elsif($flag_output_pretty) {
+        ensure_command('csvlook');
+        $ncmd .= "| json2csv $column_opt | csvlook";
+    } elsif(!$flag_output_json) {
+        print "Image ID\tName\tState\tKernel ID\tArch\tRootType\tDescription\n";
+        print "="x85, "\n";
+        $ncmd .= "| json2csv $column_opt --tsv -n";
+    }
+    exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
+    exit 0;
+    my @jq_result = exec_and_return_array($ncmd, "jq had an error.");
+    unlink($tmpfile) unless($debug_leave_file);
+    error_if_jq_result_is_too_small(@jq_result);
+    my $first_line_json_obj = decode_json($jq_result[0]);
+    if(exists $first_line_json_obj->{"noinstance"}) {
+        print STDERR "ERROR: no instances available in the region.\n";
+        print STDERR "       Probably you specified a wrong region?\n";
+        exit 1;
+    }
+    for my $json_string (@jq_result) {
+        my $json_obj = decode_json($json_string);
+        # print STDERR "Matching '$name' with $json_obj->{'name'} ...\n" if($debug);
+        # if($json_obj->{'name'} eq $name) {
+            # return $json_obj;
+        # }
+    }
+    return undef;
+}
+
+sub cmd_setdns($$)
+{
+    print STDERR "CMD_SETDNS\n" if($debug);
+    ensure_command("cli53");
+    my ($name, $domain) = @_;
+    unless(defined $name) {
+        print STDERR "ERROR: taw setdns for which instance?\n";
+        print STDERR "       Type 'taw help setdns' for help.\n";
+        exit 1;
+    }
+    unless($domain =~ m|^([\w\d-]+)\.(.*)$|) {
+        print STDERR "ERROR: '$domain' does not look like a domain name\n";
+        print STDERR "       Type 'taw help setdns' for help.\n";
+        exit 1;
+    }
+    my $host = $1;
+    my $zone_name = $2;
+    my $ip;
+    if($name =~ m|^(\d+)\.(\d+)\.(\d+)\.(\d+)$|) {
+        if($debug) {
+            print "'$name' looks like an IP.\n";
+        }
+        $ip = $name;
+    } else {
+        if($debug) {
+            print "Query the host name '$name'\n";
+        }
+        my $instance_json = get_instance_id_from_name($name);
+        unless(defined $instance_json) {
+            print STDERR "ERROR: No such instance (name '$name') available\n";
+            exit 1;
+        }
+        $ip = $instance_json->{'pubip'};
+        if($debug) {
+            print "HOST: $host\nZONE: $zone_name\nIP: $ip\n";
+        }
+    }
+    my $cmd = "cli53 rrcreate $zone_name $host A $ip " . join(" ", @ARGV);
+    exec_and_exit_if_error($cmd, "cli53 error.");
+    exit 0;
+}
+
+sub cmd_createinstance($$$$)
+{
+    ensure_command('aws');
+    ensure_command('jq');
+    ensure_command('json2csv');
+    my ($hostname, $image_id, $key_name, $security_groups) = @_;
+    print STDERR "CMD_CREATE_INSTANCE\n" if($debug);
+    unless(defined $hostname) {
+        print STDERR "Usage: taw createinstance <name> <image-id> <key-name> <security-groups>\n";
+        print STDERR "ERROR: You must give the hostname.\n";
+        exit 1;
+    }
+    unless(defined $image_id) {
+        print STDERR "ERROR: You must give the image ID.\n";
+        exit 1;
+    }
+    unless(defined $key_name) {
+        print STDERR "ERROR: You must give the (SSH) key name.\n";
+        exit 1;
+    }
+    unless(defined $security_groups) {
+        print STDERR "ERROR: You must give the security groups. 'default' cannot be omitted even if you leave it to the default.\n";
+        exit 1;
+    }
+    my $cmd = "aws ec2 run-instances --image-id $image_id --min-count 1 --max-count 1 --key-name $key_name --security-groups $security_groups";
+    print "CMD: $cmd\n";
+    my $ncmd = "aws ec2 craete-tags --resource instance_id --tags '{\"key\": \"Name\", \"value\": \"$hostname\"}'";
+    print "NCMD: $ncmd\n";
+    exit 0;
+}
+
+sub exec_and_exit_if_error($$)
+{
+    my ($cmd, $errormsg) = @_;
+    print STDERR "CMD: $cmd\n" if($debug);
+    system $cmd;
+    if($?) {
+        print STDERR "ERROR: " . $errormsg . "\n";
+        exit ($? >> 8);
+    }
+    return 0;
+}
+
+sub exec_and_return_array($$)
+{
+    my ($cmd, $errormsg) = @_;
+    print STDERR "CMD: $cmd\n" if($debug);
+    my @arr = `$cmd`;
+    if($?) {
+        print STDERR "ERROR: " . $errormsg . "\n";
+        print STDERR join("\n", @arr), "\n";
+        exit ($? >> 8);
+    }
+    return @arr;
+}
+
+sub is_region_name_sane($)
+{
+    my $param_region = shift;
+    for my $region (keys %region_name_2_region_str) {
+        return 1 if($param_region eq $region);
+    }
+    return 0;
+}
+
+sub convert_region_nick_name($)
+{
+    my $nickname = shift;
+    while(my ($k, $v) = each %region_name_2_region_str) {
+        return $k if($nickname =~ m|^$v$|);
+    }
+    return $nickname;
+}
+
+sub cmd_showregions()
+{
+    print "Region\tNickname\n";
+    for my $region (sort (keys %region_name_2_region_str)) {
+        print $region, "\t", $region_name_2_region_str{$region}, "\n";
+    }
+    exit 0;
+}
+
+sub ensure_command($)
+{
+    my $command = shift;
+    my $p = `which $command`; chomp $p;
+    unless(-x $p) {
+        print STDERR "ERROR: $command is not available.\n";
+        print STDERR "       Please make sure that $command is on PATH.\n";
+        print STDERR "       Ask your system administrator if this message does not make sense to you.\n";
+        exit 1;
+    }
+}
+
+sub save_to_tmp_file_and_return_file_name(@)
+{
+    my @arr = @_;
+    my ($fh, $filename) = tempfile();
+    print "TMPFILE: $filename\n" if($debug);
+    for(@arr) {
+        print $fh $_;
+    }
+    close $fh;
+    return $filename;
+}
+
+__END__
+
+=head1 NAME
+
+taw - Tiny Amazon ec2 Wrapper
+
+=head1 SYNOPSIS
+
+taw E<lt>commandE<gt> [options...] [arguments...]
+
+Options:
+
+=head1 COMMANDS
+
+=over 8
+
+=item B<taw help>
+
+'taw help' shows how to invoke taw subcommands.
+'taw help subcmd' shows how to use a taw subcommand. For example, 'taw help list' shows how to use 'taw list' subcommand.
+
+=item B<taw list>
+
+Show the list of instances. To output in CSV, give B<-csv>. When B<-csv> is given, B<-n> suppresses the header line. B<-json> is given, it outputs in JSON. B<-pretty> is given, it outputs in human-friendly table format.
+
+=item B<taw ssh>
+
+SSH to the specified machine. For example, when you type 'taw ssh foo', taw will search the instance with name (tag) 'foo', and ssh to that instance.
+The default user is 'ec2-user'. You can set the user name by 'taw ssh foo -- -l user_name'. If you set 'root' tag to an instance, the value of 'root' tag is used as the default user name.
+
+=item B<taw scp>
+
+Copy files using scp. You can use an AWS machine name instead of FQDN of the remote host.
+
+=item B<taw mosh>
+
+Almost same to B<taw ssh>, but it uses mosh instead of SSH. mosh must be installed on the remote side.
+
+=item B<taw setdns>
+
+Use Amazon Route 53 to associate a domain name to a specified instance.
+For example, 'taw setdns hoge www.example.com -- --ttl 3600 --weight 10 --replace' will set an A-record so that www.example.com will point to an instance with name hoge. Options that come after '--' will be passed through to cli53.
+
+=item B<taw showregions>
+
+Show the list of available regions (and their nicknames) in Amazon EC2.
+You can use the nickname of a region name (of Amazon EC2) instead of the region name itself for B<--region> option (e.g., --region=tokyo is equivalent to --rewgion=ap-northeast-1)
+
+=item B<taw createinstance>
+
+Create a new instance in Amazon EC2.
+
+=item B<taw images>
+
+Show the list of (private) images of mine in Amazon EC2.
+
+=back
+
+=head1 COMMON OPTIONS
+
+=over 8
+
+=item B<-region>
+Specify a region (of Amazon EC2) to work with.
+
+=item B<-debug>
+Enable a debug mode.
+
+=item B<-help>
+Show a help message.
+
+=item B<-man>
+Show the man page of B<taw>.
+
+=back
+
+=head1 DESCRIPTION
+
+B<taw>, Tiny Amazon ec2 Wrapper, 
+
+=head1 HOW TO INSTALL
+
+B<taw> requires Amazon Commandline Interface (Python version). You have to setup and configure Amazon Command Line Tool first.
+Type 'sudo pip install awscli' or 'sudo easy_install awscli' to install Amazon Commandline Interface.
+
+B<taw> also requires jq (http://stedolan.github.io/jq/) and csvkit (https://github.com/onyxfish/csvkit).
+As of writing, csvkit in PyPI does not work (cannot be installed because of incorrect dependency declaration in the package), so we recommend you to masnually install csvkit from the HEAD in GitHub (git clone && sudo python setup.py).
+
+B<taw> setdns subcommand uses B<cli53> (https://github.com/barnybug/cli53).
+
+B<taw> depends on JSON module, so please install it (Usually, this is done by 'sudo cpan install JSON').
+
+
+=head1 LICENSE
+
+B<taw> is distributed under the 2-clause BSD license (http://opensource.org/licenses/BSD-2-Clause).
+
+=head1 AUTHOR
+
+Masahiro Kasahara <masahiro at kasahara.ws>
+
+=cut
+
