@@ -80,9 +80,10 @@ if($subcommand =~ m|^help$|i) {
 cmd_list() if($subcommand =~ m|^list$|i);
 cmd_showregions() if($subcommand =~ m|^showregions?$|i);
 cmd_images() if($subcommand =~ m|^images?$|i);
-if($subcommand =~ m|^ssh$|i) {
+if($subcommand =~ m|^(r?ssh)$|i) {
+    my $ssh_cmd_name = $1;
     my $hostname = shift;
-    cmd_ssh($hostname);
+    cmd_ssh($hostname, $ssh_cmd_name);
 }
 if($subcommand =~ m|^scp$|i) {
     my $src = shift;
@@ -119,6 +120,7 @@ sub cmd_help($)
         print STDERR "\thelp\tthis message\n";
         print STDERR "\tlist\tlist the instances\n";
         print STDERR "\tssh\tssh to a specified instance\n";
+        print STDERR "\trssh\trssh to a specified instance\n";
         print STDERR "\tscp\tscp to a specified instance\n";
         print STDERR "\tmosh\tmosh to a specified instance\n";
         print STDERR "\tsetdns\tset an A record to DNS (hosted by Route 53)\n";
@@ -145,10 +147,11 @@ sub cmd_help($)
         print STDERR "\ttaw createinstance web1 ami-0123abcd mysshkey default\n";
         exit 0;
     }
-    if($subcommand =~ m|^ssh$|i) {
-        print STDERR "Usage: taw ssh <name> [options...] [-- options for SSH]\n\n";
+    if($subcommand =~ m|^(r?ssh)$|i) {
+        my $cmd_name = $1;
+        print STDERR "Usage: taw $cmd_name <name> [options...] [-- options for SSH]\n\n";
         print STDERR "Example:\n";
-        print STDERR "\ttaw ssh foo --region=california -- -l myuser -I ~/.ssh/mykey.pem\n";
+        print STDERR "\ttaw $cmd_name foo --region=california -- -l myuser -I ~/.ssh/mykey.pem\n";
         exit 0;
     }
     if($subcommand =~ m|^mosh$|i) {
@@ -249,17 +252,17 @@ sub get_instance_id_from_name($)
     return undef;
 }
 
-sub cmd_ssh($)
+sub cmd_ssh($$)
 {
     print STDERR "CMD_SSH\n" if($debug);
-    my $name = shift;
+    my ($name, $ssh_cmd_name) = @_;
     unless(defined $name) {
-        print STDERR "ERROR: taw ssh to where?\n";
-        print STDERR "       Type 'taw help ssh' for help.\n";
+        print STDERR "ERROR: taw $ssh_cmd_name to where?\n";
+        print STDERR "       Type 'taw help $ssh_cmd_name' for help.\n";
         exit 1;
     }
     if($debug) {
-        print STDERR "SSH to $name\n";
+        print STDERR "SSH($ssh_cmd_name) to $name\n";
         print STDERR "Arguments are:\n\t";
         print STDERR join("\n\t", @ARGV), "\n";
     }
@@ -271,7 +274,7 @@ sub cmd_ssh($)
     print "SSH to $instance_json->{pubip}\n";
     print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
     my $root_account = $instance_json->{root}; $root_account = "ec2-user" if($root_account eq '');
-    my $cmd = "ssh $instance_json->{pubip} -l $root_account ";
+    my $cmd = "$ssh_cmd_name $instance_json->{pubip} -l $root_account ";
     {
         my $key_file = $ENV{'HOME'} . "/.ssh/" . $instance_json->{keyname} . ".pem";
         print STDERR "Try key file : $key_file\n" if($debug);
@@ -641,6 +644,10 @@ Show the list of instances. To output in CSV, give B<-csv>. When B<-csv> is give
 
 SSH to the specified machine. For example, when you type 'taw ssh foo', taw will search the instance with name (tag) 'foo', and ssh to that instance.
 The default user is 'ec2-user'. You can set the user name by 'taw ssh foo -- -l user_name'. If you set 'root' tag to an instance, the value of 'root' tag is used as the default user name.
+
+=item B<taw rssh>
+
+rssh to the specified machine. 'taw rssh' is almost the same to 'taw ssh' but it uses rssh instead of ssh.
 
 =item B<taw scp>
 
