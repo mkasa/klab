@@ -909,6 +909,7 @@ B<taw> setdns subcommand uses B<cli53> (https://github.com/barnybug/cli53).
 
 B<taw> depends on JSON module, so please install it (Usually, this is done by 'sudo cpan install JSON').
 
+B<taw> also requires SSH keys to be placed under "~/.ssh". If you generage a key pair on AWS and you download it, copy the pem file to "~/.ssh/".
 
 =head1 LICENSE
 
