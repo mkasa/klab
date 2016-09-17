@@ -773,7 +773,7 @@ __END__
 
 =head1 NAME
 
-taw - Tiny Amazon ec2 Wrapper
+taw - Tiny Amazon EC2 Wrapper
 
 =head1 SYNOPSIS
 
@@ -811,6 +811,13 @@ Copy files using scp. You can use an AWS machine name instead of FQDN of the rem
 
 Almost same to B<taw ssh>, but it uses mosh instead of SSH. mosh must be installed on the remote side.
 
+=item B<taw fw>
+
+This subcommand needs a subsubcommand. B<taw fw list> lists the currently available security groups.
+B<taw fw add> adds a new rule to a specified security group.
+B<taw fw remove> adds a new rule to a specified security group.
+See B<taw help fw> for examples.
+
 =item B<taw setdns>
 
 Use Amazon Route 53 to associate a domain name to a specified instance.
@@ -835,16 +842,23 @@ Show the list of (private) images of mine in Amazon EC2.
 
 =over 8
 
-=item B<-region>
+=item B<--region>
 Specify a region (of Amazon EC2) to work with.
 
-=item B<-debug>
+=item B<--debug>
 Enable a debug mode.
 
-=item B<-help>
+=item B<--leave>
+When the debug mode is enabled, giving this option will leave temporary files that contain the result JSON files from Amazon EC2.
+This might help debugging.
+
+=item B<--verbose>
+When combined with some subcommands such as list, it will output more items.
+
+=item B<--help>
 Show a help message.
 
-=item B<-man>
+=item B<--man>
 Show the man page of B<taw>.
 
 =back
