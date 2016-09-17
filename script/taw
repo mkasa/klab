@@ -44,7 +44,7 @@ sub cmd_help($);
 sub cmd_list();
 sub cmd_images();
 sub cmd_setdns($$);
-sub cmd_showregions();
+sub cmd_show($);
 sub cmd_createinstance($$$$);
 sub ensure_command($);
 sub save_to_tmp_file_and_return_file_name(@);
@@ -84,7 +84,10 @@ if($subcommand =~ m|^help$|i) {
     cmd_help($subsubcmd);
 }
 cmd_list() if($subcommand =~ m|^list$|i);
-cmd_showregions() if($subcommand =~ m|^showregions?$|i);
+if($subcommand =~ m|^show$|i) {
+    my $type = shift;
+    cmd_show($type);
+}
 cmd_images() if($subcommand =~ m|^images?$|i);
 if($subcommand =~ m|^(r?ssh)$|i) {
     my $ssh_cmd_name = $1;
@@ -137,7 +140,7 @@ sub cmd_help($)
         print STDERR "\tsetdns\tset an A record to DNS (hosted by Route 53)\n";
         print STDERR "\timages\tlist the images\n";
         print STDERR "\tcreateinstance\tcreate a new instance\n";
-        print STDERR "\tshowregions\tshow the region names\n";
+        print STDERR "\tshow\tshow various info (eg, the region names)\n";
         print STDERR "\nGlobal options:\n";
         print STDERR "\t--debug\tenable debugging. (may be helpful when debugging)\n";
         print STDERR "\t--region\tspecify the region to work with\n";
@@ -192,8 +195,9 @@ sub cmd_help($)
         print STDERR "\tNone available\n";
         exit 0;
     }
-    if($subcommand =~ m|^showregions?$|i) {
-        print STDERR "Usage: taw showregions\n\n";
+    if($subcommand =~ m|^show$|i) {
+        print STDERR "Usage: taw show <type>\n\n";
+        print STDERR "The types include 'region'.\n";
         print STDERR "Options:\n";
         print STDERR "\tNone available\n";
         exit 0;
@@ -725,11 +729,22 @@ sub convert_region_nick_name($)
     return $nickname;
 }
 
-sub cmd_showregions()
+sub cmd_show($)
 {
-    print "Region\tNickname\n";
-    for my $region (sort (keys %region_name_2_region_str)) {
-        print $region, "\t", $region_name_2_region_str{$region}, "\n";
+    my $type = shift;
+    if($type =~ /^regions?/) {
+        print "Region\tNickname\n";
+        for my $region (sort (keys %region_name_2_region_str)) {
+            print $region, "\t", $region_name_2_region_str{$region}, "\n";
+        }
+    } else {
+        if(defined $type) {
+            print STDERR "Unknown data type '$type'\n";
+        } else {
+            print STDERR "You need to specify the data type.\n";
+        }
+        print STDERR "'taw help show' for more details.\n";
+        exit 1;
     }
     exit 0;
 }
@@ -827,9 +842,10 @@ See B<taw help fw> for examples.
 Use Amazon Route 53 to associate a domain name to a specified instance.
 For example, 'taw setdns hoge www.example.com -- --ttl 3600 --weight 10 --replace' will set an A-record so that www.example.com will point to an instance with name hoge. Options that come after '--' will be passed through to cli53.
 
-=item B<taw showregions>
+=item B<taw show>
 
-Show the list of available regions (and their nicknames) in Amazon EC2.
+Show the list of a specified type of infomation.
+For example, B<taw show regions> will show the list of available regions (and their nicknames) in Amazon EC2.
 You can use the nickname of a region name (of Amazon EC2) instead of the region name itself for B<--region> option (e.g., --region=tokyo is equivalent to --rewgion=ap-northeast-1)
 
 =item B<taw createinstance>
