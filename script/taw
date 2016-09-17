@@ -197,7 +197,7 @@ sub cmd_help($)
     }
     if($subcommand =~ m|^show$|i) {
         print STDERR "Usage: taw show <type>\n\n";
-        print STDERR "The types include 'region'.\n";
+        print STDERR "The types include 'region', 'key'.\n";
         print STDERR "Options:\n";
         print STDERR "\tNone available\n";
         exit 0;
@@ -732,10 +732,18 @@ sub convert_region_nick_name($)
 sub cmd_show($)
 {
     my $type = shift;
-    if($type =~ /^regions?/) {
+    if($type =~ /^regions?$/i) {
         print "Region\tNickname\n";
         for my $region (sort (keys %region_name_2_region_str)) {
             print $region, "\t", $region_name_2_region_str{$region}, "\n";
+        }
+    } elsif($type =~ /^keys?$/i) {
+        my $key_dir = $ENV{'HOME'} . "/.ssh";
+        my @files = <$key_dir/*.pem>;
+        for my $i (@files) {
+            $i =~ s|.*/||;
+            $i =~ s|\.pem$||;
+            print "$i\n";
         }
     } else {
         if(defined $type) {
@@ -847,6 +855,8 @@ For example, 'taw setdns hoge www.example.com -- --ttl 3600 --weight 10 --replac
 Show the list of a specified type of infomation.
 For example, B<taw show regions> will show the list of available regions (and their nicknames) in Amazon EC2.
 You can use the nickname of a region name (of Amazon EC2) instead of the region name itself for B<--region> option (e.g., --region=tokyo is equivalent to --rewgion=ap-northeast-1)
+
+B<taw show keys> will show the list of available SSH keys on your computer. It will search only "~/.ssh/*.pem".
 
 =item B<taw createinstance>
 
