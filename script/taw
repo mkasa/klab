@@ -587,8 +587,10 @@ sub cmd_fw(@)
         # do something here
         my ($ncmd, $column_opt);
         if(defined $group_or_id) {
-            $ncmd = "cat $tmpfile | jq -c '.SecurityGroups[] | select(.GroupName==\"$group_or_id\") | .IpPermissions[] | {Prot: .IpProtocol, FromPort: .FromPort, ToPort: .ToPort, Ranges: .IpRanges | map(.CidrIp)}' ";
-            $column_opt = "--columns=Prot,FromPort,ToPort,Ranges -z NoInstances";
+            $ncmd = "cat $tmpfile | jq -c '.SecurityGroups[] | select(.GroupName==\"$group_or_id\" or .GroupId==\"$group_or_id\") | .IpPermissions[] | " .
+                    "{Prot: .IpProtocol, Port: (if .FromPort == .ToPort then .FromPort | tostring else [.FromPort,.ToPort] | " .
+                    "map(tostring) | join(\"-\") end), Ranges: .IpRanges | map(.CidrIp) | join(\",\")}'";
+            $column_opt = "--columns=Prot,Port,Ranges -z NoInstances";
         } else {
             $ncmd = "cat $tmpfile | jq -c '.SecurityGroups[] | {ID: .GroupId, Name: .GroupName, Desc: .Description, Permission: .IpPermissions} '";
             $column_opt = "--columns=ID,Name,Desc -z NotFound";
@@ -606,6 +608,9 @@ sub cmd_fw(@)
         }
         exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
         unlink($tmpfile) unless($debug_leave_file);
+    } elsif($subcmd eq 'add') {
+        my $cmd = "aws ec2 describe-security-groups";
+        # aws ec2 authorize-security-group-ingress --group-id sg-738a0316 --protocol tcp --port 22 --cidr "49.106.192.194/24"
     } else {
         print STDERR "Unkown subcommand $subcmd\n";
     }
