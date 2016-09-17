@@ -36,6 +36,49 @@ our %region_name_2_region_str = (
     "ap-south-1"     => "mumbai"
 );
 
+our %instance_type_name_2_instance_type = (
+    "t2.nano"        => {"vcpu" =>   1, "mem" =>  0.5, "desc" =>  "3 credit minutes/hour, EBS backend"},
+    "t2.micro"       => {"vcpu" =>   1, "mem" =>    1, "desc" =>  "6 credit minutes/hour, EBS backend"},
+    "t2.small"       => {"vcpu" =>   1, "mem" =>    2, "desc" =>  "12 credit minutes/hour, EBS backend"},
+    "t2.medium"      => {"vcpu" =>   2, "mem" =>    4, "desc" =>  "24 credit minutes/hour, EBS backend"},
+    "t2.large"       => {"vcpu" =>   2, "mem" =>    8, "desc" =>  "36 credit minutes/hour, EBS backend"},
+    "m4.large"       => {"vcpu" =>   2, "mem" =>    8, "desc" =>  "450Mbps EBS, EBS backend"},
+    "m4.xlarge"      => {"vcpu" =>   4, "mem" =>   16, "desc" =>  "750Mbps EBS, EBS backend"},
+    "m4.2xlarge"     => {"vcpu" =>   8, "mem" =>   32, "desc" =>  "1Gbps EBS, EBS backend"},
+    "m4.4xlarge"     => {"vcpu" =>  16, "mem" =>   64, "desc" =>  "2Gbps EBS, EBS backend"},
+    "m4.10xlarge"    => {"vcpu" =>  40, "mem" =>  160, "desc" =>  "4Gbps EBS, EBS backend"},
+    "m3.medium"      => {"vcpu" =>   1, "mem" => 3.75, "desc" =>  "1x4GB SSD"},
+    "m3.large"       => {"vcpu" =>   2, "mem" =>  7.5, "desc" =>  "1x32GB SSD"},
+    "m3.xlarge"      => {"vcpu" =>   4, "mem" =>   15, "desc" =>  "2x40GB SSD"},
+    "m3.2xlarge"     => {"vcpu" =>   8, "mem" =>   30, "desc" =>  "2x80GB SSD"},
+    "c4.large"       => {"vcpu" =>   2, "mem" => 3.75, "desc" =>  "500Mbps EBS, EBS backend"},
+    "c4.xlarge"      => {"vcpu" =>   4, "mem" =>  7.5, "desc" =>  "750Mbps EBS, EBS backend"},
+    "c4.2xlarge"     => {"vcpu" =>   8, "mem" =>   15, "desc" =>  "1Gbps EBS, EBS backend"},
+    "c4.4xlarge"     => {"vcpu" =>  16, "mem" =>   30, "desc" =>  "2Gbps EBS, EBS backend"},
+    "c4.8xlarge"     => {"vcpu" =>  32, "mem" =>   60, "desc" =>  "4Gbps EBS, EBS backend"},
+    "c3.large"       => {"vcpu" =>   2, "mem" => 3.75, "desc" =>  "2x16GB SSD"},
+    "c3.xlarge"      => {"vcpu" =>   4, "mem" =>  7.5, "desc" =>  "2x40GB SSD"},
+    "c3.2xlarge"     => {"vcpu" =>   8, "mem" =>   15, "desc" =>  "2x80GB SSD"},
+    "c3.4xlarge"     => {"vcpu" =>  16, "mem" =>   30, "desc" =>  "2x160GB SSD"},
+    "c3.8xlarge"     => {"vcpu" =>  32, "mem" =>   60, "desc" =>  "2x320GB SSD"},
+    "x1.32xlarge"    => {"vcpu" => 128, "mem" => 1952, "desc" =>  "2x1920GB SSD, 10Gbps EBS"},
+    "r3.large"       => {"vcpu" =>   2, "mem" => 15.25, "desc" =>  "1x32GB SSD"},
+    "r3.xlarge"      => {"vcpu" =>   4, "mem" => 30.5, "desc" =>  "1x80GB SSD"},
+    "r3.2xlarge"     => {"vcpu" =>   8, "mem" =>   61, "desc" =>  "1x160GB SSD"},
+    "r3.4xlarge"     => {"vcpu" =>  16, "mem" =>  122, "desc" =>  "1x320GB SSD"},
+    "r3.8xlarge"     => {"vcpu" =>  32, "mem" =>  244, "desc" =>  "2x320GB SSD"},
+    "g2.2xlarge"     => {"vcpu" =>   8, "mem" =>   15, "desc" =>  "1 GPU (Kepler, GK104), 1x60GB SSD"},
+    "g2.8xlarge"     => {"vcpu" =>  32, "mem" =>   60, "desc" =>  "4 GPUs (Kepler, GK104), 2x120GB SSD"},
+    "i2.xlarge"      => {"vcpu" =>   4, "mem" => 30.5, "desc" =>  "1x800GB SSD"},
+    "i2.2xlarge"     => {"vcpu" =>   8, "mem" =>   61, "desc" =>  "2x800GB SSD"},
+    "i2.4xlarge"     => {"vcpu" =>  16, "mem" =>  122, "desc" =>  "4x800GB SSD"},
+    "i2.8xlarge"     => {"vcpu" =>  32, "mem" =>  244, "desc" =>  "8x800GB SSD"},
+    "d2.xlarge"      => {"vcpu" =>   4, "mem" => 30.5, "desc" =>  "3x2TB HDD"},
+    "d2.2xlarge"     => {"vcpu" =>   8, "mem" =>   61, "desc" =>  "6x2TB HDD"},
+    "d2.4xlarge"     => {"vcpu" =>  16, "mem" =>  122, "desc" =>  "12x2TB HDD"},
+    "d2.8xlarge"     => {"vcpu" =>  36, "mem" =>  244, "desc" =>  "24x2TB HDD"}
+);
+
 # Prototypes
 sub is_region_name_sane($);
 sub convert_region_nick_name($);
@@ -197,7 +240,7 @@ sub cmd_help($)
     }
     if($subcommand =~ m|^show$|i) {
         print STDERR "Usage: taw show <type>\n\n";
-        print STDERR "The types include 'region', 'key', 'quickimage'.\n";
+        print STDERR "The types include 'region', 'key', 'quickimage', 'instancetype'.\n";
         print STDERR "Options:\n";
         print STDERR "\tNone available\n";
         exit 0;
@@ -748,6 +791,15 @@ sub cmd_show($)
     } elsif($type =~ /^quickimages?/i) {
         ensure_command("csvlook");
         exec_and_exit_if_error("csvlook ~/.aws/images.csv", "Cannot open ~/.aws/images.csv");
+    } elsif($type =~ /^instancetypes?/i) {
+        ensure_command("csvlook");
+        open my $fh, "| csvlook" or die "Cannot execute csvlook";
+        print $fh "Instance Name,VCPUs,Memory,Description\n";
+        for my $instance_name(sort(keys %instance_type_name_2_instance_type)) {
+            my $obj = $instance_type_name_2_instance_type{$instance_name};
+            print $fh "$instance_name,$obj->{vcpu},$obj->{mem},\"$obj->{desc}\"\n";
+        }
+        close $fh;
     } else {
         if(defined $type) {
             print STDERR "Unknown data type '$type'\n";
@@ -870,6 +922,10 @@ Please make sure that Region matches to a region in which you want to create a n
     Amazon20160303,ami-374db956,"Amazon Linux AMI 2016.03.3 (HVM), SSD Volume Type",ap-northeast-1
     RHEL72,ami-0dd8f963,"Red Hat Enterprise Linux 7.2 (HVM), SSD Volume Type",ap-northeast-1
     Ubuntu14,ami-a21529cc,"Ubuntu Server 14.04 LTS (HVM), SSD Volume Type",ap-northeast-1
+
+B<taw show instancetypes> will show the list of available instance types on AWS.
+The list shown here does not mean that the displayed instance types are avalilable on the region you use.
+The list is hardcoded in the script.
 
 =item B<taw createinstance>
 
