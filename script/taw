@@ -197,7 +197,7 @@ sub cmd_help($)
     }
     if($subcommand =~ m|^show$|i) {
         print STDERR "Usage: taw show <type>\n\n";
-        print STDERR "The types include 'region', 'key'.\n";
+        print STDERR "The types include 'region', 'key', 'quickimage'.\n";
         print STDERR "Options:\n";
         print STDERR "\tNone available\n";
         exit 0;
@@ -745,6 +745,9 @@ sub cmd_show($)
             $i =~ s|\.pem$||;
             print "$i\n";
         }
+    } elsif($type =~ /^quickimages?/i) {
+        ensure_command("csvlook");
+        exec_and_exit_if_error("csvlook ~/.aws/images.csv", "Cannot open ~/.aws/images.csv");
     } else {
         if(defined $type) {
             print STDERR "Unknown data type '$type'\n";
@@ -857,6 +860,16 @@ For example, B<taw show regions> will show the list of available regions (and th
 You can use the nickname of a region name (of Amazon EC2) instead of the region name itself for B<--region> option (e.g., --region=tokyo is equivalent to --rewgion=ap-northeast-1)
 
 B<taw show keys> will show the list of available SSH keys on your computer. It will search only "~/.ssh/*.pem".
+
+B<taw show quickimage> will show the list of quick images. Quick images are defined in "~/.aws/images.csv".
+It must contains the following columns in this order; Name,ImageId,Description,Region.
+Name is used to specify a particular image (instead of directly specifying ImageId).
+Please make sure that Region matches to a region in which you want to create a new instance. Here is an example::
+
+    Name,ImageId,Description,Region
+    Amazon20160303,ami-374db956,"Amazon Linux AMI 2016.03.3 (HVM), SSD Volume Type",ap-northeast-1
+    RHEL72,ami-0dd8f963,"Red Hat Enterprise Linux 7.2 (HVM), SSD Volume Type",ap-northeast-1
+    Ubuntu14,ami-a21529cc,"Ubuntu Server 14.04 LTS (HVM), SSD Volume Type",ap-northeast-1
 
 =item B<taw createinstance>
 
