@@ -195,9 +195,15 @@ sub cmd_help($)
         exit 0;
     }
     if($subcommand =~ m|^fw$|i) {
-        print STDERR "Usage: taw fw <subcmd> [options..]\n\n";
+        print STDERR "Usage: taw fw add <name (or ID)> tcp <port> <cidr>\n";
+        print STDERR "       taw fw add <name (or ID)> udp <port> <cidr>\n";
+        print STDERR "       taw fw add <name (or ID)> icmp <cidr>\n";
+        print STDERR "       taw fw remove <name (or ID)> tcp <port> <cidr>\n";
+        print STDERR "       taw fw remove <name (or ID)> udp <port> <cidr>\n";
+        print STDERR "       taw fw remove <name (or ID)> icmp <cidr>\n";
         print STDERR "Options:\n";
         print STDERR "\tNone available\n";
+        print_valid_cidr_examples();
         exit 0;
     }
     print STDERR "Unknown Subcommand '$subcommand'.\n";
@@ -641,12 +647,7 @@ sub cmd_fw(@)
             $cidr = normalize_cidr($cidr);
             unless(defined $cidr) {
                 print STDERR "Invalid CIDR '$cidr'\n";
-                print STDERR "Valid examples are:\n";
-                print STDERR "\t123.45.67.89\n";
-                print STDERR "\t123.45.67.0/24\n";
-                print STDERR "\t123.45.0.0/16\n";
-                print STDERR "\t0.0.0.0/0\n";
-                print STDERR "\tany\n";
+                print_valid_cidr_examples();
                 exit 1;
             }
             my $group_ip = get_security_group_id_from_name($gr_name);
@@ -665,6 +666,16 @@ sub cmd_fw(@)
         exit 1;
     }
     exit 0;
+}
+
+sub print_valid_cidr_examples()
+{
+    print STDERR "Valid examples are:\n";
+    print STDERR "\t123.45.67.89\n";
+    print STDERR "\t123.45.67.0/24\n";
+    print STDERR "\t123.45.0.0/16\n";
+    print STDERR "\t0.0.0.0/0\n";
+    print STDERR "\tany\n";
 }
 
 sub exec_and_exit_if_error($$)
