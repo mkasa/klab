@@ -279,6 +279,25 @@ sub get_instance_id_from_name($)
     return undef;
 }
 
+sub get_security_group_id_from_name($)
+{
+    my $group_or_id = shift;
+    ensure_command('aws');
+    ensure_command('jq');
+    ensure_command('json2csv');
+    my $cmd = "aws ec2 describe-security-groups";
+    my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
+    my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
+    print "TMPFILE: $tmpfile\n" if($debug);
+    my $ncmd = "cat $tmpfile | jq -c '.SecurityGroups[] | select(.GroupName==\"$group_or_id\" or .GroupId==\"$group_or_id\") | .GroupId // \"noinstance\"'";
+    my @jq_result = exec_and_return_array($ncmd, "jq had an error.");
+    unlink($tmpfile) unless($debug_leave_file);
+    error_if_jq_result_is_too_small(@jq_result);
+    my $result = $jq_result[0]; chomp $result;
+    return undef if($result eq 'noinstance');
+    return $result;
+}
+
 sub cmd_ssh($$)
 {
     print STDERR "CMD_SSH\n" if($debug);
@@ -568,12 +587,13 @@ sub cmd_createinstance($$$$)
 
 sub cmd_fw(@)
 {
-    my $subcmd = shift; unless(defined $subcmd) { $subcmd = 'list'; }
-    my @sargs = @_;
+    my $subcmd = shift;
+    my @rest_args = @_;
+    unless(defined $subcmd) { $subcmd = 'list'; }
     ensure_command('aws');
     ensure_command('jq');
     ensure_command('json2csv');
-    print STDERR "CMD_FW $subcmd\n" if($debug);
+    print STDERR "CMD_FW '$subcmd' [" . join(', ', @rest_args) . "]\n" if($debug);
     if($subcmd eq 'list') {
         my $group_or_id = shift;
         my $cmd = "aws ec2 describe-security-groups";
@@ -608,11 +628,41 @@ sub cmd_fw(@)
         }
         exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
         unlink($tmpfile) unless($debug_leave_file);
-    } elsif($subcmd eq 'add') {
-        my $cmd = "aws ec2 describe-security-groups";
-        # aws ec2 authorize-security-group-ingress --group-id sg-738a0316 --protocol tcp --port 22 --cidr "49.106.192.194/24"
+    } elsif($subcmd eq 'add' || $subcmd eq 'remove') {
+        print STDERR "taw fw $subcmd\n" if($debug);
+        my $gr_name = shift(@rest_args);
+        my $prot = shift(@rest_args);
+        my $port = "-1";
+        if($prot eq 'tcp' || $prot eq 'udp') {
+            $port = shift(@rest_args);
+        }
+        my $cidr = shift(@rest_args);
+        if($prot =~ m{^(tcp|udp|icmp)$}i) {
+            $cidr = normalize_cidr($cidr);
+            unless(defined $cidr) {
+                print STDERR "Invalid CIDR '$cidr'\n";
+                print STDERR "Valid examples are:\n";
+                print STDERR "\t123.45.67.89\n";
+                print STDERR "\t123.45.67.0/24\n";
+                print STDERR "\t123.45.0.0/16\n";
+                print STDERR "\t0.0.0.0/0\n";
+                print STDERR "\tany\n";
+                exit 1;
+            }
+            my $group_ip = get_security_group_id_from_name($gr_name);
+            my $cmd;
+            if($subcmd eq 'add') {
+                $cmd = "aws ec2 authorize-security-group-ingress --group-id $group_ip --protocol $prot --port $port --cidr $cidr";
+            } else {
+                $cmd = "aws ec2 revoke-security-group-ingress --group-id $group_ip --protocol $prot --port $port --cidr $cidr";
+            }
+            exec_and_exit_if_error($cmd, "aws error.");
+        } else {
+            print STDERR "usage: taw fw add <security group name (or ID)> <prot (tcp/udp/icmp)> <port (omit when icmp)> <cidr> \n";
+        }
     } else {
         print STDERR "Unkown subcommand $subcmd\n";
+        exit 1;
     }
     exit 0;
 }
@@ -691,6 +741,21 @@ sub save_to_tmp_file_and_return_file_name(@)
     }
     close $fh;
     return $filename;
+}
+
+sub normalize_cidr($)
+{
+    my $cstr = shift;
+    if($cstr =~ m|^(\d+)\.(\d+).(\d+).(\d+)/(\d+)$|) {
+        return $cstr;
+    }
+    if($cstr =~ m|^(\d+)\.(\d+).(\d+).(\d+)$|) {
+        return $cstr . "/32";
+    }
+    if($cstr =~ m{^(all|any)$}i) {
+        return "0.0.0.0/0";
+    }
+    return undef;
 }
 
 __END__
