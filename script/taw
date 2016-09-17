@@ -108,6 +108,10 @@ if($subcommand =~ m|^createinstance$|i) {
     my $securitygroup = shift;
     cmd_createinstance($hostname, $image_id, $keyname, $securitygroup);
 }
+if($subcommand =~ m|^fw$|i) {
+    my @subcmds = @ARGV;
+    cmd_fw(@subcmds);
+}
 
 print STDERR "Unknown Subcommand '$subcommand'.\n";
 print STDERR "Type 'taw help' to list the available subcommands.\n";
@@ -121,6 +125,7 @@ sub cmd_help($)
         print STDERR "Subcommands:\n";
         print STDERR "\thelp\tthis message\n";
         print STDERR "\tlist\tlist the instances\n";
+        print STDERR "\tfw\tshow/modify firewall rules\n";
         print STDERR "\tssh\tssh to a specified instance\n";
         print STDERR "\trssh\trssh to a specified instance\n";
         print STDERR "\tscp\tscp to a specified instance\n";
@@ -138,6 +143,7 @@ sub cmd_help($)
         print STDERR "Usage: taw list [options..]\n\n";
         print STDERR "Options:\n";
         print STDERR "\t-csv\toutput in CSV\n";
+        print STDERR "\t-v\tverbose output\n";
         print STDERR "\t-n\tno header (works only when -csv is given)\n";
         print STDERR "\t-json\toutput in JSON\n";
         print STDERR "\t-pretty\toutput in pretty table (may need a wide screen)\n";
@@ -184,6 +190,12 @@ sub cmd_help($)
     }
     if($subcommand =~ m|^showregions?$|i) {
         print STDERR "Usage: taw showregions\n\n";
+        print STDERR "Options:\n";
+        print STDERR "\tNone available\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^fw$|i) {
+        print STDERR "Usage: taw fw <subcmd> [options..]\n\n";
         print STDERR "Options:\n";
         print STDERR "\tNone available\n";
         exit 0;
@@ -551,6 +563,52 @@ sub cmd_createinstance($$$$)
     print "CMD: $cmd\n";
     my $ncmd = "aws ec2 craete-tags --resource instance_id --tags '{\"key\": \"Name\", \"value\": \"$hostname\"}'";
     print "NCMD: $ncmd\n";
+    exit 0;
+}
+
+sub cmd_fw(@)
+{
+    my $subcmd = shift; unless(defined $subcmd) { $subcmd = 'list'; }
+    my @sargs = @_;
+    ensure_command('aws');
+    ensure_command('jq');
+    ensure_command('json2csv');
+    print STDERR "CMD_FW $subcmd\n" if($debug);
+    if($subcmd eq 'list') {
+        my $group_or_id = shift;
+        my $cmd = "aws ec2 describe-security-groups";
+        my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
+        if($flag_output_raw) {
+            print join('', @awscli_result);
+            exit 0;
+        }
+        my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
+        print "TMPFILE: $tmpfile\n" if($debug);
+        # do something here
+        my ($ncmd, $column_opt);
+        if(defined $group_or_id) {
+            $ncmd = "cat $tmpfile | jq -c '.SecurityGroups[] | select(.GroupName==\"$group_or_id\") | .IpPermissions[] | {Prot: .IpProtocol, FromPort: .FromPort, ToPort: .ToPort, Ranges: .IpRanges | map(.CidrIp)}' ";
+            $column_opt = "--columns=Prot,FromPort,ToPort,Ranges -z NoInstances";
+        } else {
+            $ncmd = "cat $tmpfile | jq -c '.SecurityGroups[] | {ID: .GroupId, Name: .GroupName, Desc: .Description, Permission: .IpPermissions} '";
+            $column_opt = "--columns=ID,Name,Desc -z NotFound";
+        }
+        if($flag_output_csv) {
+            $ncmd .= "| json2csv $column_opt";
+            $ncmd .= " -n" if($flag_no_header);
+        } elsif($flag_output_pretty) {
+            ensure_command('csvlook');
+            $ncmd .= "| json2csv $column_opt | csvlook";
+        } elsif(!$flag_output_json) {
+            print "SGroup ID\tName\tDescription\n";
+            print "="x85, "\n";
+            $ncmd .= "| json2csv $column_opt --tsv -n";
+        }
+        exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
+        unlink($tmpfile) unless($debug_leave_file);
+    } else {
+        print STDERR "Unkown subcommand $subcmd\n";
+    }
     exit 0;
 }
 
