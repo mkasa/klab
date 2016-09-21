@@ -721,37 +721,16 @@ sub cmd_fw(@)
     print STDERR "CMD_FW '$subcmd' [" . join(', ', @rest_args) . "]\n" if($debug);
     if($subcmd eq 'list') {
         my $group_or_id = shift;
-        my $cmd = "aws ec2 describe-security-groups";
-        my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
-        if($flag_output_raw) {
-            print join('', @awscli_result);
-            exit 0;
-        }
-        my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
-        print "TMPFILE: $tmpfile\n" if($debug);
-        # do something here
-        my ($ncmd, $column_opt);
+        my $cmd = "aws ec2 describe-security-groups | jq -c ";
         if(defined $group_or_id) {
-            $ncmd = "cat $tmpfile | jq -c '.SecurityGroups[] | select(.GroupName==\"$group_or_id\" or .GroupId==\"$group_or_id\") | .IpPermissions[] | " .
+            $cmd .= "'.SecurityGroups[] | select(.GroupName==\"$group_or_id\" or .GroupId==\"$group_or_id\") | .IpPermissions[] | " .
                     "{Prot: .IpProtocol, Port: (if .FromPort == .ToPort then .FromPort | tostring else [.FromPort,.ToPort] | " .
                     "map(tostring) | join(\"-\") end), Ranges: .IpRanges | map(.CidrIp) | join(\",\")}'";
-            $column_opt = "--columns=Prot,Port,Ranges -z NoInstances";
+            exec_and_print_in_format($cmd, "Failed to list security groups", [qw(Prot Port Ranges)], undef);
         } else {
-            $ncmd = "cat $tmpfile | jq -c '.SecurityGroups[] | {ID: .GroupId, Name: .GroupName, Desc: .Description, Permission: .IpPermissions} '";
-            $column_opt = "--columns=ID,Name,Desc -z NotFound";
+            $cmd .= "'.SecurityGroups[] | {ID: .GroupId, Name: .GroupName, Desc: .Description, Permission: .IpPermissions} '";
+            exec_and_print_in_format($cmd, "Failed to list security groups", [qw(ID Name Desc)], undef);
         }
-        if($flag_output_csv) {
-            $ncmd .= "| json2csv $column_opt";
-            $ncmd .= " -n" if($flag_no_header);
-        } elsif($flag_output_pretty) {
-            $ncmd .= "| json2csv $column_opt | csvlook";
-        } elsif(!$flag_output_json) {
-            print "SGroup ID\tName\tDescription\n";
-            print "="x85, "\n";
-            $ncmd .= "| json2csv $column_opt --tsv -n";
-        }
-        exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
-        unlink($tmpfile) unless($debug_leave_file);
     } elsif($subcmd eq 'add' || $subcmd eq 'remove') {
         print STDERR "taw fw $subcmd\n" if($debug);
         my $gr_name = shift(@rest_args);
