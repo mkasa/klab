@@ -212,6 +212,10 @@ if($subcommand =~ m|^update$|i) {
     my @subcmds = @ARGV;
     cmd_update(@subcmds);
 }
+if($subcommand =~ m|^terminate$|i) {
+    my @subcmds = @ARGV;
+    cmd_terminate(@subcmds);
+}
 
 print STDERR "Unknown Subcommand '$subcommand'.\n";
 print STDERR "Type 'taw help' to list the available subcommands.\n";
@@ -338,9 +342,15 @@ sub cmd_help($)
         exit 0;
     }
     if($subcommand =~ m|^update$|i) {
-        print STDERR "Usage: taw update  <update target>\n\n";
+        print STDERR "Usage: taw update <update target>\n\n";
         print STDERR "Valid update targets are:\n";
         print STDERR "\tcache\tImage (AMI names) cache\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^terminate$|i) {
+        print STDERR "Usage: taw terminate <instance names/IDs> [--force]\n\n";
+        print STDERR "Run 'taw terminate' first to show an actual command line to terminate instances.\n";
+        print STDERR "Next add '--force' to execute it.\n";
         exit 0;
     }
     print STDERR "Unknown Subcommand '$subcommand'.\n";
@@ -405,6 +415,9 @@ sub cmd_list(@)
     } elsif($list_target =~ m{^(az|availabilityzone)$}i) {
         my $ncmd = "aws ec2 describe-availability-zones $ec2_flag_dry_run | jq -c '.AvailabilityZones[]'";
         exec_and_print_in_format($ncmd, "cannot list availability zones", [qw(RegionName ZoneName State Messages)], [qw(RegionName ZoneName State Messages)]);
+    } elsif($list_target =~ m{^(ip|addresse?)s?$}i) {
+        my $ncmd = "aws ec2 describe-addresses $ec2_flag_dry_run | jq -c '.Addresses[]'";
+        exec_and_print_in_format($ncmd, "cannot list availability zones", [qw(PublicIp InstanceId PrivateIpAddress AllocationId)], undef);
     } else {
         print STDERR "Unknown target '$list_target'\n";
         print STDERR "If $list_target can be shown without querying to Amazon EC2,\n";
@@ -490,6 +503,11 @@ sub cmd_create(@)
     # NOTE: we don't allow fluctuation in the subcmd string.
     #       any create command usually costs more money,
     #       so we need to take an extra caution for safety.
+    unless(defined $subcmd) {
+        print STDERR "Usage: taw create <target> [target specific options...]\n";
+        print STDERR "       target is one of instance, vpc, subnet\n";
+        exit 1;
+    }
     if($subcmd eq 'instance') {
         my $hostname = shift(@args);
         my $image_id = shift(@args);
@@ -562,6 +580,36 @@ sub cmd_delete(@)
     } else {
         print STDERR "Unknown target '$subcmd'\n";
         exit 1;
+    }
+    exit 0;
+}
+
+sub cmd_terminate(@)
+{
+    my @args = @_;
+    my $cmd = "aws ec2 terminate-instances $ec2_flag_dry_run --instance-ids";
+    my $at_least_one_id_found = 0;
+    for my $id_name (@args) {
+        my $real_id = get_instance_id_from_name($id_name);
+        if(exists $real_id->{id}) {
+            $cmd .= " $real_id->{id}";
+            $at_least_one_id_found = 1;
+        } else {
+            print STDERR "ERROR: cannot find the instance id of '$id_name'\n";
+            exit 1;
+        }
+    }
+    unless($at_least_one_id_found) {
+        print STDERR "Usage: taw terminate <host names/instance IDs>\n";
+        exit 1;
+    }
+    $cmd .= " | jq -c " .
+            "'.TerminatingInstances[] | {InstanceId: .InstanceId, Current: .CurrentState.Name, Previous: .PreviousState.Name}'";
+    if($flag_force) {
+        exec_and_print_in_format($cmd, "Cannot terminate instance(s)", [qw(InstanceId Current Previous)], undef, 1);
+    } else {
+        print "Please add --force to execute the following command.\n";
+        print "\t$cmd\n";
     }
     exit 0;
 }
@@ -864,7 +912,7 @@ sub create_new_instance($$$$$$)
         exit 1;
     }
     my $cmd = "aws ec2 run-instances $ec2_flag_dry_run --image-id $image_id --instance-type $instance_type --key-name $key_name --subnet-id $subnet_id --security-group-ids $security_groups";
-    $cmd .= "jq -c '.Instances[] | " .
+    $cmd .= "| jq -c '.Instances[] | " .
             "{InstanceId: .InstanceId, VpcId: .VpcId, InstanceType: .InstanceType, RootDeviceType: .RootDeviceType, " .
             "SubnetId: .SubnetId, ImageId: .ImageId, AZ: .Placement.AvailabilityZone, KeyName: .KeyName, " .
             "State: .State.Name, Reason: .StateReason.Message, Arch: .Architecture}'";
@@ -1141,13 +1189,27 @@ Options:
 
 Show various information. The first argument of B<taw list> is a listing target, for which a user wants to know.
 If the listing target is omitted, instances are shown.
+To output in CSV, give B<-csv>. When B<-csv> is given, B<-n> suppresses the header line. B<-json> is given, it outputs in JSON. B<-pretty> is given, it outputs in human-friendly table format.
+
 See the following items for each target.
 
 =item B<taw list instance>
-B<taw list instance> will list instances. To output in CSV, give B<-csv>. When B<-csv> is given, B<-n> suppresses the header line. B<-json> is given, it outputs in JSON. B<-pretty> is given, it outputs in human-friendly table format.
+Show instances.
 
 =item B<taw list fw>
-B<taw list fw> will list the firewall rules. To change the rules, use B<taw fw add> or B<taw fw remove>.
+Show the firewall rules. To change the rules, use B<taw fw add> or B<taw fw remove>.
+
+=item B<taw list vpc>
+Show the VPCs.
+
+=item B<taw list subnet>
+Show the subnets.
+
+=item B<taw list ip>
+Show the allocated IPs.
+
+=item B<taw list address>
+Same as B<taw list ip>
 
 =item B<taw ssh>
 
@@ -1230,6 +1292,12 @@ Delete a VPC. If any subnet is associated with the given VPC, the command will f
 
 =item B<taw delete subnet>
 Delete a subnet. If any (non-terminated) instance is associated with the subnet, the command will fail.
+
+=item B<taw terminate>
+Terminate instance(s). You can specify instances by their names or instance IDs.
+B<taw terminate> will not actually terminate any instances without giving B<--force> option,
+so please run B<taw terminate> without B<--force> to check what you are going to do,
+and then run with B<--force> to actually execute it.
 
 =item B<taw images>
 
