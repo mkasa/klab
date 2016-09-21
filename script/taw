@@ -103,7 +103,7 @@ sub create_new_instance($$$$$);
 sub ensure_command($);
 sub error_if_jq_result_is_too_small(@);
 sub exec_and_print_in_format($$$$);
-sub exec_and_print_in_format_original_csv($$$$);
+sub exec_and_print_in_format_original_csv($$$$;$);
 sub exec_and_return_array($$);
 sub exec_and_exit_if_error($$);
 sub save_to_tmp_file_and_return_file_name(@);
@@ -389,9 +389,9 @@ sub exec_and_print_in_format($$$$)
 }
 
 # This sub is used to execute a command line that outputs *CSV*, and turns it into a format specified by command line
-sub exec_and_print_in_format_original_csv($$$$)
+sub exec_and_print_in_format_original_csv($$$$;$)
 {
-    my ($command_line, $message_on_error, $columns_to_show, $columns_to_show_with_verbose_option) = @_;
+    my ($command_line, $message_on_error, $columns_to_show, $columns_to_show_with_verbose_option, $need_pipe) = @_;
     my @columns_to_show;
     if($flag_verbose) {
         @columns_to_show = @{$columns_to_show_with_verbose_option} if(defined $columns_to_show_with_verbose_option);
@@ -411,7 +411,18 @@ sub exec_and_print_in_format_original_csv($$$$)
         ensure_command('csv-to-json');
         $command_line .= " | csv-to-json";
     }
-    exec_and_exit_if_error($command_line, $message_on_error);
+    unless($need_pipe) {
+        exec_and_exit_if_error($command_line, $message_on_error);
+        return 1;
+    } else {
+        my $fh;
+        print "DEBUG: EXE: $command_line\n" if($debug);
+        unless(open($fh, "| " . $command_line)) {
+            print STDERR "ERROR: $message_on_error\n";
+            exit 1;
+        }
+        return $fh;
+    }
 }
 
 sub cmd_create(@)
@@ -860,7 +871,8 @@ sub cmd_show($)
         my $my_region_name = get_effective_region_name();
         exec_and_print_in_format_original_csv("csvgrep -c 4 -m $my_region_name ~/.aws/images.csv", "Cannot open ~/.aws/images.csv", undef, undef);
     } elsif($type =~ /^instancetypes?/i) {
-        open my $fh, "| csvlook" or die "Cannot execute csvlook";
+        my $fh = exec_and_print_in_format_original_csv("cat", "Cannot convert format", undef, undef, 1);
+        # open my $fh, "| csvlook" or die "Cannot execute csvlook";
         print $fh "Instance Name,VCPUs,Memory,Description\n";
         for my $instance_name(sort(keys %instance_type_name_2_instance_type)) {
             my $obj = $instance_type_name_2_instance_type{$instance_name};
