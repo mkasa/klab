@@ -79,17 +79,38 @@ our %instance_type_name_2_instance_type = (
     "d2.8xlarge"     => {"vcpu" =>  36, "mem" =>  244, "desc" =>  "24x2TB HDD"}
 );
 
+our @trusted_ami_owners = (
+    'amazon',         # Amazon, of course
+    '309956199498',   # RedHat
+    '099720109477'    # Ubuntu
+);
+
 # Prototypes
-sub is_region_name_sane($);
-sub convert_region_nick_name($);
-sub exec_and_return_array($$);
+sub cmd_cache_image();
+sub cmd_createinstance($$$$);
+sub cmd_fw(@);
 sub cmd_help($);
-sub cmd_list();
 sub cmd_images();
+sub cmd_list();
+sub cmd_mosh($);
+sub cmd_scp($$);
 sub cmd_setdns($$);
 sub cmd_show($);
-sub cmd_createinstance($$$$);
+sub cmd_ssh($$);
+sub cmd_update(@);
+sub convert_region_nick_name($);
 sub ensure_command($);
+sub error_if_jq_result_is_too_small(@);
+sub exec_and_return_array($$);
+sub exec_and_exit_if_error($$);
+sub save_to_tmp_file_and_return_file_name(@);
+sub get_effective_region_name();
+sub get_image_info_cache_file_name();
+sub get_instance_id_from_name($);
+sub get_security_group_id_from_name($);
+sub is_region_name_sane($);
+sub normalize_cidr($);
+sub print_valid_cidr_examples();
 sub save_to_tmp_file_and_return_file_name(@);
 
 # Program starts here
@@ -161,6 +182,10 @@ if($subcommand =~ m|^createinstance$|i) {
 if($subcommand =~ m|^fw$|i) {
     my @subcmds = @ARGV;
     cmd_fw(@subcmds);
+}
+if($subcommand =~ m|^update$|i) {
+    my @subcmds = @ARGV;
+    cmd_update(@subcmds);
 }
 
 print STDERR "Unknown Subcommand '$subcommand'.\n";
@@ -257,9 +282,33 @@ sub cmd_help($)
         print_valid_cidr_examples();
         exit 0;
     }
+    if($subcommand =~ m|^update$|i) {
+        print STDERR "Usage: taw update  <update target>\n\n";
+        print STDERR "Valid update targets are:\n";
+        print STDERR "\tcache\tImage (AMI names) cache\n";
+        exit 0;
+    }
     print STDERR "Unknown Subcommand '$subcommand'.\n";
     print STDERR "Type 'taw help' to list the available subcommands.\n";
     exit 0;
+}
+
+sub cmd_update(@)
+{
+    my @subcmds = @_;
+    print STDERR "CMD_UPDATE\n" if($debug);
+    my $subsubcmd = shift(@subcmds);
+    if($subsubcmd =~ m|^cache$|i) {
+        cmd_cache_image();
+        exit 0;
+    } elsif(defined $subsubcmd) {
+        print STDERR "Unknown update target '$subsubcmd'\n";
+        exit 1;
+    } else {
+        print STDERR "Usage: taw update <update target>\n";
+        print STDERR "'taw help update' for details.\n";
+        exit 0;
+    }
 }
 
 sub cmd_list()
@@ -511,7 +560,7 @@ sub cmd_scp($$)
     exit 0;
 }
 
-sub error_if_jq_result_is_too_small
+sub error_if_jq_result_is_too_small(@)
 {
     my @jq_result = @_;
     if(@jq_result < 1) {
@@ -790,7 +839,9 @@ sub cmd_show($)
         }
     } elsif($type =~ /^quickimages?/i) {
         ensure_command("csvlook");
-        exec_and_exit_if_error("csvlook ~/.aws/images.csv", "Cannot open ~/.aws/images.csv");
+        ensure_command("csvgrep");
+        my $my_region_name = get_effective_region_name();
+        exec_and_exit_if_error("csvgrep -c 4 -m $my_region_name ~/.aws/images.csv | csvlook", "Cannot open ~/.aws/images.csv");
     } elsif($type =~ /^instancetypes?/i) {
         ensure_command("csvlook");
         open my $fh, "| csvlook" or die "Cannot execute csvlook";
@@ -810,6 +861,43 @@ sub cmd_show($)
         exit 1;
     }
     exit 0;
+}
+
+sub get_effective_region_name()
+{
+    unless(defined $param_region) {
+        if(defined $ENV{'AWS_DEFAULT_REGION'}) {
+            return $ENV{'AWS_DEFAULT_REGION'};
+        } else {
+            return 'default';
+        }
+    }
+    return $param_region;
+}
+
+sub get_image_info_cache_file_name()
+{
+    return $ENV{'HOME'} . "/.aws/.image-cache." . get_effective_region_name() . ".json";
+}
+
+sub cmd_cache_image()
+{
+    ensure_command('aws');
+    ensure_command('jq');
+    my $image_info_cache_file_name = get_image_info_cache_file_name();
+    print "DEBUG: cache file is '$image_info_cache_file_name'\n" if($debug);
+    my $cmd = 'aws ec2 describe-images --owners';
+    for my $owner_name (@trusted_ami_owners) {
+        $cmd .= " $owner_name";
+    }
+    $cmd .= ' --filters';
+    $cmd .= ' "Name=architecture,Values=x86_64"';     # you don't need i386 on cloud, right?
+    $cmd .= ' "Name=image-type,Values=machine"';      # if you need something other than machines, I guess you can use awscli directly.
+    $cmd .= ' "Name=virtualization-type,Values=hvm"'; # paravirtualization is old, so again we hardcode hvm here.
+    $cmd .= " | jq '.Images | map(select(.Platform != \"windows\"))'"; # doesn't need Windows in academia (at least in biology).
+    $cmd .= " > $image_info_cache_file_name.new";
+    exec_and_exit_if_error($cmd, "Failed to retrieve AMI info");
+    rename("$image_info_cache_file_name.new", $image_info_cache_file_name);
 }
 
 sub ensure_command($)
