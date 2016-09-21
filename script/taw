@@ -89,6 +89,7 @@ our @trusted_ami_owners = (
 # Prototypes
 sub cmd_cache_image();
 sub cmd_create(@);
+sub cmd_delete(@);
 sub cmd_fw(@);
 sub cmd_help($);
 sub cmd_images();
@@ -197,6 +198,10 @@ if($subcommand =~ m|^create$|i) {
     my @subcmds = @ARGV;
     cmd_create(@subcmds);
 }
+if($subcommand =~ m|^delete$|i) {
+    my @subcmds = @ARGV;
+    cmd_delete(@subcmds);
+}
 if($subcommand =~ m|^fw$|i) {
     my @subcmds = @ARGV;
     cmd_fw(@subcmds);
@@ -237,6 +242,7 @@ sub cmd_help($)
         print STDERR "Available objects are:\n";
         print STDERR "\tinstances\tinstances. this is the default.\n";
         print STDERR "\tvpc\tVPCs\n";
+        print STDERR "\tfw\tFirewall rules\n";
         print STDERR "\n";
         print STDERR "Options:\n";
         print STDERR "\t-csv\toutput in CSV\n";
@@ -247,11 +253,28 @@ sub cmd_help($)
         exit 0;
     }
     if($subcommand =~ m|^create$|i) {
-        print STDERR "Usage: taw create <target>\n\n";
+        print STDERR "Usage: taw create <target> [target specific options...]\n\n";
         print STDERR "Create a new instance:\n";
-        print STDERR "\ttaw create instance <name> <ami-id/quickimage-name> <key-name> <subnet> <security-group> [options...] [-- additional options for aws ec2 run-instances]\n\n";
-        print STDERR "Example:\n";
-        print STDERR "\ttaw create instance web1 ami-0123abcd mysshkey default\n";
+        print STDERR "\ttaw create instance <name> <ami-id/quickimage-name> <key-name> <subnet> <security-group> [options...] [-- additional options for aws ec2 run-instances]\n";
+        print STDERR "\teg) taw create instance web1 ami-0123abcd mysshkey default\n\n";
+        print STDERR "Create a new VPC:\n";
+        print STDERR "\ttaw create vpc <CIDR>\n";
+        print STDERR "\teg) taw create vpc 172.16.0.0/16\n\n";
+        print STDERR "Create a new subnet:\n";
+        print STDERR "\ttaw create subnet <VPC ID> <CIDR> [Availability Zone (AZ)]\n";
+        print STDERR "\teg) taw create subnet vpc-27583914 172.16.4.0/24 ap-northeast-1c\n\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^delete$|i) {
+        print STDERR "Usage: taw delete <target> [target specific options...]\n\n";
+        print STDERR "Delete an instance:\n";
+        print STDERR "\ttaw delete instance <name> [options...] [-- additional options for aws ec2 run-instances]\n\n";
+        print STDERR "Delete a VPC:\n";
+        print STDERR "\ttaw delete vpc <VPC ID>\n";
+        print STDERR "\teg) taw delete vpc vpc-27583914\n\n";
+        print STDERR "Delete a new subnet:\n";
+        print STDERR "\ttaw delete subnet <Subnet ID>\n";
+        print STDERR "\teg) taw delete subnet subnet-553bc60d\n\n";
         exit 0;
     }
     if($subcommand =~ m|^(r?ssh)$|i) {
@@ -460,6 +483,7 @@ sub cmd_create(@)
         my $keyname = shift(@args);
         my $subnet_id = shift(@args);
         my $securitygroup = shift(@args);
+        print STDERR "Not yet implemented.\n"; exit 1;
         create_new_instance($hostname, $image_id, $keyname, $subnet_id, $securitygroup);
     } elsif($subcmd eq 'vpc') {
         my $cidr = shift(@args);
@@ -489,6 +513,30 @@ sub cmd_create(@)
         }
         my $ncmd = "aws ec2 create-subnet $ec2_flag_dry_run --vpc-id $vpc_id --cidr-block $cidr";
         $ncmd .= " --availability-zone $az" if(defined $az);
+        exec_and_print_in_format($ncmd, "Cannot create a new subnet", undef, undef, 1);
+    } else {
+        print STDERR "Unknown target '$subcmd'\n";
+        exit 1;
+    }
+    exit 0;
+}
+
+sub cmd_delete(@)
+{
+    my @args = @_;
+    my $subcmd = shift(@args);
+    # NOTE: we don't allow fluctuation in the subcmd string.
+    #       any delete command might be disasterous.
+    #       so we need to take an extra caution for safety.
+    if($subcmd eq 'instance') {
+        print "Not yet implemented.\n"; exit 1;
+    } elsif($subcmd eq 'vpc') {
+        my $vpc_id = shift(@args);
+        my $ncmd = "aws ec2 delete-vpc $ec2_flag_dry_run --vpc-id $vpc_id";
+        exec_and_print_in_format($ncmd, "Cannot create a new VPC block", undef, undef, 1);
+    } elsif($subcmd eq 'subnet') {
+        my $subnet_id = shift(@args);
+        my $ncmd = "aws ec2 delete-subnet $ec2_flag_dry_run --subnet-id $subnet_id";
         exec_and_print_in_format($ncmd, "Cannot create a new subnet", undef, undef, 1);
     } else {
         print STDERR "Unknown target '$subcmd'\n";
@@ -1109,10 +1157,31 @@ The list is hardcoded in the script.
 =item B<taw create>
 
 Create something such as instances, VPCs, subnets, etc.
-See the following items for details of each command.
+See the following items for the details of each command.
 
 =item B<taw create instance>
-B<taw create instance> creates a new instance.
+Creates a new instance.
+
+=item B<taw create vpc>
+Creates a new VPC.
+
+=item B<taw create subnet>
+Creates a new subnet.
+If you omit the avilability zone, it will be automatically selected (at random by Amazon EC2).
+
+=item B<taw delete>
+
+Delete something such as instances, VPCs, subnets, etc.
+See the following items for the details of each command.
+
+=item B<taw delete instance>
+Delete an instance.
+
+=item B<taw delete vpc>
+Delete a VPC. If any subnet is associated with the given VPC, the command will fail.
+
+=item B<taw delete subnet>
+Delete a subnet. If any (non-terminated) instance is associated with the subnet, the command will fail.
 
 =item B<taw images>
 
