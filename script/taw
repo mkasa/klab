@@ -103,6 +103,7 @@ sub create_new_instance($$$$$);
 sub ensure_command($);
 sub error_if_jq_result_is_too_small(@);
 sub exec_and_print_in_format($$$$);
+sub exec_and_print_in_format_original_csv($$$$);
 sub exec_and_return_array($$);
 sub exec_and_exit_if_error($$);
 sub save_to_tmp_file_and_return_file_name(@);
@@ -359,6 +360,7 @@ sub cmd_list($)
     exit 0;
 }
 
+# This sub is used to execute a command line that outputs JSON, and turns it into a format specified by command line
 sub exec_and_print_in_format($$$$)
 {
     my ($command_line, $message_on_error, $columns_to_show, $columns_to_show_with_verbose_option) = @_;
@@ -382,6 +384,32 @@ sub exec_and_print_in_format($$$$)
         $command_line .= " | jq -c '{";
         $command_line .= join(', ', map {"\"$_\": .$_"} @columns_to_show);
         $command_line .= "}'";
+    }
+    exec_and_exit_if_error($command_line, $message_on_error);
+}
+
+# This sub is used to execute a command line that outputs *CSV*, and turns it into a format specified by command line
+sub exec_and_print_in_format_original_csv($$$$)
+{
+    my ($command_line, $message_on_error, $columns_to_show, $columns_to_show_with_verbose_option) = @_;
+    my @columns_to_show;
+    if($flag_verbose) {
+        @columns_to_show = @{$columns_to_show_with_verbose_option} if(defined $columns_to_show_with_verbose_option);
+    } else {
+        @columns_to_show = @{$columns_to_show} if(defined $columns_to_show);
+    }
+    if($flag_output_csv || $flag_output_pretty) {
+        ensure_command('csvlook') if($flag_output_pretty);
+        if(0 < @columns_to_show) {
+            ensure_command('csvcut');
+            $command_line .= " | csvcut -c " . join(',', @columns_to_show);
+        }
+        $command_line .= " -n" if($flag_no_header);
+        $command_line .= " | csvlook" if($flag_output_pretty);
+        $command_line .= " -H" if($flag_output_pretty && $flag_no_header);
+    } elsif($flag_output_json) {
+        ensure_command('csv-to-json');
+        $command_line .= " | csv-to-json";
     }
     exec_and_exit_if_error($command_line, $message_on_error);
 }
@@ -830,7 +858,7 @@ sub cmd_show($)
         }
     } elsif($type =~ /^quickimages?/i) {
         my $my_region_name = get_effective_region_name();
-        exec_and_exit_if_error("csvgrep -c 4 -m $my_region_name ~/.aws/images.csv | csvlook", "Cannot open ~/.aws/images.csv");
+        exec_and_print_in_format_original_csv("csvgrep -c 4 -m $my_region_name ~/.aws/images.csv", "Cannot open ~/.aws/images.csv", undef, undef);
     } elsif($type =~ /^instancetypes?/i) {
         open my $fh, "| csvlook" or die "Cannot execute csvlook";
         print $fh "Instance Name,VCPUs,Memory,Description\n";
