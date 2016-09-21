@@ -347,11 +347,11 @@ sub cmd_list($)
         exec_and_print_in_format($ncmd, "jq/json2csv/csvlook had an error.", [qw(id state name type az sg)], [qw(id state name pubip key type az reason sg)]);
         unlink($tmpfile) unless($debug_leave_file);
     } elsif($list_target =~ m|^v(pc?)?$|i) {
-        my $ncmd = "aws ec2 describe-vpcs | jq -c '.Vpcs | .[] | {Id: .VpcId, State: .State, Cidr: .CidrBlock, IsDefault: .IsDefault}' | json2csv -c Id,State,Cidr,IsDefault | csvlook";
-        exec_and_exit_if_error($ncmd, "cannot list VPCs");
+        my $ncmd = "aws ec2 describe-vpcs | jq -c '.Vpcs[]'";
+        exec_and_print_in_format($ncmd, "cannot list VPCs", [qw(VpcId State CidrBlock IsDefault)], undef);
     } elsif($list_target =~ m|^s(ub(n(ets?)?)?)?$|i) {
-        my $ncmd = "aws ec2 describe-subnets | jq -c '.Subnets | .[]' | json2csv -c SubnetId,VpcId,CidrBlock,State | csvlook";
-        exec_and_exit_if_error($ncmd, "cannot list subnets");
+        my $ncmd = "aws ec2 describe-subnets | jq -c '.Subnets[]'";
+        exec_and_print_in_format($ncmd, "cannot list subnets", [qw(SubnetId VpcId CidrBlock State)], undef);
     } else {
         print STDERR "Unknown target '$list_target'\n";
         exit 1;
@@ -377,7 +377,7 @@ sub exec_and_print_in_format($$$$)
         }
         $command_line .= " -n" if($flag_no_header);
         $command_line .= " | csvlook" if($flag_output_pretty);
-        $command_line .= " -n" if($flag_output_pretty && $flag_no_header);
+        $command_line .= " -H" if($flag_output_pretty && $flag_no_header);
     } elsif($flag_output_json) {
         $command_line .= " | jq -c '{";
         $command_line .= join(', ', map {"\"$_\": .$_"} @columns_to_show);
