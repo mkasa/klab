@@ -548,7 +548,7 @@ sub cmd_delete(@)
 sub get_instance_id_from_name($)
 {
     my $name = shift;
-    my $cmd = "aws ec2 describe-instances $ec2_flag_dry_run";
+    my $cmd = "aws ec2 describe-instances";
     my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
     my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
     my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | {id: .InstanceId, state: .State.Name, pubdns: .PublicDnsName, pubip: .PublicIpAddress, keyname: .KeyName, name: .Tags[] | select(.Key==\"Name\").Value, root: ((.Tags[] | select(.Key == \"root\").Value) // \"\")} else {noinstance: \"No instances\"} end'";
@@ -574,7 +574,7 @@ sub get_instance_id_from_name($)
 sub get_security_group_id_from_name($)
 {
     my $group_or_id = shift;
-    my $cmd = "aws ec2 describe-security-groups $ec2_flag_dry_run";
+    my $cmd = "aws ec2 describe-security-groups";
     my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
     my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
     print "TMPFILE: $tmpfile\n" if($debug);
