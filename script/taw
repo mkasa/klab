@@ -173,8 +173,8 @@ if($subcommand =~ m|^show$|i) {
     cmd_show($type);
 }
 if($subcommand =~ m|^list$|i) {
-    my $subsubcmd = shift;
-    cmd_list($subsubcmd);
+    my @subcmds = @ARGV;
+    cmd_list(@subcmds);
 }
 cmd_images() if($subcommand =~ m|^images?$|i);
 if($subcommand =~ m|^(r?ssh)$|i) {
@@ -378,7 +378,7 @@ sub cmd_list(@)
         my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
         print "TMPFILE: $tmpfile\n" if($debug);
         my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | " .
-                   "{id: .InstanceId, state: .State.Name, pubip: .PublicIpAddress, name: .Tags[] | select(.Key==\"Name\").Value, " .
+                   "{id: .InstanceId, state: .State.Name, pubip: .PublicIpAddress, name: (.Tags // [{Key: \"Name\", Value: \"(no name)\"}]) | .[] | select(.Key==\"Name\").Value, " .
                    "key: .KeyName, type: .InstanceType, reason: .StateReason.Message, az: .Placement.AvailabilityZone, " .
                    "sg: .SecurityGroups[0].GroupName, subnet: .SubnetId, vpc: .VpcId" .
                    "} else {noinstance: \"No instances\"} end'";
@@ -826,7 +826,7 @@ sub create_new_instance($$$$$$)
     my ($hostname, $image_id, $key_name, $instance_type, $subnet_id, $security_groups) = @_;
     print STDERR "CMD_CREATE_INSTANCE\n" if($debug);
     unless(defined $hostname && defined $image_id && defined $key_name && defined $instance_type && defined $subnet_id && defined $security_groups) {
-        print STDERR "Usage: taw create instance <unique hostname> <Image ID> <Key Name> <Instance Type> <Subnet ID> <Security Group>\n";
+        print STDERR "Usage: taw create instance <unique hostname> <Image ID> <Key Name> <Instance Type> <Subnet ID> <Security Group IDs>\n";
         print STDERR "  Use 'taw list instance' for checking existing instances.\n";
         print STDERR "  Use 'taw show quickimage' for showing selected official Image IDs.\n";
         print STDERR "           (of course you can pick one from third parties, though taw cannot show such lists).\n";
@@ -834,6 +834,7 @@ sub create_new_instance($$$$$$)
         print STDERR "  Use 'taw show instancetype' for the available instance types.\n";
         print STDERR "  Use 'taw list subnet' for available subnets.\n";
         print STDERR "  Use 'taw list fw' for firewall rules (security groups).\n";
+        print STDERR "  If you wish to specify more than one security group IDs, quote it and separate items by a single space.\n";
         exit 1;
     }
     my $existing_instance_with_the_same_name = get_instance_id_from_name($hostname);
@@ -847,8 +848,14 @@ sub create_new_instance($$$$$$)
         print STDERR "       If you wish to ignore this error and if you know what you are going to do, add --force option.\n";
         exit 1;
     }
-    my $cmd = "aws ec2 run-instances $ec2_flag_dry_run --image-id $image_id --key-name $key_name --subnet-id $subnet_id --security-groups $security_groups";
-    print "CMD: $cmd\n";
+    my $cmd = "aws ec2 run-instances $ec2_flag_dry_run --image-id $image_id --instance-type $instance_type --key-name $key_name --subnet-id $subnet_id --security-group-ids $security_groups";
+    $cmd .= "jq -c '.Instances[] | " .
+            "{InstanceId: .InstanceId, VpcId: .VpcId, InstanceType: .InstanceType, RootDeviceType: .RootDeviceType, " .
+            "SubnetId: .SubnetId, ImageId: .ImageId, AZ: .Placement.AvailabilityZone, KeyName: .KeyName, " .
+            "State: .State.Name, Reason: .StateReason.Message, Arch: .Architecture}'";
+    # | json2csv -c InstanceType,InstanceId,State,Reason,VpcId,SubnetId,AZ,ImageId,Arch,KeyName,RootDeviceType";
+    exec_and_print_in_format($cmd, "Cannot create a new instance", [qw(InstanceType InstanceId State Reason VpcId SubnetId AZ ImageId Arch KeyName RootDeviceType)], undef);
+    #
     my $ncmd = "aws ec2 craete-tags $ec2_flag_dry_run --resource instance_id --tags '{\"key\": \"Name\", \"value\": \"$hostname\"}'";
     print "NCMD: $ncmd\n";
     exit 0;
