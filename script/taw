@@ -102,7 +102,7 @@ sub convert_region_nick_name($);
 sub create_new_instance($$$$$);
 sub ensure_command($);
 sub error_if_jq_result_is_too_small(@);
-sub exec_and_print_in_format($$$$);
+sub exec_and_print_in_format($$$$;$);
 sub exec_and_print_in_format_original_csv($$$$;$);
 sub exec_and_return_array($$);
 sub exec_and_exit_if_error($$);
@@ -361,9 +361,9 @@ sub cmd_list($)
 }
 
 # This sub is used to execute a command line that outputs JSON, and turns it into a format specified by command line
-sub exec_and_print_in_format($$$$)
+sub exec_and_print_in_format($$$$;$)
 {
-    my ($command_line, $message_on_error, $columns_to_show, $columns_to_show_with_verbose_option) = @_;
+    my ($command_line, $message_on_error, $columns_to_show, $columns_to_show_with_verbose_option, $expect_no_output) = @_;
     my @columns_to_show;
     if($flag_verbose) {
         @columns_to_show = @{$columns_to_show_with_verbose_option} if(defined $columns_to_show_with_verbose_option);
@@ -373,7 +373,11 @@ sub exec_and_print_in_format($$$$)
     if($flag_output_csv || $flag_output_pretty) {
         ensure_command('csvlook') if($flag_output_pretty);
         $command_line .= "| json2csv";
-        $command_line .= " -z NotFound";
+        if($expect_no_output) {
+            $command_line .= " -z Success";
+        } else {
+            $command_line .= " -z NotFound";
+        }
         if(0 < @columns_to_show) {
             $command_line .= " -c " . join(',', @columns_to_show);
         }
@@ -427,19 +431,20 @@ sub exec_and_print_in_format_original_csv($$$$;$)
 
 sub cmd_create(@)
 {
-    my $subcmd = shift;
+    my @args = @_;
+    my $subcmd = shift(@args);
     # NOTE: we don't allow fluctuation in the subcmd string.
     #       any create command usually costs more money,
     #       so we need to take an extra caution for safety.
     if($subcmd eq 'instance') {
-        my $hostname = shift;
-        my $image_id = shift;
-        my $keyname = shift;
-        my $subnet_id = shift;
-        my $securitygroup = shift;
+        my $hostname = shift(@args);
+        my $image_id = shift(@args);
+        my $keyname = shift(@args);
+        my $subnet_id = shift(@args);
+        my $securitygroup = shift(@args);
         create_new_instance($hostname, $image_id, $keyname, $subnet_id, $securitygroup);
     } elsif($subcmd eq 'vpc') {
-        my $cidr = shift;
+        my $cidr = shift(@args);
         unless(is_valid_cidr($cidr)) {
             print STDERR "'$cidr' doesn't look like a valid CIDR.\n";
             print STDERR "e.g.: 10.0.0.0/16\n";
@@ -454,7 +459,19 @@ sub cmd_create(@)
             exit 1;
         }
         my $ncmd = "aws ec2 create-vpc --cidr-block $cidr | jq -c .Vpc";
-        exec_and_print_in_format($ncmd, "Cannot create a new VPC block", undef, undef);
+        exec_and_print_in_format($ncmd, "Cannot create a new VPC block", undef, undef, 1);
+    } elsif($subcmd eq 'subnet') {
+        my $vpc_id = shift(@args);
+        my $cidr = shift(@args);
+        my $az = shift(@args);
+        unless(is_valid_cidr($cidr)) {
+            print STDERR "'$cidr' doesn't look like a valid CIDR. Also, it must be within the range of the VPC.\n";
+            print STDERR "e.g.: 10.0.0.0/16\n";
+            exit 1;
+        }
+        my $ncmd = "aws ec2 create-subnet --vpc-id $vpc_id --cidr-block $cidr";
+        $ncmd .= " --availability-zone $az" if(defined $az);
+        exec_and_print_in_format($ncmd, "Cannot create a new subnet", undef, undef, 1);
     } else {
         print STDERR "Unknown target '$subcmd'\n";
         exit 1;
