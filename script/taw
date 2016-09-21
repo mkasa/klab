@@ -855,9 +855,10 @@ sub cmd_show($)
 {
     my $type = shift;
     if($type =~ /^regions?$/i) {
-        print "Region\tNickname\n";
+        my $fh = exec_and_print_in_format_original_csv("cat", "Cannot convert format", undef, undef, 1);
+        print $fh "Region,Nickname\n";
         for my $region (sort (keys %region_name_2_region_str)) {
-            print $region, "\t", $region_name_2_region_str{$region}, "\n";
+            print $fh $region, ",", $region_name_2_region_str{$region}, "\n";
         }
     } elsif($type =~ /^keys?$/i) {
         my $key_dir = $ENV{'HOME'} . "/.ssh";
@@ -872,7 +873,6 @@ sub cmd_show($)
         exec_and_print_in_format_original_csv("csvgrep -c 4 -m $my_region_name ~/.aws/images.csv", "Cannot open ~/.aws/images.csv", undef, undef);
     } elsif($type =~ /^instancetypes?/i) {
         my $fh = exec_and_print_in_format_original_csv("cat", "Cannot convert format", undef, undef, 1);
-        # open my $fh, "| csvlook" or die "Cannot execute csvlook";
         print $fh "Instance Name,VCPUs,Memory,Description\n";
         for my $instance_name(sort(keys %instance_type_name_2_instance_type)) {
             my $obj = $instance_type_name_2_instance_type{$instance_name};
