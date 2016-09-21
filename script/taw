@@ -110,6 +110,7 @@ sub exec_and_print_in_format_original_csv($$$$;$);
 sub exec_and_return_array($$);
 sub exec_and_return_json($$);
 sub exec_and_exit_if_error($$);
+sub exec_with_retry_and_exit_if_error($$$$);
 sub save_to_tmp_file_and_return_file_name(@);
 sub get_effective_region_name();
 sub get_image_info_cache_file_name();
@@ -418,8 +419,8 @@ sub cmd_list(@)
         my $ncmd = "aws ec2 describe-availability-zones $ec2_flag_dry_run | jq -c '.AvailabilityZones[]'";
         exec_and_print_in_format($ncmd, "cannot list availability zones", [qw(RegionName ZoneName State Messages)], [qw(RegionName ZoneName State Messages)]);
     } elsif($list_target =~ m{^(ip|addresse?)s?$}i) {
-        my $ncmd = "aws ec2 describe-addresses $ec2_flag_dry_run | jq -c '.Addresses[]'";
-        exec_and_print_in_format($ncmd, "cannot list availability zones", [qw(PublicIp InstanceId PrivateIpAddress AllocationId)], undef);
+        my $ncmd = "aws ec2 describe-addresses $ec2_flag_dry_run | jq -c '.Addresses[] | .InstanceId=.InstanceId? | .PrivateIpAddress=.PrivateIpAddress?'";
+        exec_and_print_in_format($ncmd, "cannot list IP addresses", [qw(PublicIp InstanceId PrivateIpAddress AllocationId)], undef);
     } else {
         print STDERR "Unknown target '$list_target'\n";
         print STDERR "If $list_target can be shown without querying to Amazon EC2,\n";
@@ -941,19 +942,13 @@ sub create_new_instance($$$$$$$@)
     }
     # | json2csv -c InstanceType,InstanceId,State,Reason,VpcId,SubnetId,AZ,ImageId,Arch,KeyName,RootDeviceType";
     my $ret_obj = exec_and_return_json($cmd, "Cannot create a new instance");
-    #$cmd .= "| jq -c '.Instances[] | " .
-            #"{InstanceId: .InstanceId, VpcId: .VpcId, InstanceType: .InstanceType, RootDeviceType: .RootDeviceType, " .
-            #"SubnetId: .SubnetId, ImageId: .ImageId, AZ: .Placement.AvailabilityZone, KeyName: .KeyName, " .
-            #"State: .State.Name, Reason: .StateReason.Message, Arch: .Architecture}'";
-    # exec_and_print_in_format($cmd, "Cannot create a new instance", [qw(InstanceType InstanceId State Reason VpcId SubnetId AZ ImageId Arch KeyName RootDeviceType)], undef);
+    my @display_lines;
     unless($flag_dry_run) {
-        my $fh = exec_and_print_in_format_original_csv("cat", "Cannot add tags and possibly IPs", undef, undef, 1);
-        print $fh "InstanceId\n";
         for my $launched_instance_obj (@{$ret_obj->{Instances}}) {
             print "INSTANCE = ", encode_json($launched_instance_obj), "\n" if($debug && $debug_leave_file);
             print "$launched_instance_obj\n" if($debug);
             my $instance_id = $launched_instance_obj->{InstanceId};
-            print $fh "$instance_id\n";
+            push(@display_lines, "$instance_id\n");
             {   # Assign a name tag and other tags
                 my $ncmd = "aws ec2 create-tags --resource $instance_id --tags Key=Name,Value=$hostname";
                 if($tag_to_add) {
@@ -964,15 +959,23 @@ sub create_new_instance($$$$$$$@)
                     }
                 }
                 exec_and_exit_if_error($ncmd, "Cannot add tags to the launched instance '$instance_id'");
+                print "Created tags.\n" if($debug);
             }
             # Assign a public IP if needed.
             if($ip_type eq 'public') {
-                # my $ncmd = "aws ec2 create-tags --resource $instance_id --tags Key=Name,Value=$hostname";
-                # exec_and_exit_if_error($ncmd, "Cannot add tags to the launched instance '$instance_id'");
+                my $ncmd = "aws ec2 allocate-address --domain vpc";
+                my $ret_obj = exec_and_return_json($ncmd, "Cannot allocate an IP (VPC).");
+                my $allocation_id = $ret_obj->{AllocationId};
+                my $ncmd = "aws ec2 associate-address --instance-id $instance_id --allocation-id $allocation_id > /dev/null";
+                exec_with_retry_and_exit_if_error($ncmd, 10, 12, "Cannot allocate a public IP to the launched instance '$instance_id'");
+                print "Associated address.\n" if($debug);
             }
         }
-        close $fh;
     }
+    my $fh = exec_and_print_in_format_original_csv("cat", "Cannot add tags and possibly IPs", undef, undef, 1);
+    print $fh "InstanceId\n";
+    for(@display_lines) { print $fh $_ }
+    close $fh;
     exit 0;
 }
 
@@ -1037,6 +1040,24 @@ sub exec_and_exit_if_error($$)
     if($?) {
         print STDERR "ERROR: " . $errormsg . "\n";
         exit ($? >> 8);
+    }
+    return 0;
+}
+
+sub exec_with_retry_and_exit_if_error($$$$)
+{
+    my ($cmd, $interval_in_sec, $retry_count, $errormsg) = @_;
+    while(0 < $retry_count) {
+        print STDERR "CMD: $cmd\n" if($debug);
+        system $cmd;
+        last unless($?);
+        $retry_count--;
+        unless(0 < $retry_count) {
+            print STDERR "ERROR: " . $errormsg . "\n";
+            exit ($? >> 8);
+        }
+        print STDERR "Operation failed but we anticipated it. Waiting $interval_in_sec seconds. $retry_count tries remaining.\n";
+        sleep $interval_in_sec;
     }
     return 0;
 }
