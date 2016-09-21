@@ -87,7 +87,7 @@ our @trusted_ami_owners = (
 
 # Prototypes
 sub cmd_cache_image();
-sub cmd_createinstance($$$$);
+sub cmd_create(@);
 sub cmd_fw(@);
 sub cmd_help($);
 sub cmd_images();
@@ -99,6 +99,7 @@ sub cmd_show($);
 sub cmd_ssh($$);
 sub cmd_update(@);
 sub convert_region_nick_name($);
+sub create_new_instance($$$$$);
 sub ensure_command($);
 sub error_if_jq_result_is_too_small(@);
 sub exec_and_return_array($$);
@@ -109,6 +110,8 @@ sub get_image_info_cache_file_name();
 sub get_instance_id_from_name($);
 sub get_security_group_id_from_name($);
 sub is_region_name_sane($);
+sub is_valid_cidr($);
+sub is_valid_private_cidr($);
 sub normalize_cidr($);
 sub print_valid_cidr_examples();
 sub save_to_tmp_file_and_return_file_name(@);
@@ -175,13 +178,11 @@ if($subcommand =~ m|^setdns$|i) {
     my $domainname = shift;
     cmd_setdns($hostname, $domainname);
 }
-if($subcommand =~ m|^createinstance$|i) {
-    my $hostname = shift;
-    my $image_id = shift;
-    my $keyname = shift;
-    my $securitygroup = shift;
-    cmd_createinstance($hostname, $image_id, $keyname, $securitygroup);
+if($subcommand =~ m|^create$|i) {
+    my @subcmds = @ARGV;
+    cmd_create(@subcmds);
 }
+
 if($subcommand =~ m|^fw$|i) {
     my @subcmds = @ARGV;
     cmd_fw(@subcmds);
@@ -374,6 +375,43 @@ sub cmd_list($)
         exec_and_exit_if_error($ncmd, "cannot list subnets");
     } else {
         print STDERR "Unknown target '$list_target'\n";
+        exit 1;
+    }
+    exit 0;
+}
+
+sub cmd_create(@)
+{
+    my $subcmd = shift;
+    # NOTE: we don't allow fluctuation in the subcmd string.
+    #       any create command usually costs more money,
+    #       so we need to take an extra caution for safety.
+    if($subcmd eq 'instance') {
+        my $hostname = shift;
+        my $image_id = shift;
+        my $keyname = shift;
+        my $subnet_id = shift;
+        my $securitygroup = shift;
+        create_new_instance($hostname, $image_id, $keyname, $subnet_id, $securitygroup);
+    } elsif($subcmd eq 'vpc') {
+        my $cidr = shift;
+        unless(is_valid_cidr($cidr)) {
+            print STDERR "'$cidr' doesn't look like a valid CIDR.\n";
+            print STDERR "e.g.: 10.0.0.0/16\n";
+            exit 1;
+        }
+        unless(is_valid_private_cidr($cidr)) {
+            print STDERR "'$cidr' doesn't look like a private IP address range.\n";
+            print STDERR "Private IP ranges are:\n";
+            print STDERR "\t192.168.0.0 - 192.168.255.255\n";
+            print STDERR "\t172.16.0.0 - 172.31.255.255\n";
+            print STDERR "\t10.0.0.0 - 10.255.255.255\n";
+            exit 1;
+        }
+        my $ncmd = "aws ec2 create-vpc --cidr-block $cidr | jq -c .Vpc | json2csv | csvlook";
+        exec_and_exit_if_error($ncmd, "Cannot create a new VPC block");
+    } else {
+        print STDERR "Unknown target '$subcmd'\n";
         exit 1;
     }
     exit 0;
@@ -683,7 +721,7 @@ sub cmd_setdns($$)
     exit 0;
 }
 
-sub cmd_createinstance($$$$)
+sub create_new_instance($$$$$)
 {
     ensure_command('aws');
     ensure_command('jq');
@@ -945,6 +983,34 @@ sub save_to_tmp_file_and_return_file_name(@)
     }
     close $fh;
     return $filename;
+}
+
+sub is_valid_private_cidr($)
+{
+    my $cstr = shift;
+    return undef unless($cstr =~ m|^(\d+).(\d+).(\d+).(\d+)/(\d+)$|);
+    my ($a1, $a2, $a3, $a4, $nb) = ($1, $2, $3, $4, $5);
+    return undef unless(0 <= $a1 && $a1 <= 255);
+    return undef unless(0 <= $a2 && $a2 <= 255);
+    return undef unless(0 <= $a3 && $a3 <= 255);
+    return undef unless(0 <= $a4 && $a4 <= 255);
+    return undef unless(0 <= $nb && $nb <= 32);
+    if($a1 == 192 && $a2 == 168) {
+        return 16 <= $nb;
+    }
+    if($a1 == 172 && 16 <= $a2 && $a2 <= 31) {
+        return 12 <= $nb;
+    }
+    if($a1 == 10) {
+        return 8 <= $nb;
+    }
+    return undef;
+}
+
+sub is_valid_cidr($)
+{
+    my $cstr = shift;
+    return $cstr =~ m|^(\d+).(\d+).(\d+).(\d+)/(\d+)$|;
 }
 
 sub normalize_cidr($)
