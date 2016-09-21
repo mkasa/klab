@@ -221,6 +221,7 @@ sub cmd_help($)
         print STDERR "Usage: taw list [object] [options..]\n\n";
         print STDERR "Available objects are:\n";
         print STDERR "\tinstances\tinstances. this is the default.\n";
+        print STDERR "\tvpc\tVPCs\n";
         print STDERR "\n";
         print STDERR "Options:\n";
         print STDERR "\t-csv\toutput in CSV\n";
@@ -325,6 +326,7 @@ sub cmd_list($)
     ensure_command('aws');
     ensure_command('jq');
     ensure_command('json2csv');
+    ensure_command('csvlook');
     if($list_target =~ m|^i(n(s(t(ances?)?)?)?)?$|) {
         my $cmd = "aws ec2 describe-instances";
         my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
@@ -362,6 +364,9 @@ sub cmd_list($)
         }
         exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
         unlink($tmpfile) unless($debug_leave_file);
+    } elsif($list_target =~ m|^v(pc?)?$|i) {
+        my $ncmd = " aws ec2 describe-vpcs | jq -c '.Vpcs | .[] | {Id: .VpcId, State: .State, Cidr: .CidrBlock, IsDefault: .IsDefault}' | json2csv -c Id,State,Cidr,IsDefault | csvlook";
+        exec_and_exit_if_error($ncmd, "cannot list VPCs");
     } else {
         print STDERR "Unknown target '$list_target'\n";
         exit 1;
