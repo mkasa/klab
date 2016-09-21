@@ -18,6 +18,7 @@ my $flag_dry_run       = 0;
 my $flag_help          = 0;
 my $flag_verbose       = 0;
 my $flag_man           = 0;
+my $flag_force         = 0;
 my $debug = 0;
 my $debug_leave_file = 0;
 my $param_region;
@@ -101,7 +102,7 @@ sub cmd_show($);
 sub cmd_ssh($$);
 sub cmd_update(@);
 sub convert_region_nick_name($);
-sub create_new_instance($$$$$);
+sub create_new_instance($$$$$$);
 sub ensure_command($);
 sub error_if_jq_result_is_too_small(@);
 sub exec_and_print_in_format($$$$;$);
@@ -129,6 +130,7 @@ GetOptions(
     "noheader"   => \$flag_no_header,
     "dry|n"      => \$flag_dry_run,
     "verbose"    => \$flag_verbose,
+    "force"      => \$flag_force,
     "help"       => \$flag_help,
     "man"        => \$flag_man,
     "region=s"   => \$param_region,
@@ -256,6 +258,12 @@ sub cmd_help($)
         print STDERR "Usage: taw create <target> [target specific options...]\n\n";
         print STDERR "Create a new instance:\n";
         print STDERR "\ttaw create instance <name> <ami-id/quickimage-name> <key-name> <subnet> <security-group> [options...] [-- additional options for aws ec2 run-instances]\n";
+        print STDERR "\tAdditional options you might be interested in are:\n";
+        print STDERR "\t\t--disable-api-termination | --enable-api-termination\tdisable or enable API termination (default: disabled).\n";
+        print STDERR "\t\t--instance-initiated-shutdown-behavior <stop|terminate>\tstop or terminate when shutdown.\n";
+        print STDERR "\t\t--private-ip-address <IP>\tgive a specific private IP address.\n";
+        print STDERR "\t\t--client-token <token>\tspecify a client token for idempotency.\n";
+        print STDERR "\t\t--ebs-optimized | --no-ebs-optimized\toptimize EBS I/O. (costs more money!)\n";
         print STDERR "\teg) taw create instance web1 ami-0123abcd mysshkey default\n\n";
         print STDERR "Create a new VPC:\n";
         print STDERR "\ttaw create vpc <CIDR>\n";
@@ -484,10 +492,10 @@ sub cmd_create(@)
         my $hostname = shift(@args);
         my $image_id = shift(@args);
         my $keyname = shift(@args);
+        my $instance_type = shift(@args);
         my $subnet_id = shift(@args);
         my $securitygroup = shift(@args);
-        print STDERR "Not yet implemented.\n"; exit 1;
-        create_new_instance($hostname, $image_id, $keyname, $subnet_id, $securitygroup);
+        create_new_instance($hostname, $image_id, $keyname, $instance_type, $subnet_id, $securitygroup);
     } elsif($subcmd eq 'vpc') {
         my $cidr = shift(@args);
         unless(is_valid_cidr($cidr)) {
@@ -560,9 +568,7 @@ sub get_instance_id_from_name($)
     error_if_jq_result_is_too_small(@jq_result);
     my $first_line_json_obj = decode_json($jq_result[0]);
     if(exists $first_line_json_obj->{"noinstance"}) {
-        print STDERR "ERROR: no instances available in the region.\n";
-        print STDERR "       Probably you specified a wrong region?\n";
-        exit 1;
+        return undef;
     }
     for my $json_string (@jq_result) {
         my $json_obj = decode_json($json_string);
@@ -805,27 +811,33 @@ sub cmd_setdns($$)
     exit 0;
 }
 
-sub create_new_instance($$$$$)
+sub create_new_instance($$$$$$)
 {
-    my ($hostname, $image_id, $key_name, $subnet_id, $security_groups) = @_;
+    my ($hostname, $image_id, $key_name, $instance_type, $subnet_id, $security_groups) = @_;
     print STDERR "CMD_CREATE_INSTANCE\n" if($debug);
-    unless(defined $hostname) {
-        print STDERR "ERROR: You must give a hostname.\n";
+    unless(defined $hostname && defined $image_id && defined $key_name && defined $instance_type && defined $subnet_id && defined $security_groups) {
+        print STDERR "Usage: taw create instance <unique hostname> <Image ID> <Key Name> <Instance Type> <Subnet ID> <Security Group>\n";
+        print STDERR "  Use 'taw list instance' for checking existing instances.\n";
+        print STDERR "  Use 'taw show quickimage' for showing selected official Image IDs.\n";
+        print STDERR "           (of course you can pick one from third parties, though taw cannot show such lists).\n";
+        print STDERR "  Use 'taw list image' for images of your own.\n";
+        print STDERR "  Use 'taw show instancetype' for the available instance types.\n";
+        print STDERR "  Use 'taw list subnet' for available subnets.\n";
+        print STDERR "  Use 'taw list fw' for firewall rules (security groups).\n";
         exit 1;
     }
-    unless(defined $image_id) {
-        print STDERR "ERROR: You must give an image ID.\n";
+    my $existing_instance_with_the_same_name = get_instance_id_from_name($hostname);
+    if(!$flag_force && defined $existing_instance_with_the_same_name) {
+        print STDERR "ERROR: There already exists an instance with name '$hostname'\n";
+        print STDERR "       If you wish to ignore this error and if you know what you are going to do, add --force option.\n";
         exit 1;
     }
-    unless(defined $key_name) {
-        print STDERR "ERROR: You must give a (SSH) key name.\n";
+    unless($flag_force || -e "$ENV{'HOME'}/.ssh/$key_name.pem") {
+        print STDERR "ERROR: The key '$key_name' does not seem to exist under ~/.ssh\n";
+        print STDERR "       If you wish to ignore this error and if you know what you are going to do, add --force option.\n";
         exit 1;
     }
-    unless(defined $security_groups) {
-        print STDERR "ERROR: You must give security groups. 'default' cannot be omitted even if you leave it to the default.\n";
-        exit 1;
-    }
-    my $cmd = "aws ec2 run-instances $ec2_flag_dry_run --image-id $image_id --min-count 1 --max-count 1 --key-name $key_name --security-groups $security_groups";
+    my $cmd = "aws ec2 run-instances $ec2_flag_dry_run --image-id $image_id --key-name $key_name --subnet-id $subnet_id --security-groups $security_groups";
     print "CMD: $cmd\n";
     my $ncmd = "aws ec2 craete-tags $ec2_flag_dry_run --resource instance_id --tags '{\"key\": \"Name\", \"value\": \"$hostname\"}'";
     print "NCMD: $ncmd\n";
