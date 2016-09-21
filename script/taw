@@ -663,23 +663,17 @@ sub cmd_setdns($$)
     my $zone_name = $2;
     my $ip;
     if($name =~ m|^(\d+)\.(\d+)\.(\d+)\.(\d+)$|) {
-        if($debug) {
-            print "'$name' looks like an IP.\n";
-        }
+        print "'$name' looks like an IP.\n" if($debug);
         $ip = $name;
     } else {
-        if($debug) {
-            print "Query the host name '$name'\n";
-        }
+        print "Query the host name '$name'\n" if($debug);
         my $instance_json = get_instance_id_from_name($name);
         unless(defined $instance_json) {
             print STDERR "ERROR: No such instance (name '$name') available\n";
             exit 1;
         }
         $ip = $instance_json->{'pubip'};
-        if($debug) {
-            print "HOST: $host\nZONE: $zone_name\nIP: $ip\n";
-        }
+        print "HOST: $host\nZONE: $zone_name\nIP: $ip\n" if($debug);
     }
     my $cmd = "cli53 rrcreate $zone_name $host A $ip " . join(" ", @ARGV);
     exec_and_exit_if_error($cmd, "cli53 error.");
