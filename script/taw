@@ -340,10 +340,13 @@ sub cmd_list($)
         my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
         print "TMPFILE: $tmpfile\n" if($debug);
         my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | " .
-                   "{id: .InstanceId, state: .State.Name, pubip: .PublicIpAddress, name: .Tags[] | select(.Key==\"Name\").Value, key: .KeyName, type: .InstanceType, reason: .StateReason.Message, az: .Placement.AvailabilityZone, sg: .SecurityGroups[0].GroupName} else {noinstance: \"No instances\"} end'";
+                   "{id: .InstanceId, state: .State.Name, pubip: .PublicIpAddress, name: .Tags[] | select(.Key==\"Name\").Value, " .
+                   "key: .KeyName, type: .InstanceType, reason: .StateReason.Message, az: .Placement.AvailabilityZone, " .
+                   "sg: .SecurityGroups[0].GroupName, subnet: .SubnetId, vpc: .VpcId" .
+                   "} else {noinstance: \"No instances\"} end'";
         if($flag_output_csv) {
             if($flag_verbose) {
-                $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason,sg";
+                $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason,sg,vpc,subnet";
             } else {
                 $ncmd .= "| json2csv -c id,state,name,type,az,sg";
             }
@@ -351,7 +354,7 @@ sub cmd_list($)
         } elsif($flag_output_pretty) {
             ensure_command('csvlook');
             if($flag_verbose) {
-                $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason,sg | csvlook";
+                $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason,sg,vpc,subnet | csvlook";
             } else {
                 $ncmd .= "| json2csv -c id,state,name,type,az,sg | csvlook";
             }
