@@ -500,6 +500,10 @@ sub cmd_create(@)
         create_new_instance($hostname, $image_id, $keyname, $instance_type, $subnet_id, $securitygroup);
     } elsif($subcmd eq 'vpc') {
         my $cidr = shift(@args);
+        unless(defined $cidr) {
+            print STDERR "Usage: taw create vpc <CIDR>\n";
+            exit 1;
+        }
         unless(is_valid_cidr($cidr)) {
             print STDERR "'$cidr' doesn't look like a valid CIDR.\n";
             print STDERR "e.g.: 10.0.0.0/16\n";
@@ -519,6 +523,10 @@ sub cmd_create(@)
         my $vpc_id = shift(@args);
         my $cidr = shift(@args);
         my $az = shift(@args);
+        unless(defined $vpc_id && defined $cidr) {
+            print STDERR "Usage: taw create subnet <VPC ID> <CIDR> [AZ]\n";
+            exit 1;
+        }
         unless(is_valid_cidr($cidr)) {
             print STDERR "'$cidr' doesn't look like a valid CIDR. Also, it must be within the range of the VPC.\n";
             print STDERR "e.g.: 10.0.0.0/16\n";
