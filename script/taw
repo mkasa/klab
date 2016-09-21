@@ -14,6 +14,7 @@ my $flag_output_csv    = 0;
 my $flag_output_pretty = 0;
 my $flag_output_raw    = 0;
 my $flag_no_header     = 0;
+my $flag_dry_run       = 0;
 my $flag_help          = 0;
 my $flag_verbose       = 0;
 my $flag_man           = 0;
@@ -124,7 +125,8 @@ GetOptions(
     "csv"        => \$flag_output_csv,
     "pretty|p"   => \$flag_output_pretty,
     "raw"        => \$flag_output_raw,
-    "noheader|n" => \$flag_no_header,
+    "noheader"   => \$flag_no_header,
+    "dry|n"      => \$flag_dry_run,
     "verbose"    => \$flag_verbose,
     "help"       => \$flag_help,
     "man"        => \$flag_man,
@@ -136,6 +138,7 @@ GetOptions(
 pod2usage(1) if $flag_help;
 pod2usage(-verbose => 2) if $flag_man; 
 
+# Parameter defaulting
 if(defined $param_region) {
     $param_region = convert_region_nick_name($param_region);
     unless(is_region_name_sane($param_region)) {
@@ -148,7 +151,10 @@ if(defined $param_region) {
 unless($flag_output_raw || $flag_output_csv || $flag_output_json || $flag_output_pretty) {
     $flag_output_pretty = 1;
 }
+our $ec2_flag_dry_run = "";
+$ec2_flag_dry_run = "--dry-run " if($flag_dry_run);
 
+# Process a subcommand
 my $subcommand = shift;
 cmd_help(undef) unless(defined $subcommand);
 if($subcommand =~ m|^help$|i) {
@@ -336,7 +342,7 @@ sub cmd_list($)
     $list_target = 'instance' unless(defined $list_target);
     print STDERR "CMD_LIST '$list_target'\n" if($debug);
     if($list_target =~ m|^i(n(s(t(ances?)?)?)?)?$|) {
-        my $cmd = "aws ec2 describe-instances";
+        my $cmd = "aws ec2 describe-instances $ec2_flag_dry_run";
         my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
         my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
         print "TMPFILE: $tmpfile\n" if($debug);
@@ -348,10 +354,10 @@ sub cmd_list($)
         exec_and_print_in_format($ncmd, "jq/json2csv/csvlook had an error.", [qw(id state name type az sg)], [qw(id state name pubip key type az reason sg)]);
         unlink($tmpfile) unless($debug_leave_file);
     } elsif($list_target =~ m|^v(pc?)?$|i) {
-        my $ncmd = "aws ec2 describe-vpcs | jq -c '.Vpcs[]'";
+        my $ncmd = "aws ec2 describe-vpcs $ec2_flag_dry_run | jq -c '.Vpcs[]'";
         exec_and_print_in_format($ncmd, "cannot list VPCs", [qw(VpcId State CidrBlock IsDefault)], undef);
     } elsif($list_target =~ m|^s(ub(n(ets?)?)?)?$|i) {
-        my $ncmd = "aws ec2 describe-subnets | jq -c '.Subnets[]'";
+        my $ncmd = "aws ec2 describe-subnets $ec2_flag_dry_run | jq -c '.Subnets[]'";
         exec_and_print_in_format($ncmd, "cannot list subnets", [qw(SubnetId VpcId CidrBlock State)], undef);
     } else {
         print STDERR "Unknown target '$list_target'\n";
@@ -458,7 +464,7 @@ sub cmd_create(@)
             print STDERR "\t10.0.0.0 - 10.255.255.255\n";
             exit 1;
         }
-        my $ncmd = "aws ec2 create-vpc --cidr-block $cidr | jq -c .Vpc";
+        my $ncmd = "aws ec2 create-vpc $ec2_flag_dry_run --cidr-block $cidr | jq -c .Vpc";
         exec_and_print_in_format($ncmd, "Cannot create a new VPC block", undef, undef, 1);
     } elsif($subcmd eq 'subnet') {
         my $vpc_id = shift(@args);
@@ -469,7 +475,7 @@ sub cmd_create(@)
             print STDERR "e.g.: 10.0.0.0/16\n";
             exit 1;
         }
-        my $ncmd = "aws ec2 create-subnet --vpc-id $vpc_id --cidr-block $cidr";
+        my $ncmd = "aws ec2 create-subnet $ec2_flag_dry_run --vpc-id $vpc_id --cidr-block $cidr";
         $ncmd .= " --availability-zone $az" if(defined $az);
         exec_and_print_in_format($ncmd, "Cannot create a new subnet", undef, undef, 1);
     } else {
@@ -482,7 +488,7 @@ sub cmd_create(@)
 sub get_instance_id_from_name($)
 {
     my $name = shift;
-    my $cmd = "aws ec2 describe-instances";
+    my $cmd = "aws ec2 describe-instances $ec2_flag_dry_run";
     my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
     my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
     my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | {id: .InstanceId, state: .State.Name, pubdns: .PublicDnsName, pubip: .PublicIpAddress, keyname: .KeyName, name: .Tags[] | select(.Key==\"Name\").Value, root: ((.Tags[] | select(.Key == \"root\").Value) // \"\")} else {noinstance: \"No instances\"} end'";
@@ -508,7 +514,7 @@ sub get_instance_id_from_name($)
 sub get_security_group_id_from_name($)
 {
     my $group_or_id = shift;
-    my $cmd = "aws ec2 describe-security-groups";
+    my $cmd = "aws ec2 describe-security-groups $ec2_flag_dry_run";
     my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
     my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
     print "TMPFILE: $tmpfile\n" if($debug);
@@ -695,7 +701,7 @@ sub error_if_jq_result_is_too_small(@)
 sub cmd_images()
 {
     print STDERR "CMD_IMAGES\n" if($debug);
-    my $cmd = "aws ec2 describe-images --owners=self | jq -c '.Images[]'";
+    my $cmd = "aws ec2 describe-images $ec2_flag_dry_run --owners=self | jq -c '.Images[]'";
     exec_and_print_in_format($cmd, "Cannot retrieve the image info", [qw(ImageId Name State Architecture RootDeviceType Description)], undef);
     exit 0;
 }
@@ -756,9 +762,9 @@ sub create_new_instance($$$$$)
         print STDERR "ERROR: You must give security groups. 'default' cannot be omitted even if you leave it to the default.\n";
         exit 1;
     }
-    my $cmd = "aws ec2 run-instances --image-id $image_id --min-count 1 --max-count 1 --key-name $key_name --security-groups $security_groups";
+    my $cmd = "aws ec2 run-instances $ec2_flag_dry_run --image-id $image_id --min-count 1 --max-count 1 --key-name $key_name --security-groups $security_groups";
     print "CMD: $cmd\n";
-    my $ncmd = "aws ec2 craete-tags --resource instance_id --tags '{\"key\": \"Name\", \"value\": \"$hostname\"}'";
+    my $ncmd = "aws ec2 craete-tags $ec2_flag_dry_run --resource instance_id --tags '{\"key\": \"Name\", \"value\": \"$hostname\"}'";
     print "NCMD: $ncmd\n";
     exit 0;
 }
@@ -771,7 +777,7 @@ sub cmd_fw(@)
     print STDERR "CMD_FW '$subcmd' [" . join(', ', @rest_args) . "]\n" if($debug);
     if($subcmd eq 'list') {
         my $group_or_id = shift;
-        my $cmd = "aws ec2 describe-security-groups | jq -c ";
+        my $cmd = "aws ec2 describe-security-groups $ec2_flag_dry_run | jq -c ";
         if(defined $group_or_id) {
             $cmd .= "'.SecurityGroups[] | select(.GroupName==\"$group_or_id\" or .GroupId==\"$group_or_id\") | .IpPermissions[] | " .
                     "{Prot: .IpProtocol, Port: (if .FromPort == .ToPort then .FromPort | tostring else [.FromPort,.ToPort] | " .
@@ -800,9 +806,9 @@ sub cmd_fw(@)
             my $group_ip = get_security_group_id_from_name($gr_name);
             my $cmd;
             if($subcmd eq 'add') {
-                $cmd = "aws ec2 authorize-security-group-ingress --group-id $group_ip --protocol $prot --port $port --cidr $cidr";
+                $cmd = "aws ec2 authorize-security-group-ingress $ec2_flag_dry_run --group-id $group_ip --protocol $prot --port $port --cidr $cidr";
             } else {
-                $cmd = "aws ec2 revoke-security-group-ingress --group-id $group_ip --protocol $prot --port $port --cidr $cidr";
+                $cmd = "aws ec2 revoke-security-group-ingress $ec2_flag_dry_run --group-id $group_ip --protocol $prot --port $port --cidr $cidr";
             }
             exec_and_exit_if_error($cmd, "aws error.");
         } else {
@@ -929,7 +935,7 @@ sub cmd_cache_image()
 {
     my $image_info_cache_file_name = get_image_info_cache_file_name();
     print "DEBUG: cache file is '$image_info_cache_file_name'\n" if($debug);
-    my $cmd = 'aws ec2 describe-images --owners';
+    my $cmd = 'aws ec2 describe-images $ec2_flag_dry_run --owners';
     for my $owner_name (@trusted_ami_owners) {
         $cmd .= " $owner_name";
     }
