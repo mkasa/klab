@@ -365,8 +365,11 @@ sub cmd_list($)
         exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
         unlink($tmpfile) unless($debug_leave_file);
     } elsif($list_target =~ m|^v(pc?)?$|i) {
-        my $ncmd = " aws ec2 describe-vpcs | jq -c '.Vpcs | .[] | {Id: .VpcId, State: .State, Cidr: .CidrBlock, IsDefault: .IsDefault}' | json2csv -c Id,State,Cidr,IsDefault | csvlook";
+        my $ncmd = "aws ec2 describe-vpcs | jq -c '.Vpcs | .[] | {Id: .VpcId, State: .State, Cidr: .CidrBlock, IsDefault: .IsDefault}' | json2csv -c Id,State,Cidr,IsDefault | csvlook";
         exec_and_exit_if_error($ncmd, "cannot list VPCs");
+    } elsif($list_target =~ m|^s(ub(n(ets?)?)?)?$|i) {
+        my $ncmd = "aws ec2 describe-subnets | jq -c '.Subnets | .[]' | json2csv -c SubnetId,VpcId,CidrBlock,State | csvlook";
+        exec_and_exit_if_error($ncmd, "cannot list subnets");
     } else {
         print STDERR "Unknown target '$list_target'\n";
         exit 1;
