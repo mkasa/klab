@@ -95,11 +95,11 @@ sub cmd_fw(@);
 sub cmd_help($);
 sub cmd_images();
 sub cmd_list(@);
-sub cmd_mosh($);
+sub cmd_mosh($@);
 sub cmd_scp($$);
 sub cmd_setdns($$);
 sub cmd_show($);
-sub cmd_ssh($$);
+sub cmd_ssh($$@);
 sub cmd_update(@);
 sub convert_region_nick_name($);
 sub create_new_instance($$$$$$);
@@ -572,7 +572,11 @@ sub get_instance_id_from_name($)
     my $cmd = "aws ec2 describe-instances";
     my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
     my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
-    my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | {id: .InstanceId, state: .State.Name, pubdns: .PublicDnsName, pubip: .PublicIpAddress, keyname: .KeyName, name: .Tags[] | select(.Key==\"Name\").Value, root: ((.Tags[] | select(.Key == \"root\").Value) // \"\")} else {noinstance: \"No instances\"} end'";
+    my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | ";
+    $ncmd .= "{id: .InstanceId, state: .State.Name, pubdns: .PublicDnsName, pubip: .PublicIpAddress, keyname: .KeyName, " .
+              "name: (((.Tags // []) | .[] | select(.Key==\"Name\").Value) // .InstanceId), " .
+              "root: (((.Tags // []) | .[] | select(.Key == \"root\").Value) // \"\")" .
+             "} else {noinstance: \"No instances\"} end'";
     my @jq_result = exec_and_return_array($ncmd, "jq had an error.");
     unlink($tmpfile) unless($debug_leave_file);
     error_if_jq_result_is_too_small(@jq_result);
@@ -582,6 +586,7 @@ sub get_instance_id_from_name($)
     }
     for my $json_string (@jq_result) {
         my $json_obj = decode_json($json_string);
+        print STDERR "OBJ: $json_string\n" if($debug && $debug_leave_file);
         print STDERR "Matching '$name' with $json_obj->{'name'} ...\n" if($debug);
         if($json_obj->{'name'} eq $name) {
             return $json_obj;
@@ -606,10 +611,10 @@ sub get_security_group_id_from_name($)
     return $result;
 }
 
-sub cmd_ssh($$)
+sub cmd_ssh($$@)
 {
     print STDERR "CMD_SSH\n" if($debug);
-    my ($name, $ssh_cmd_name) = @_;
+    my ($name, $ssh_cmd_name, @other_opts) = @_;
     unless(defined $name) {
         print STDERR "ERROR: taw $ssh_cmd_name to where?\n";
         print STDERR "       Type 'taw help $ssh_cmd_name' for help.\n";
@@ -625,9 +630,19 @@ sub cmd_ssh($$)
         print STDERR "ERROR: No such instance (name '$name') available\n";
         exit 1;
     }
-    print "SSH to $instance_json->{pubip}\n";
+    print "SSH to $instance_json->{pubip}\n" if($debug);
     print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
-    my $root_account = $instance_json->{root}; $root_account = "ec2-user" if($root_account eq '');
+    my $root_account = $instance_json->{root};
+    if($root_account eq '') {
+        unless(grep {$_ eq '-l'} @other_opts) {
+            print STDERR "WARNING: The instance does not have a tag 'ROOT', so the root user name is defaulted to 'ec2-user'.\n";
+        }
+        $root_account = "ec2-user";
+    }
+    unless($instance_json->{pubip}) {
+        print STDERR "ERROR: The instance does not have a public IP.\n";
+        exit 1;
+    }
     my $cmd = "$ssh_cmd_name $instance_json->{pubip} -l $root_account ";
     {
         my $key_file = $ENV{'HOME'} . "/.ssh/" . $instance_json->{keyname} . ".pem";
@@ -636,7 +651,7 @@ sub cmd_ssh($$)
             $cmd .= "-i $key_file ";
         }
     }
-    $cmd .= join(' ', @ARGV); # TODO: shell escaping
+    $cmd .= join(' ', @other_opts); # TODO: shell escaping
     print STDERR "CMD: $cmd\n" if($debug);
     system $cmd;
     if($? == 127) {
@@ -651,10 +666,10 @@ sub cmd_ssh($$)
     exit 0;
 }
 
-sub cmd_mosh($)
+sub cmd_mosh($@)
 {
     print STDERR "CMD_MOSH\n" if($debug);
-    my $name = shift;
+    my ($name, @other_opts) = @_;
     unless(defined $name) {
         print STDERR "ERROR: taw mosh to where?\n";
         print STDERR "       Type 'taw help mosh' for help.\n";
@@ -670,7 +685,7 @@ sub cmd_mosh($)
         print STDERR "ERROR: No such instance (name '$name') available\n";
         exit 1;
     }
-    print "SSH to $instance_json->{pubip}\n";
+    print "MOSH to $instance_json->{pubip}\n" if($debug);
     print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
     my $root_account = $instance_json->{root}; $root_account = "ec2-user" if($root_account eq '');
     my $cmd = "mosh $instance_json->{pubip} --ssh 'ssh -l $root_account";
@@ -682,7 +697,7 @@ sub cmd_mosh($)
         }
     }
     $cmd .= "' ";
-    $cmd .= join(' ', @ARGV); # TODO: shell escaping
+    $cmd .= join(' ', @other_opts); # TODO: shell escaping
     print STDERR "CMD: $cmd\n" if($debug);
     system $cmd;
     if($? == 127) {
