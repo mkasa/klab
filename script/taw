@@ -11,7 +11,7 @@ use JSON;
 
 my $flag_output_json   = 0;
 my $flag_output_csv    = 0;
-my $flag_output_pretty = 1;
+my $flag_output_pretty = 0;
 my $flag_output_raw    = 0;
 my $flag_no_header     = 0;
 my $flag_help          = 0;
@@ -102,6 +102,7 @@ sub convert_region_nick_name($);
 sub create_new_instance($$$$$);
 sub ensure_command($);
 sub error_if_jq_result_is_too_small(@);
+sub exec_and_print_in_format($$$$);
 sub exec_and_return_array($$);
 sub exec_and_exit_if_error($$);
 sub save_to_tmp_file_and_return_file_name(@);
@@ -142,6 +143,9 @@ if(defined $param_region) {
     }
     $ENV{'AWS_DEFAULT_REGION'} = $param_region;
     print STDERR "AWS_DEFAULT_REGION is set to '$param_region'\n" if($debug);
+}
+unless($flag_output_raw || $flag_output_csv || $flag_output_json || $flag_output_pretty) {
+    $flag_output_pretty = 1;
 }
 
 my $subcommand = shift;
@@ -333,10 +337,6 @@ sub cmd_list($)
     if($list_target =~ m|^i(n(s(t(ances?)?)?)?)?$|) {
         my $cmd = "aws ec2 describe-instances";
         my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
-        if($flag_output_raw) {
-            print join('', @awscli_result);
-            exit 0;
-        }
         my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
         print "TMPFILE: $tmpfile\n" if($debug);
         my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | " .
@@ -344,31 +344,7 @@ sub cmd_list($)
                    "key: .KeyName, type: .InstanceType, reason: .StateReason.Message, az: .Placement.AvailabilityZone, " .
                    "sg: .SecurityGroups[0].GroupName, subnet: .SubnetId, vpc: .VpcId" .
                    "} else {noinstance: \"No instances\"} end'";
-        if($flag_output_csv) {
-            if($flag_verbose) {
-                $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason,sg,vpc,subnet";
-            } else {
-                $ncmd .= "| json2csv -c id,state,name,type,az,sg";
-            }
-            $ncmd .= " -n" if($flag_no_header);
-        } elsif($flag_output_pretty) {
-            ensure_command('csvlook');
-            if($flag_verbose) {
-                $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason,sg,vpc,subnet | csvlook";
-            } else {
-                $ncmd .= "| json2csv -c id,state,name,type,az,sg | csvlook";
-            }
-        } elsif(!$flag_output_json) {
-            if($flag_verbose) {
-                print "Instance ID\tState\tName\tPublic IP\tKey\tType\tAZ\tReason\tSecGrp\n";
-                $ncmd .= "| json2csv --tsv -v -c id,state,name,pubip,key,type,az,reason,sg | csvlook";
-            } else {
-                print "Instance ID\tState\tName\tType\tAZ\tSecGrp\n";
-                $ncmd .= "| json2csv --tsv -v -c id,state,name,type,az,sg | csvlook";
-            }
-            print "="x75, "\n";
-        }
-        exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
+        exec_and_print_in_format($ncmd, "jq/json2csv/csvlook had an error.", [qw(id state name type az sg)], [qw(id state name pubip key type az reason sg)]);
         unlink($tmpfile) unless($debug_leave_file);
     } elsif($list_target =~ m|^v(pc?)?$|i) {
         my $ncmd = "aws ec2 describe-vpcs | jq -c '.Vpcs | .[] | {Id: .VpcId, State: .State, Cidr: .CidrBlock, IsDefault: .IsDefault}' | json2csv -c Id,State,Cidr,IsDefault | csvlook";
@@ -381,6 +357,33 @@ sub cmd_list($)
         exit 1;
     }
     exit 0;
+}
+
+sub exec_and_print_in_format($$$$)
+{
+    my ($command_line, $message_on_error, $columns_to_show, $columns_to_show_with_verbose_option) = @_;
+    my @columns_to_show;
+    if($flag_verbose) {
+        @columns_to_show = @{$columns_to_show_with_verbose_option} if(defined $columns_to_show_with_verbose_option);
+    } else {
+        @columns_to_show = @{$columns_to_show} if(defined $columns_to_show);
+    }
+    if($flag_output_csv || $flag_output_pretty) {
+        ensure_command('csvlook') if($flag_output_pretty);
+        if(0 < @columns_to_show) {
+            $command_line .= "| json2csv -c " . join(',', @columns_to_show);
+        } else {
+            $command_line .= "| json2csv";
+        }
+        $command_line .= " -n" if($flag_no_header);
+        $command_line .= " | csvlook" if($flag_output_pretty);
+        $command_line .= " -n" if($flag_output_pretty && $flag_no_header);
+    } elsif($flag_output_json) {
+        $command_line .= " | jq -c '{";
+        $command_line .= join(', ', map {"\"$_\": .$_"} @columns_to_show);
+        $command_line .= "}'";
+    }
+    exec_and_exit_if_error($command_line, $message_on_error);
 }
 
 sub cmd_create(@)
