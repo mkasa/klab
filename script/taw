@@ -91,7 +91,7 @@ sub cmd_createinstance($$$$);
 sub cmd_fw(@);
 sub cmd_help($);
 sub cmd_images();
-sub cmd_list();
+sub cmd_list($);
 sub cmd_mosh($);
 sub cmd_scp($$);
 sub cmd_setdns($$);
@@ -147,7 +147,10 @@ if($subcommand =~ m|^help$|i) {
     my $subsubcmd = shift;
     cmd_help($subsubcmd);
 }
-cmd_list() if($subcommand =~ m|^list$|i);
+if($subcommand =~ m|^list$|i) {
+    my $subsubcmd = shift;
+    cmd_list($subsubcmd);
+}
 if($subcommand =~ m|^show$|i) {
     my $type = shift;
     cmd_show($type);
@@ -199,7 +202,7 @@ sub cmd_help($)
         print STDERR "Usage: taw <subcommand> [options..] [arguments..]\n\n";
         print STDERR "Subcommands:\n";
         print STDERR "\thelp\tthis message\n";
-        print STDERR "\tlist\tlist the instances\n";
+        print STDERR "\tlist\tlist various info (eg, instances)\n";
         print STDERR "\tfw\tshow/modify firewall rules\n";
         print STDERR "\tssh\tssh to a specified instance\n";
         print STDERR "\trssh\trssh to a specified instance\n";
@@ -215,7 +218,10 @@ sub cmd_help($)
         exit 0;
     }
     if($subcommand =~ m|^list$|i) {
-        print STDERR "Usage: taw list [options..]\n\n";
+        print STDERR "Usage: taw list [object] [options..]\n\n";
+        print STDERR "Available objects are:\n";
+        print STDERR "\tinstances\tinstances. this is the default.\n";
+        print STDERR "\n";
         print STDERR "Options:\n";
         print STDERR "\t-csv\toutput in CSV\n";
         print STDERR "\t-v\tverbose output\n";
@@ -311,48 +317,55 @@ sub cmd_update(@)
     }
 }
 
-sub cmd_list()
+sub cmd_list($)
 {
-    print STDERR "CMD_LIST\n" if($debug);
+    my $list_target = shift;
+    $list_target = 'instance' unless(defined $list_target);
+    print STDERR "CMD_LIST '$list_target'\n" if($debug);
     ensure_command('aws');
     ensure_command('jq');
     ensure_command('json2csv');
-    my $cmd = "aws ec2 describe-instances";
-    my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
-    if($flag_output_raw) {
-        print join('', @awscli_result);
-        exit 0;
+    if($list_target =~ m|^i(n(s(t(ances?)?)?)?)?$|) {
+        my $cmd = "aws ec2 describe-instances";
+        my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
+        if($flag_output_raw) {
+            print join('', @awscli_result);
+            exit 0;
+        }
+        my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
+        print "TMPFILE: $tmpfile\n" if($debug);
+        my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | " .
+                   "{id: .InstanceId, state: .State.Name, pubip: .PublicIpAddress, name: .Tags[] | select(.Key==\"Name\").Value, key: .KeyName, type: .InstanceType, reason: .StateReason.Message, az: .Placement.AvailabilityZone, sg: .SecurityGroups[0].GroupName} else {noinstance: \"No instances\"} end'";
+        if($flag_output_csv) {
+            if($flag_verbose) {
+                $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason,sg";
+            } else {
+                $ncmd .= "| json2csv -c id,state,name,type,az,sg";
+            }
+            $ncmd .= " -n" if($flag_no_header);
+        } elsif($flag_output_pretty) {
+            ensure_command('csvlook');
+            if($flag_verbose) {
+                $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason,sg | csvlook";
+            } else {
+                $ncmd .= "| json2csv -c id,state,name,type,az,sg | csvlook";
+            }
+        } elsif(!$flag_output_json) {
+            if($flag_verbose) {
+                print "Instance ID\tState\tName\tPublic IP\tKey\tType\tAZ\tReason\tSecGrp\n";
+                $ncmd .= "| json2csv --tsv -v -c id,state,name,pubip,key,type,az,reason,sg | csvlook";
+            } else {
+                print "Instance ID\tState\tName\tType\tAZ\tSecGrp\n";
+                $ncmd .= "| json2csv --tsv -v -c id,state,name,type,az,sg | csvlook";
+            }
+            print "="x75, "\n";
+        }
+        exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
+        unlink($tmpfile) unless($debug_leave_file);
+    } else {
+        print STDERR "Unknown target '$list_target'\n";
+        exit 1;
     }
-    my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
-    print "TMPFILE: $tmpfile\n" if($debug);
-    my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | " .
-               "{id: .InstanceId, state: .State.Name, pubip: .PublicIpAddress, name: .Tags[] | select(.Key==\"Name\").Value, key: .KeyName, type: .InstanceType, reason: .StateReason.Message, az: .Placement.AvailabilityZone, sg: .SecurityGroups[0].GroupName} else {noinstance: \"No instances\"} end'";
-    if($flag_output_csv) {
-        if($flag_verbose) {
-            $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason,sg";
-        } else {
-            $ncmd .= "| json2csv -c id,state,name,type,az,sg";
-        }
-        $ncmd .= " -n" if($flag_no_header);
-    } elsif($flag_output_pretty) {
-        ensure_command('csvlook');
-        if($flag_verbose) {
-            $ncmd .= "| json2csv -c id,state,name,pubip,key,type,az,reason,sg | csvlook";
-        } else {
-            $ncmd .= "| json2csv -c id,state,name,type,az,sg | csvlook";
-        }
-    } elsif(!$flag_output_json) {
-        if($flag_verbose) {
-            print "Instance ID\tState\tName\tPublic IP\tKey\tType\tAZ\tReason\tSecGrp\n";
-            $ncmd .= "| json2csv --tsv -v -c id,state,name,pubip,key,type,az,reason,sg | csvlook";
-        } else {
-            print "Instance ID\tState\tName\tType\tAZ\tSecGrp\n";
-            $ncmd .= "| json2csv --tsv -v -c id,state,name,type,az,sg | csvlook";
-        }
-        print "="x75, "\n";
-    }
-    exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
-    unlink($tmpfile) unless($debug_leave_file);
     exit 0;
 }
 
@@ -963,7 +976,10 @@ Options:
 
 =item B<taw list>
 
-Show the list of instances. To output in CSV, give B<-csv>. When B<-csv> is given, B<-n> suppresses the header line. B<-json> is given, it outputs in JSON. B<-pretty> is given, it outputs in human-friendly table format.
+Show various information.  The first argument of B<taw list> is a listing target, for which a user wants to know.
+If the listing target is omitted, instances are shown.
+
+For example, B<taw list instance> will list instances. To output in CSV, give B<-csv>. When B<-csv> is given, B<-n> suppresses the header line. B<-json> is given, it outputs in JSON. B<-pretty> is given, it outputs in human-friendly table format.
 
 =item B<taw ssh>
 
