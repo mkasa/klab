@@ -115,6 +115,7 @@ sub get_effective_region_name();
 sub get_image_info_cache_file_name();
 sub get_instance_id_from_name($);
 sub get_security_group_id_from_name($);
+sub get_quick_image_file_name();
 sub is_region_name_sane($);
 sub is_valid_cidr($);
 sub is_valid_private_cidr($);
@@ -516,7 +517,8 @@ sub cmd_create(@)
         my $a4 = shift(@args);
         my $a5 = shift(@args);
         my $a6 = shift(@args);
-        create_new_instance($a1, $a2, $a3, $a4, $a5, $a6, @args);
+        my $a7 = shift(@args);
+        create_new_instance($a1, $a2, $a3, $a4, $a5, $a6, $a7, @args);
     } elsif($subcmd eq 'vpc') {
         my $cidr = shift(@args);
         unless(defined $cidr) {
@@ -658,6 +660,11 @@ sub get_security_group_id_from_name($)
     my $result = $jq_result[0]; chomp $result;
     return undef if($result eq 'noinstance');
     return $result;
+}
+
+sub get_quick_image_file_name()
+{
+    return $ENV{'HOME'} . "/.aws/images.csv";
 }
 
 sub cmd_ssh($$@)
@@ -890,7 +897,7 @@ sub create_new_instance($$$$$$$@)
     my ($hostname, $image_id, $key_name, $instance_type, $subnet_id, $security_groups, $ip_type, @other_opts) = @_;
     print STDERR "CMD_CREATE_INSTANCE\n" if($debug);
     unless(defined $hostname && defined $image_id && defined $key_name && defined $instance_type && defined $subnet_id && defined $security_groups && defined $ip_type) {
-        print STDERR "Usage: taw create instance <unique hostname> <Image ID> <Key Name> <Instance Type> <Subnet ID> <Security Group IDs> <IP type (public/private)> [additional options ...]\n";
+        print STDERR "Usage: taw create instance <unique hostname> <Image ID or Quick Image Name> <Key Name> <Instance Type> <Subnet ID> <Security Group IDs> <IP type (public/private)> [additional options ...]\n";
         print STDERR "  Use 'taw list instance' for checking existing instances.\n";
         print STDERR "  Use 'taw show quickimage' for showing selected official Image IDs.\n";
         print STDERR "           (of course you can pick one from third parties, though taw cannot show such lists).\n";
@@ -903,7 +910,7 @@ sub create_new_instance($$$$$$$@)
         exit 1;
     }
     if($ip_type ne 'public' && $ip_type ne 'private') {
-        print STDERR "IP type must be either 'public' or 'private'.\n";
+        print STDERR "IP type ('$ip_type') must be either 'public' or 'private'.\n";
         exit 1;
     }
     my $existing_instance_with_the_same_name = get_instance_id_from_name($hostname);
@@ -917,6 +924,17 @@ sub create_new_instance($$$$$$$@)
         print STDERR "       If you wish to ignore this error and if you know what you are going to do, add --force option.\n";
         exit 1;
     }
+    my $quick_images = load_quick_images();
+    my $tag_to_add = undef;
+    for my $qimg(@$quick_images) {
+        if($qimg->{name} eq $image_id) {
+            print STDERR "Quick Image '$image_id' was found.\n" if($debug);
+            $image_id = $qimg->{imageid};
+            $tag_to_add = $qimg->{tag};
+            print STDERR "TAGS = $tag_to_add\n" if($debug);
+            last;
+        }
+    }
     my $cmd = "aws ec2 run-instances $ec2_flag_dry_run --image-id $image_id --instance-type $instance_type --key-name $key_name --subnet-id $subnet_id --security-group-ids $security_groups";
     if(0 < @other_opts) {
         $cmd .= " " . join(" ", @other_opts); # NOTE: shell escape
@@ -929,21 +947,31 @@ sub create_new_instance($$$$$$$@)
             #"State: .State.Name, Reason: .StateReason.Message, Arch: .Architecture}'";
     # exec_and_print_in_format($cmd, "Cannot create a new instance", [qw(InstanceType InstanceId State Reason VpcId SubnetId AZ ImageId Arch KeyName RootDeviceType)], undef);
     unless($flag_dry_run) {
+        my $fh = exec_and_print_in_format_original_csv("cat", "Cannot add tags and possibly IPs", undef, undef, 1);
+        print $fh "InstanceId\n";
         for my $launched_instance_obj (@{$ret_obj->{Instances}}) {
             print "INSTANCE = ", encode_json($launched_instance_obj), "\n" if($debug && $debug_leave_file);
             print "$launched_instance_obj\n" if($debug);
             my $instance_id = $launched_instance_obj->{InstanceId};
-            print "INSTANCE_ID = $instance_id\n";
+            print $fh "$instance_id\n";
             {   # Assign a name tag and other tags
                 my $ncmd = "aws ec2 create-tags --resource $instance_id --tags Key=Name,Value=$hostname";
+                if($tag_to_add) {
+                    for my $kv (split(/,/, $tag_to_add)) {
+                        my ($k, $v) = split(/\s*=\s*/, $kv);
+                        next if(!defined $k || !defined $v);
+                        $ncmd .= " Key=$k,Value=$v";
+                    }
+                }
                 exec_and_exit_if_error($ncmd, "Cannot add tags to the launched instance '$instance_id'");
             }
             # Assign a public IP if needed.
             if($ip_type eq 'public') {
-                my $ncmd = "aws ec2 create-tags --resource $instance_id --tags Key=Name,Value=$hostname";
-                exec_and_exit_if_error($ncmd, "Cannot add tags to the launched instance '$instance_id'");
+                # my $ncmd = "aws ec2 create-tags --resource $instance_id --tags Key=Name,Value=$hostname";
+                # exec_and_exit_if_error($ncmd, "Cannot add tags to the launched instance '$instance_id'");
             }
         }
+        close $fh;
     }
     exit 0;
 }
@@ -1078,7 +1106,8 @@ sub cmd_show($)
         }
     } elsif($type =~ /^quickimages?/i) {
         my $my_region_name = get_effective_region_name();
-        exec_and_print_in_format_original_csv("csvgrep -c 4 -m $my_region_name ~/.aws/images.csv", "Cannot open ~/.aws/images.csv", undef, undef);
+        my $csv_fn = get_quick_image_file_name();
+        exec_and_print_in_format_original_csv("csvgrep -c 5 -m $my_region_name $csv_fn", "Cannot open $csv_fn", undef, undef);
     } elsif($type =~ /^instancetypes?/i) {
         my $fh = exec_and_print_in_format_original_csv("cat", "Cannot convert format", undef, undef, 1);
         print $fh "Instance Name,VCPUs,Memory,Description\n";
@@ -1201,6 +1230,23 @@ sub normalize_cidr($)
         return "0.0.0.0/0";
     }
     return undef;
+}
+
+sub load_quick_images()
+{
+    my $csv_fn = get_quick_image_file_name();
+    my $fh;
+    unless(open $fh, "<", $csv_fn) {
+        return [];
+    }
+    my @retval;
+    while(<$fh>) {
+        chomp; chop if(/\r$/);
+        my ($name, $image_id, $tag, $description, $region) = split(/,/);
+        push(@retval, {name => $name, imageid => $image_id, tag => $tag, desc => $description, region => $region});
+    }
+    close $fh;
+    return \@retval;
 }
 
 __END__
