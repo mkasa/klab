@@ -382,7 +382,7 @@ sub cmd_list(@)
                    "key: .KeyName, type: .InstanceType, reason: .StateReason.Message, az: .Placement.AvailabilityZone, " .
                    "sg: .SecurityGroups[0].GroupName, subnet: .SubnetId, vpc: .VpcId" .
                    "} else {noinstance: \"No instances\"} end'";
-        exec_and_print_in_format($ncmd, "jq/json2csv/csvlook had an error.", [qw(id state name type az sg)], [qw(id state name pubip key type az reason sg)]);
+        exec_and_print_in_format($ncmd, "jq/json2csv/csvlook had an error.", [qw(id state name type az sg)], [qw(id state name pubip key type az reason sg subnet vpc)]);
         unlink($tmpfile) unless($debug_leave_file);
     } elsif($list_target =~ m|^v(pc?)?$|i) {
         my $ncmd = "aws ec2 describe-vpcs $ec2_flag_dry_run | jq -c '.Vpcs[]'";
@@ -407,6 +407,8 @@ sub cmd_list(@)
         exec_and_print_in_format($ncmd, "cannot list availability zones", [qw(RegionName ZoneName State Messages)], [qw(RegionName ZoneName State Messages)]);
     } else {
         print STDERR "Unknown target '$list_target'\n";
+        print STDERR "If $list_target can be shown without querying to Amazon EC2,\n";
+        print STDERR "'taw show $list_target' might be the one you expected.\n";
         exit 1;
     }
     exit 0;
@@ -971,6 +973,7 @@ sub cmd_show($)
     } else {
         if(defined $type) {
             print STDERR "Unknown data type '$type'\n";
+            print STDERR "If you meant to query to Amazon EC2, 'taw list $type' might be what you expected.\n";
         } else {
             print STDERR "You need to specify the data type.\n";
         }
