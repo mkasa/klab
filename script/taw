@@ -154,13 +154,17 @@ if($subcommand =~ m|^help$|i) {
     my $subsubcmd = shift;
     cmd_help($subsubcmd);
 }
-if($subcommand =~ m|^list$|i) {
-    my $subsubcmd = shift;
-    cmd_list($subsubcmd);
-}
+ensure_command('aws');
+ensure_command('jq');
+ensure_command('csvgrep');
+ensure_command('csvlook');
 if($subcommand =~ m|^show$|i) {
     my $type = shift;
     cmd_show($type);
+}
+if($subcommand =~ m|^list$|i) {
+    my $subsubcmd = shift;
+    cmd_list($subsubcmd);
 }
 cmd_images() if($subcommand =~ m|^images?$|i);
 if($subcommand =~ m|^(r?ssh)$|i) {
@@ -330,10 +334,6 @@ sub cmd_list($)
     my $list_target = shift;
     $list_target = 'instance' unless(defined $list_target);
     print STDERR "CMD_LIST '$list_target'\n" if($debug);
-    ensure_command('aws');
-    ensure_command('jq');
-    ensure_command('json2csv');
-    ensure_command('csvlook');
     if($list_target =~ m|^i(n(s(t(ances?)?)?)?)?$|) {
         my $cmd = "aws ec2 describe-instances";
         my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
@@ -426,9 +426,6 @@ sub cmd_create(@)
 sub get_instance_id_from_name($)
 {
     my $name = shift;
-    ensure_command('aws');
-    ensure_command('jq');
-    ensure_command('json2csv');
     my $cmd = "aws ec2 describe-instances";
     my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
     my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
@@ -455,9 +452,6 @@ sub get_instance_id_from_name($)
 sub get_security_group_id_from_name($)
 {
     my $group_or_id = shift;
-    ensure_command('aws');
-    ensure_command('jq');
-    ensure_command('json2csv');
     my $cmd = "aws ec2 describe-security-groups";
     my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
     my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
@@ -645,9 +639,6 @@ sub error_if_jq_result_is_too_small(@)
 sub cmd_images()
 {
     print STDERR "CMD_IMAGES\n" if($debug);
-    ensure_command('aws');
-    ensure_command('jq');
-    ensure_command('json2csv');
     my $cmd = "aws ec2 describe-images --owners=self | jq -c '.Images[]'";
     exec_and_print_in_format($cmd, "Cannot retrieve the image info", [qw(ImageId Name State Architecture RootDeviceType Description)], undef);
     exit 0;
@@ -697,9 +688,6 @@ sub cmd_setdns($$)
 
 sub create_new_instance($$$$$)
 {
-    ensure_command('aws');
-    ensure_command('jq');
-    ensure_command('json2csv');
     my ($hostname, $image_id, $key_name, $subnet_id, $security_groups) = @_;
     print STDERR "CMD_CREATE_INSTANCE\n" if($debug);
     unless(defined $hostname) {
@@ -730,9 +718,6 @@ sub cmd_fw(@)
     my $subcmd = shift;
     my @rest_args = @_;
     unless(defined $subcmd) { $subcmd = 'list'; }
-    ensure_command('aws');
-    ensure_command('jq');
-    ensure_command('json2csv');
     print STDERR "CMD_FW '$subcmd' [" . join(', ', @rest_args) . "]\n" if($debug);
     if($subcmd eq 'list') {
         my $group_or_id = shift;
@@ -759,7 +744,6 @@ sub cmd_fw(@)
             $ncmd .= "| json2csv $column_opt";
             $ncmd .= " -n" if($flag_no_header);
         } elsif($flag_output_pretty) {
-            ensure_command('csvlook');
             $ncmd .= "| json2csv $column_opt | csvlook";
         } elsif(!$flag_output_json) {
             print "SGroup ID\tName\tDescription\n";
@@ -872,12 +856,9 @@ sub cmd_show($)
             print "$i\n";
         }
     } elsif($type =~ /^quickimages?/i) {
-        ensure_command("csvlook");
-        ensure_command("csvgrep");
         my $my_region_name = get_effective_region_name();
         exec_and_exit_if_error("csvgrep -c 4 -m $my_region_name ~/.aws/images.csv | csvlook", "Cannot open ~/.aws/images.csv");
     } elsif($type =~ /^instancetypes?/i) {
-        ensure_command("csvlook");
         open my $fh, "| csvlook" or die "Cannot execute csvlook";
         print $fh "Instance Name,VCPUs,Memory,Description\n";
         for my $instance_name(sort(keys %instance_type_name_2_instance_type)) {
@@ -916,8 +897,6 @@ sub get_image_info_cache_file_name()
 
 sub cmd_cache_image()
 {
-    ensure_command('aws');
-    ensure_command('jq');
     my $image_info_cache_file_name = get_image_info_cache_file_name();
     print "DEBUG: cache file is '$image_info_cache_file_name'\n" if($debug);
     my $cmd = 'aws ec2 describe-images --owners';
