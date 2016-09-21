@@ -210,7 +210,7 @@ sub cmd_help($)
         print STDERR "\tmosh\tmosh to a specified instance\n";
         print STDERR "\tsetdns\tset an A record to DNS (hosted by Route 53)\n";
         print STDERR "\timages\tlist the images\n";
-        print STDERR "\tcreateinstance\tcreate a new instance\n";
+        print STDERR "\tcreate\tcreate something such as a new instance\n";
         print STDERR "\tshow\tshow various info (eg, the region names)\n";
         print STDERR "\nGlobal options:\n";
         print STDERR "\t--debug\tenable debugging. (may be helpful when debugging)\n";
@@ -231,10 +231,12 @@ sub cmd_help($)
         print STDERR "\t-pretty\toutput in pretty table (may need a wide screen)\n";
         exit 0;
     }
-    if($subcommand =~ m|^createinstance$|i) {
-        print STDERR "Usage: taw createinstance <name> <ami-id/ami-name> <key-name> <security-group> [options...] [-- additional options for aws ec2 run-instances]\n\n";
+    if($subcommand =~ m|^create$|i) {
+        print STDERR "Usage: taw create <target>\n\n";
+        print STDERR "Create a new instance:\n";
+        print STDERR "\ttaw create instance <name> <ami-id/quickimage-name> <key-name> <subnet> <security-group> [options...] [-- additional options for aws ec2 run-instances]\n\n";
         print STDERR "Example:\n";
-        print STDERR "\ttaw createinstance web1 ami-0123abcd mysshkey default\n";
+        print STDERR "\ttaw create instance web1 ami-0123abcd mysshkey default\n";
         exit 0;
     }
     if($subcommand =~ m|^(r?ssh)$|i) {
@@ -686,23 +688,22 @@ sub cmd_createinstance($$$$)
     ensure_command('aws');
     ensure_command('jq');
     ensure_command('json2csv');
-    my ($hostname, $image_id, $key_name, $security_groups) = @_;
+    my ($hostname, $image_id, $key_name, $subnet_id, $security_groups) = @_;
     print STDERR "CMD_CREATE_INSTANCE\n" if($debug);
     unless(defined $hostname) {
-        print STDERR "Usage: taw createinstance <name> <image-id> <key-name> <security-groups>\n";
-        print STDERR "ERROR: You must give the hostname.\n";
+        print STDERR "ERROR: You must give a hostname.\n";
         exit 1;
     }
     unless(defined $image_id) {
-        print STDERR "ERROR: You must give the image ID.\n";
+        print STDERR "ERROR: You must give an image ID.\n";
         exit 1;
     }
     unless(defined $key_name) {
-        print STDERR "ERROR: You must give the (SSH) key name.\n";
+        print STDERR "ERROR: You must give a (SSH) key name.\n";
         exit 1;
     }
     unless(defined $security_groups) {
-        print STDERR "ERROR: You must give the security groups. 'default' cannot be omitted even if you leave it to the default.\n";
+        print STDERR "ERROR: You must give security groups. 'default' cannot be omitted even if you leave it to the default.\n";
         exit 1;
     }
     my $cmd = "aws ec2 run-instances --image-id $image_id --min-count 1 --max-count 1 --key-name $key_name --security-groups $security_groups";
@@ -984,10 +985,12 @@ Options:
 
 =item B<taw list>
 
-Show various information.  The first argument of B<taw list> is a listing target, for which a user wants to know.
+Show various information. The first argument of B<taw list> is a listing target, for which a user wants to know.
 If the listing target is omitted, instances are shown.
+See the following items for each target.
 
-For example, B<taw list instance> will list instances. To output in CSV, give B<-csv>. When B<-csv> is given, B<-n> suppresses the header line. B<-json> is given, it outputs in JSON. B<-pretty> is given, it outputs in human-friendly table format.
+=item B<taw list instance>
+B<taw list instance> will list instances. To output in CSV, give B<-csv>. When B<-csv> is given, B<-n> suppresses the header line. B<-json> is given, it outputs in JSON. B<-pretty> is given, it outputs in human-friendly table format.
 
 =item B<taw ssh>
 
@@ -1021,7 +1024,9 @@ For example, 'taw setdns hoge www.example.com -- --ttl 3600 --weight 10 --replac
 =item B<taw show>
 
 Show the list of a specified type of infomation.
-For example, B<taw show regions> will show the list of available regions (and their nicknames) in Amazon EC2.
+The difference between B<taw list> and B<taw show> is that B<taw show> displays information without querying to Amazon EC2.
+
+For example, B<taw show regions> will show the list of available regions (and their nicknames) in Amazon EC2, which is hardcoded in the B<taw> script..
 You can use the nickname of a region name (of Amazon EC2) instead of the region name itself for B<--region> option (e.g., --region=tokyo is equivalent to --rewgion=ap-northeast-1)
 
 B<taw show keys> will show the list of available SSH keys on your computer. It will search only "~/.ssh/*.pem".
@@ -1040,9 +1045,13 @@ B<taw show instancetypes> will show the list of available instance types on AWS.
 The list shown here does not mean that the displayed instance types are avalilable on the region you use.
 The list is hardcoded in the script.
 
-=item B<taw createinstance>
+=item B<taw create>
 
-Create a new instance in Amazon EC2.
+Create something such as instances, VPCs, subnets, etc.
+See the following items for details of each command.
+
+=item B<taw create instance>
+B<taw create instance> creates a new instance.
 
 =item B<taw images>
 
