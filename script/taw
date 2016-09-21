@@ -92,7 +92,7 @@ sub cmd_create(@);
 sub cmd_fw(@);
 sub cmd_help($);
 sub cmd_images();
-sub cmd_list($);
+sub cmd_list(@);
 sub cmd_mosh($);
 sub cmd_scp($$);
 sub cmd_setdns($$);
@@ -197,7 +197,6 @@ if($subcommand =~ m|^create$|i) {
     my @subcmds = @ARGV;
     cmd_create(@subcmds);
 }
-
 if($subcommand =~ m|^fw$|i) {
     my @subcmds = @ARGV;
     cmd_fw(@subcmds);
@@ -336,9 +335,10 @@ sub cmd_update(@)
     }
 }
 
-sub cmd_list($)
+sub cmd_list(@)
 {
-    my $list_target = shift;
+    my @args = @_;
+    my $list_target = shift(@args);
     $list_target = 'instance' unless(defined $list_target);
     print STDERR "CMD_LIST '$list_target'\n" if($debug);
     if($list_target =~ m|^i(n(s(t(ances?)?)?)?)?$|) {
@@ -359,6 +359,18 @@ sub cmd_list($)
     } elsif($list_target =~ m|^s(ub(n(ets?)?)?)?$|i) {
         my $ncmd = "aws ec2 describe-subnets $ec2_flag_dry_run | jq -c '.Subnets[]'";
         exec_and_print_in_format($ncmd, "cannot list subnets", [qw(SubnetId VpcId CidrBlock State)], undef);
+    } elsif($list_target =~ m|^fw$|i) {
+        my $group_or_id = shift(@args);
+        my $cmd = "aws ec2 describe-security-groups $ec2_flag_dry_run | jq -c ";
+        if(defined $group_or_id) {
+            $cmd .= "'.SecurityGroups[] | select(.GroupName==\"$group_or_id\" or .GroupId==\"$group_or_id\") | .IpPermissions[] | " .
+                    "{Prot: .IpProtocol, Port: (if .FromPort == .ToPort then .FromPort | tostring else [.FromPort,.ToPort] | " .
+                    "map(tostring) | join(\"-\") end), Ranges: .IpRanges | map(.CidrIp) | join(\",\")}'";
+            exec_and_print_in_format($cmd, "Failed to list security groups", [qw(Prot Port Ranges)], undef);
+        } else {
+            $cmd .= "'.SecurityGroups[] | {ID: .GroupId, Name: .GroupName, Desc: .Description, Permission: .IpPermissions} '";
+            exec_and_print_in_format($cmd, "Failed to list security groups", [qw(ID Name Desc)], undef);
+        }
     } else {
         print STDERR "Unknown target '$list_target'\n";
         exit 1;
@@ -772,22 +784,13 @@ sub create_new_instance($$$$$)
 sub cmd_fw(@)
 {
     my $subcmd = shift;
+    unless(defined $subcmd) {
+        print STDERR "Usage: taw fw <add|remove> <sg name|sg ID> <prot (tcp/udp/icmp> <port (omit when icmp> <cidr>\n";
+        exit 1;
+    }
     my @rest_args = @_;
-    unless(defined $subcmd) { $subcmd = 'list'; }
     print STDERR "CMD_FW '$subcmd' [" . join(', ', @rest_args) . "]\n" if($debug);
-    if($subcmd eq 'list') {
-        my $group_or_id = shift;
-        my $cmd = "aws ec2 describe-security-groups $ec2_flag_dry_run | jq -c ";
-        if(defined $group_or_id) {
-            $cmd .= "'.SecurityGroups[] | select(.GroupName==\"$group_or_id\" or .GroupId==\"$group_or_id\") | .IpPermissions[] | " .
-                    "{Prot: .IpProtocol, Port: (if .FromPort == .ToPort then .FromPort | tostring else [.FromPort,.ToPort] | " .
-                    "map(tostring) | join(\"-\") end), Ranges: .IpRanges | map(.CidrIp) | join(\",\")}'";
-            exec_and_print_in_format($cmd, "Failed to list security groups", [qw(Prot Port Ranges)], undef);
-        } else {
-            $cmd .= "'.SecurityGroups[] | {ID: .GroupId, Name: .GroupName, Desc: .Description, Permission: .IpPermissions} '";
-            exec_and_print_in_format($cmd, "Failed to list security groups", [qw(ID Name Desc)], undef);
-        }
-    } elsif($subcmd eq 'add' || $subcmd eq 'remove') {
+    if($subcmd eq 'add' || $subcmd eq 'remove') {
         print STDERR "taw fw $subcmd\n" if($debug);
         my $gr_name = shift(@rest_args);
         my $prot = shift(@rest_args);
@@ -1047,6 +1050,9 @@ See the following items for each target.
 =item B<taw list instance>
 B<taw list instance> will list instances. To output in CSV, give B<-csv>. When B<-csv> is given, B<-n> suppresses the header line. B<-json> is given, it outputs in JSON. B<-pretty> is given, it outputs in human-friendly table format.
 
+=item B<taw list fw>
+B<taw list fw> will list the firewall rules. To change the rules, use B<taw fw add> or B<taw fw remove>.
+
 =item B<taw ssh>
 
 SSH to the specified machine. For example, when you type 'taw ssh foo', taw will search the instance with name (tag) 'foo', and ssh to that instance.
@@ -1066,7 +1072,7 @@ Almost same to B<taw ssh>, but it uses mosh instead of SSH. mosh must be install
 
 =item B<taw fw>
 
-This subcommand needs a subsubcommand. B<taw fw list> lists the currently available security groups.
+This subcommand needs a subsubcommand.
 B<taw fw add> adds a new rule to a specified security group.
 B<taw fw remove> adds a new rule to a specified security group.
 See B<taw help fw> for examples.
