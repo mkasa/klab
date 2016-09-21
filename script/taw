@@ -102,12 +102,13 @@ sub cmd_show($);
 sub cmd_ssh($$@);
 sub cmd_update(@);
 sub convert_region_nick_name($);
-sub create_new_instance($$$$$$);
+sub create_new_instance($$$$$$$@);
 sub ensure_command($);
 sub error_if_jq_result_is_too_small(@);
 sub exec_and_print_in_format($$$$;$);
 sub exec_and_print_in_format_original_csv($$$$;$);
 sub exec_and_return_array($$);
+sub exec_and_return_json($$);
 sub exec_and_exit_if_error($$);
 sub save_to_tmp_file_and_return_file_name(@);
 sub get_effective_region_name();
@@ -261,7 +262,7 @@ sub cmd_help($)
     if($subcommand =~ m|^create$|i) {
         print STDERR "Usage: taw create <target> [target specific options...]\n\n";
         print STDERR "Create a new instance:\n";
-        print STDERR "\ttaw create instance <name> <ami-id/quickimage-name> <key-name> <subnet> <security-group> [options...] [-- additional options for aws ec2 run-instances]\n";
+        print STDERR "\ttaw create instance <name> <ami-id/quickimage-name> <key-name> <subnet> <security-group> <ip-type> [options...] [-- additional options for aws ec2 run-instances]\n";
         print STDERR "\tAdditional options you might be interested in are:\n";
         print STDERR "\t\t--disable-api-termination | --enable-api-termination\tdisable or enable API termination (default: disabled).\n";
         print STDERR "\t\t--instance-initiated-shutdown-behavior <stop|terminate>\tstop or terminate when shutdown.\n";
@@ -390,9 +391,9 @@ sub cmd_list(@)
         my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | " .
                    "{id: .InstanceId, state: .State.Name, pubip: .PublicIpAddress, name: (.Tags // [{Key: \"Name\", Value: \"(no name)\"}]) | .[] | select(.Key==\"Name\").Value, " .
                    "key: .KeyName, type: .InstanceType, reason: .StateReason.Message, az: .Placement.AvailabilityZone, " .
-                   "sg: .SecurityGroups[0].GroupName, subnet: .SubnetId, vpc: .VpcId" .
+                   "sg: .SecurityGroups[0].GroupName, subnet: .SubnetId, vpc: .VpcId, tags: (.Tags // []) | map(\"\\(.Key)=\\(.Value)\") | join(\",\")" .
                    "} else {noinstance: \"No instances\"} end'";
-        exec_and_print_in_format($ncmd, "jq/json2csv/csvlook had an error.", [qw(id state name type az sg)], [qw(id state name pubip key type az reason sg subnet vpc)]);
+        exec_and_print_in_format($ncmd, "jq/json2csv/csvlook had an error.", [qw(id state name type az sg)], [qw(id state name pubip key type az reason sg subnet vpc tags)]);
         unlink($tmpfile) unless($debug_leave_file);
     } elsif($list_target =~ m|^v(pc?)?$|i) {
         my $ncmd = "aws ec2 describe-vpcs $ec2_flag_dry_run | jq -c '.Vpcs[]'";
@@ -509,13 +510,13 @@ sub cmd_create(@)
         exit 1;
     }
     if($subcmd eq 'instance') {
-        my $hostname = shift(@args);
-        my $image_id = shift(@args);
-        my $keyname = shift(@args);
-        my $instance_type = shift(@args);
-        my $subnet_id = shift(@args);
-        my $securitygroup = shift(@args);
-        create_new_instance($hostname, $image_id, $keyname, $instance_type, $subnet_id, $securitygroup);
+        my $a1 = shift(@args);
+        my $a2 = shift(@args);
+        my $a3 = shift(@args);
+        my $a4 = shift(@args);
+        my $a5 = shift(@args);
+        my $a6 = shift(@args);
+        create_new_instance($a1, $a2, $a3, $a4, $a5, $a6, @args);
     } elsif($subcmd eq 'vpc') {
         my $cidr = shift(@args);
         unless(defined $cidr) {
@@ -884,12 +885,12 @@ sub cmd_setdns($$)
     exit 0;
 }
 
-sub create_new_instance($$$$$$)
+sub create_new_instance($$$$$$$@)
 {
-    my ($hostname, $image_id, $key_name, $instance_type, $subnet_id, $security_groups) = @_;
+    my ($hostname, $image_id, $key_name, $instance_type, $subnet_id, $security_groups, $ip_type, @other_opts) = @_;
     print STDERR "CMD_CREATE_INSTANCE\n" if($debug);
-    unless(defined $hostname && defined $image_id && defined $key_name && defined $instance_type && defined $subnet_id && defined $security_groups) {
-        print STDERR "Usage: taw create instance <unique hostname> <Image ID> <Key Name> <Instance Type> <Subnet ID> <Security Group IDs>\n";
+    unless(defined $hostname && defined $image_id && defined $key_name && defined $instance_type && defined $subnet_id && defined $security_groups && defined $ip_type) {
+        print STDERR "Usage: taw create instance <unique hostname> <Image ID> <Key Name> <Instance Type> <Subnet ID> <Security Group IDs> <IP type (public/private)> [additional options ...]\n";
         print STDERR "  Use 'taw list instance' for checking existing instances.\n";
         print STDERR "  Use 'taw show quickimage' for showing selected official Image IDs.\n";
         print STDERR "           (of course you can pick one from third parties, though taw cannot show such lists).\n";
@@ -897,7 +898,12 @@ sub create_new_instance($$$$$$)
         print STDERR "  Use 'taw show instancetype' for the available instance types.\n";
         print STDERR "  Use 'taw list subnet' for available subnets.\n";
         print STDERR "  Use 'taw list fw' for firewall rules (security groups).\n";
-        print STDERR "  If you wish to specify more than one security group IDs, quote it and separate items by a single space.\n";
+        print STDERR "  If you wish to specify more than one security group IDs, quote it and separate items by a single space.\n"; 
+        print STDERR "eg) taw create instance webserver2 ami-374db956 sshkey-1 t2.micro subnet-c6cadf8c sg-338a3a1f public\n";
+        exit 1;
+    }
+    if($ip_type ne 'public' && $ip_type ne 'private') {
+        print STDERR "IP type must be either 'public' or 'private'.\n";
         exit 1;
     }
     my $existing_instance_with_the_same_name = get_instance_id_from_name($hostname);
@@ -912,15 +918,33 @@ sub create_new_instance($$$$$$)
         exit 1;
     }
     my $cmd = "aws ec2 run-instances $ec2_flag_dry_run --image-id $image_id --instance-type $instance_type --key-name $key_name --subnet-id $subnet_id --security-group-ids $security_groups";
-    $cmd .= "| jq -c '.Instances[] | " .
-            "{InstanceId: .InstanceId, VpcId: .VpcId, InstanceType: .InstanceType, RootDeviceType: .RootDeviceType, " .
-            "SubnetId: .SubnetId, ImageId: .ImageId, AZ: .Placement.AvailabilityZone, KeyName: .KeyName, " .
-            "State: .State.Name, Reason: .StateReason.Message, Arch: .Architecture}'";
+    if(0 < @other_opts) {
+        $cmd .= " " . join(" ", @other_opts); # NOTE: shell escape
+    }
     # | json2csv -c InstanceType,InstanceId,State,Reason,VpcId,SubnetId,AZ,ImageId,Arch,KeyName,RootDeviceType";
-    exec_and_print_in_format($cmd, "Cannot create a new instance", [qw(InstanceType InstanceId State Reason VpcId SubnetId AZ ImageId Arch KeyName RootDeviceType)], undef);
-    #
-    my $ncmd = "aws ec2 craete-tags $ec2_flag_dry_run --resource instance_id --tags '{\"key\": \"Name\", \"value\": \"$hostname\"}'";
-    print "NCMD: $ncmd\n";
+    my $ret_obj = exec_and_return_json($cmd, "Cannot create a new instance");
+    #$cmd .= "| jq -c '.Instances[] | " .
+            #"{InstanceId: .InstanceId, VpcId: .VpcId, InstanceType: .InstanceType, RootDeviceType: .RootDeviceType, " .
+            #"SubnetId: .SubnetId, ImageId: .ImageId, AZ: .Placement.AvailabilityZone, KeyName: .KeyName, " .
+            #"State: .State.Name, Reason: .StateReason.Message, Arch: .Architecture}'";
+    # exec_and_print_in_format($cmd, "Cannot create a new instance", [qw(InstanceType InstanceId State Reason VpcId SubnetId AZ ImageId Arch KeyName RootDeviceType)], undef);
+    unless($flag_dry_run) {
+        for my $launched_instance_obj (@{$ret_obj->{Instances}}) {
+            print "INSTANCE = ", encode_json($launched_instance_obj), "\n" if($debug && $debug_leave_file);
+            print "$launched_instance_obj\n" if($debug);
+            my $instance_id = $launched_instance_obj->{InstanceId};
+            print "INSTANCE_ID = $instance_id\n";
+            {   # Assign a name tag and other tags
+                my $ncmd = "aws ec2 create-tags --resource $instance_id --tags Key=Name,Value=$hostname";
+                exec_and_exit_if_error($ncmd, "Cannot add tags to the launched instance '$instance_id'");
+            }
+            # Assign a public IP if needed.
+            if($ip_type eq 'public') {
+                my $ncmd = "aws ec2 create-tags --resource $instance_id --tags Key=Name,Value=$hostname";
+                exec_and_exit_if_error($ncmd, "Cannot add tags to the launched instance '$instance_id'");
+            }
+        }
+    }
     exit 0;
 }
 
@@ -992,7 +1016,7 @@ sub exec_and_exit_if_error($$)
 sub exec_and_return_array($$)
 {
     my ($cmd, $errormsg) = @_;
-    print STDERR "CMD: $cmd\n" if($debug);
+    print STDERR "CMD (expects an array): $cmd\n" if($debug);
     my @arr = `$cmd`;
     if($?) {
         print STDERR "ERROR: " . $errormsg . "\n";
@@ -1000,6 +1024,21 @@ sub exec_and_return_array($$)
         exit ($? >> 8);
     }
     return @arr;
+}
+
+sub exec_and_return_json($$)
+{
+    my ($cmd, $errormsg) = @_;
+    print STDERR "CMD (expects JSON): $cmd\n" if($debug);
+    my @arr = `$cmd`;
+    if($?) {
+        print STDERR "ERROR: " . $errormsg . "\n";
+        print STDERR join("\n", @arr), "\n";
+        exit ($? >> 8);
+    }
+    my $combined_str = join(' ', @arr);
+    my $decoded_json = decode_json($combined_str);
+    return $decoded_json;
 }
 
 sub is_region_name_sane($)
@@ -1332,7 +1371,7 @@ Show the man page of B<taw>.
 
 =head1 DESCRIPTION
 
-B<taw>, Tiny Amazon ec2 Wrapper, 
+B<taw>, Tiny Amazon ec2 Wrapper,
 
 =head1 HOW TO INSTALL
 
