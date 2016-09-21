@@ -684,7 +684,7 @@ sub cmd_ssh($$@)
     my $root_account = $instance_json->{root};
     if($root_account eq '') {
         unless(grep {$_ eq '-l'} @other_opts) {
-            print STDERR "WARNING: The instance does not have a tag 'ROOT', so the root user name is defaulted to 'ec2-user'.\n";
+            print STDERR "WARNING: The instance does not have a tag 'root', so the root user name is defaulted to 'ec2-user'.\n";
         }
         $root_account = "ec2-user";
     }
