@@ -898,6 +898,7 @@ sub cmd_cache_image()
     $cmd .= " > $image_info_cache_file_name.new";
     exec_and_exit_if_error($cmd, "Failed to retrieve AMI info");
     rename("$image_info_cache_file_name.new", $image_info_cache_file_name);
+    print "Success.\n";
 }
 
 sub ensure_command($)
