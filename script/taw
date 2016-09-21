@@ -394,6 +394,9 @@ sub cmd_list(@)
             $cmd .= "'.SecurityGroups[] | {ID: .GroupId, Name: .GroupName, Desc: .Description, Permission: .IpPermissions} '";
             exec_and_print_in_format($cmd, "Failed to list security groups", [qw(ID Name Desc)], undef);
         }
+    } elsif($list_target =~ m{^(az|availabilityzone)$}i) {
+        my $ncmd = "aws ec2 describe-availability-zones $ec2_flag_dry_run | jq -c '.AvailabilityZones[]'";
+        exec_and_print_in_format($ncmd, "cannot list availability zones", [qw(RegionName ZoneName State Messages)], [qw(RegionName ZoneName State Messages)]);
     } else {
         print STDERR "Unknown target '$list_target'\n";
         exit 1;
