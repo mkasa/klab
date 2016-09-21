@@ -370,10 +370,10 @@ sub exec_and_print_in_format($$$$)
     }
     if($flag_output_csv || $flag_output_pretty) {
         ensure_command('csvlook') if($flag_output_pretty);
+        $command_line .= "| json2csv";
+        $command_line .= " -z NotFound";
         if(0 < @columns_to_show) {
-            $command_line .= "| json2csv -c " . join(',', @columns_to_show);
-        } else {
-            $command_line .= "| json2csv";
+            $command_line .= " -c " . join(',', @columns_to_show);
         }
         $command_line .= " -n" if($flag_no_header);
         $command_line .= " | csvlook" if($flag_output_pretty);
@@ -414,8 +414,8 @@ sub cmd_create(@)
             print STDERR "\t10.0.0.0 - 10.255.255.255\n";
             exit 1;
         }
-        my $ncmd = "aws ec2 create-vpc --cidr-block $cidr | jq -c .Vpc | json2csv | csvlook";
-        exec_and_exit_if_error($ncmd, "Cannot create a new VPC block");
+        my $ncmd = "aws ec2 create-vpc --cidr-block $cidr | jq -c .Vpc";
+        exec_and_print_in_format($ncmd, "Cannot create a new VPC block", undef, undef);
     } else {
         print STDERR "Unknown target '$subcmd'\n";
         exit 1;
@@ -648,41 +648,9 @@ sub cmd_images()
     ensure_command('aws');
     ensure_command('jq');
     ensure_command('json2csv');
-    my $cmd = "aws ec2 describe-images --owners=self";
-    my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
-    my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
-    my $ncmd = "cat $tmpfile | jq -c 'if (.Images | length != 0) then .Images[] | {id: .ImageId, name: .Name, state: .State, kernelid: .KernelId, arch: .Architecture, type: .RootDeviceType, desc: .Description} else {noinstance: \"No instances\"} end'";
-    my $column_opt = "--columns=id,name,state,kernelid,arch,type,desc";
-    if($flag_output_csv) {
-        $ncmd .= "| json2csv $column_opt";
-        $ncmd .= " -n" if($flag_no_header);
-    } elsif($flag_output_pretty) {
-        ensure_command('csvlook');
-        $ncmd .= "| json2csv $column_opt | csvlook";
-    } elsif(!$flag_output_json) {
-        print "Image ID\tName\tState\tKernel ID\tArch\tRootType\tDescription\n";
-        print "="x85, "\n";
-        $ncmd .= "| json2csv $column_opt --tsv -n";
-    }
-    exec_and_exit_if_error($ncmd, "jq/json2csv/csvlook had an error.");
+    my $cmd = "aws ec2 describe-images --owners=self | jq -c '.Images[]'";
+    exec_and_print_in_format($cmd, "Cannot retrieve the image info", [qw(ImageId Name State Architecture RootDeviceType Description)], undef);
     exit 0;
-    my @jq_result = exec_and_return_array($ncmd, "jq had an error.");
-    unlink($tmpfile) unless($debug_leave_file);
-    error_if_jq_result_is_too_small(@jq_result);
-    my $first_line_json_obj = decode_json($jq_result[0]);
-    if(exists $first_line_json_obj->{"noinstance"}) {
-        print STDERR "ERROR: no instances available in the region.\n";
-        print STDERR "       Probably you specified a wrong region?\n";
-        exit 1;
-    }
-    for my $json_string (@jq_result) {
-        my $json_obj = decode_json($json_string);
-        # print STDERR "Matching '$name' with $json_obj->{'name'} ...\n" if($debug);
-        # if($json_obj->{'name'} eq $name) {
-            # return $json_obj;
-        # }
-    }
-    return undef;
 }
 
 sub cmd_setdns($$)
