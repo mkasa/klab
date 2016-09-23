@@ -290,6 +290,9 @@ sub cmd_help($)
         print STDERR "Delete a new subnet:\n";
         print STDERR "\ttaw delete subnet <Subnet ID>\n";
         print STDERR "\teg) taw delete subnet subnet-553bc60d\n\n";
+        print STDERR "Delete an allocated IP:\n";
+        print STDERR "\ttaw delete ip <Allocation ID>\n\n;
+        print STDERR "\teg) taw delete ip eipalloc-35983145\n\n;
         exit 0;
     }
     if($subcommand =~ m|^(r?ssh)$|i) {
@@ -1408,6 +1411,9 @@ Delete a VPC. If any subnet is associated with the given VPC, the command will f
 
 =item B<taw delete subnet>
 Delete a subnet. If any (non-terminated) instance is associated with the subnet, the command will fail.
+
+=item B<taw delete ip>
+Delete an allocated IP. If any instance is associated with the allocated IP, the command will fail.
 
 =item B<taw terminate>
 Terminate instance(s). You can specify instances by their names or instance IDs.
