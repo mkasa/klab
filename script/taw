@@ -636,15 +636,21 @@ sub get_instance_id_from_name($)
     if(exists $first_line_json_obj->{"noinstance"}) {
         return undef;
     }
+    my $retval = undef;
     for my $json_string (@jq_result) {
         my $json_obj = decode_json($json_string);
         print STDERR "OBJ: $json_string\n" if($debug && $debug_leave_file);
         print STDERR "Matching '$name' with $json_obj->{'name'} ...\n" if($debug);
         if($json_obj->{'name'} eq $name) {
-            return $json_obj;
+            if(defined $retval) {
+                print "WARNING: '$name' has multiple candidates.\n";
+                print "         For example, $retval->{'id'} and $json_obj->{'id'} have the same name.\n";
+                return undef; # return undef if multiple instances hit the keyword
+            }
+            $retval = $json_obj;
         }
     }
-    return undef;
+    return $retval;
 }
 
 sub get_security_group_id_from_name($)
