@@ -581,6 +581,10 @@ sub cmd_delete(@)
         my $subnet_id = shift(@args);
         my $ncmd = "aws ec2 delete-subnet $ec2_flag_dry_run --subnet-id $subnet_id";
         exec_and_print_in_format($ncmd, "Cannot create a new subnet", undef, undef, 1);
+    } elsif($subcmd eq 'ip') {
+        my $allocation_id = shift(@args);
+        my $ncmd = "aws ec2 release-address $ec2_flag_dry_run --allocation-id $allocation_id";
+        exec_and_print_in_format($ncmd, "Cannot remove IP", undef, undef, 1);
     } else {
         print STDERR "Unknown target '$subcmd'\n";
         exit 1;
