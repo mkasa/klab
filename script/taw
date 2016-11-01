@@ -100,6 +100,7 @@ sub cmd_scp($$);
 sub cmd_setdns($$);
 sub cmd_show($);
 sub cmd_ssh($$@);
+sub cmd_stop(@);
 sub cmd_update(@);
 sub convert_region_nick_name($);
 sub create_new_instance($$$$$$$@);
@@ -203,6 +204,10 @@ if($subcommand =~ m|^create$|i) {
     my @subcmds = @ARGV;
     cmd_create(@subcmds);
 }
+if($subcommand =~ m|^stop$|i) {
+    my @subcmds = @ARGV;
+    cmd_stop(@subcmds);
+}
 if($subcommand =~ m|^delete$|i) {
     my @subcmds = @ARGV;
     cmd_delete(@subcmds);
@@ -291,8 +296,8 @@ sub cmd_help($)
         print STDERR "\ttaw delete subnet <Subnet ID>\n";
         print STDERR "\teg) taw delete subnet subnet-553bc60d\n\n";
         print STDERR "Delete an allocated IP:\n";
-        print STDERR "\ttaw delete ip <Allocation ID>\n\n;
-        print STDERR "\teg) taw delete ip eipalloc-35983145\n\n;
+        print STDERR "\ttaw delete ip <Allocation ID>\n\n";
+        print STDERR "\teg) taw delete ip eipalloc-35983145\n\n";
         exit 0;
     }
     if($subcommand =~ m|^(r?ssh)$|i) {
@@ -595,29 +600,59 @@ sub cmd_delete(@)
     exit 0;
 }
 
-sub cmd_terminate(@)
+sub get_instance_ids_from_names(@)
 {
-    my @args = @_;
-    my $cmd = "aws ec2 terminate-instances $ec2_flag_dry_run --instance-ids";
+    my @instance_names = @_;
     my $at_least_one_id_found = 0;
-    for my $id_name (@args) {
+    my @retval = ();
+    for my $id_name (@instance_names) {
         my $real_id = get_instance_id_from_name($id_name);
         if(exists $real_id->{id}) {
-            $cmd .= " $real_id->{id}";
+            push(@retval, $real_id->{id});
             $at_least_one_id_found = 1;
         } else {
             print STDERR "ERROR: cannot find the instance id of '$id_name'\n";
             exit 1;
         }
     }
-    unless($at_least_one_id_found) {
+    return @retval;
+}
+
+sub cmd_terminate(@)
+{
+    my @args = @_;
+    my $cmd = "aws ec2 terminate-instances $ec2_flag_dry_run --instance-ids ";
+    my @converted_instance_ids = get_instance_ids_from_names(@args);
+    unless(0 < @converted_instance_ids) {
         print STDERR "Usage: taw terminate <host names/instance IDs>\n";
         exit 1;
     }
+    $cmd .= join(' ', @converted_instance_ids);
     $cmd .= " | jq -c " .
             "'.TerminatingInstances[] | {InstanceId: .InstanceId, Current: .CurrentState.Name, Previous: .PreviousState.Name}'";
     if($flag_force) {
         exec_and_print_in_format($cmd, "Cannot terminate instance(s)", [qw(InstanceId Current Previous)], undef, 1);
+    } else {
+        print "Please add --force to execute the following command.\n";
+        print "\t$cmd\n";
+    }
+    exit 0;
+}
+
+sub cmd_stop(@)
+{
+    my @instances = @_;
+    my $cmd = "aws ec2 stop-instances $ec2_flag_dry_run --instance-ids";
+    my @converted_instance_ids = get_instance_ids_from_names(@instances);
+    unless(0 < @converted_instance_ids) {
+        print STDERR "Usage: taw stop <host names/instance IDs>\n";
+        exit 1;
+    }
+    $cmd .= join(' ', @converted_instance_ids);
+    $cmd .= " | jq -c " .
+            "'.StoppedInstances[] | {InstanceId: .InstanceId, Current: .CurrentState.Name, Previous: .PreviousState.Name}'";
+    if($flag_force) {
+        exec_and_print_in_format($cmd, "Cannot stop instance(s)", [qw(InstanceId Current Previous)], undef, 1);
     } else {
         print "Please add --force to execute the following command.\n";
         print "\t$cmd\n";
@@ -1342,6 +1377,10 @@ rssh to the specified machine. 'taw rssh' is almost the same to 'taw ssh' but it
 =item B<taw scp>
 
 Copy files using scp. You can use an AWS machine name instead of FQDN of the remote host.
+
+=item B<taw stop>
+
+Stop instances It does not stop instances without B<--force> option.
 
 =item B<taw mosh>
 
