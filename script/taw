@@ -175,6 +175,7 @@ ensure_command('aws');
 ensure_command('jq');
 ensure_command('csvgrep');
 ensure_command('csvlook');
+ensure_aws_credential();
 if($subcommand =~ m|^show$|i) {
     my $type = shift;
     cmd_show($type);
@@ -1319,6 +1320,17 @@ sub load_quick_images()
     }
     close $fh;
     return \@retval;
+}
+
+sub ensure_aws_credential()
+{
+    return if($param_region);
+    return if(exists $ENV{'AWS_DEFAULT_REGION'});
+    return if(-e "$ENV{'HOME'}/.aws/config");
+    return if(-e "$ENV{'HOME'}/.aws/credentials");
+    print STDERR "AWS credential info is missing.\n";
+    print STDERR "See http://docs.aws.amazon.com/cli/latest/userguide/cli-chap-getting-started.html for details.\n";
+    exit 2;
 }
 
 __END__
