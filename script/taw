@@ -78,7 +78,10 @@ our %instance_type_name_2_instance_type = (
     "d2.xlarge"      => {"vcpu" =>   4, "mem" => 30.5, "desc" =>  "3x2TB HDD"},
     "d2.2xlarge"     => {"vcpu" =>   8, "mem" =>   61, "desc" =>  "6x2TB HDD"},
     "d2.4xlarge"     => {"vcpu" =>  16, "mem" =>  122, "desc" =>  "12x2TB HDD"},
-    "d2.8xlarge"     => {"vcpu" =>  36, "mem" =>  244, "desc" =>  "24x2TB HDD"}
+    "d2.8xlarge"     => {"vcpu" =>  36, "mem" =>  244, "desc" =>  "24x2TB HDD"},
+    "p2.xlarge"      => {"vcpu" =>   4, "mem" =>   61, "desc" =>  "1GPU (K80, 12GB)"},
+    "p2.8xlarge"     => {"vcpu" =>  32, "mem" =>  488, "desc" =>  "8GPU (K80, 12GB), 10Gb network"},
+    "p2.16xlarge"    => {"vcpu" =>  64, "mem" =>  732, "desc" =>  "16GPU (K80, 12GB), 20Gb network"}
 );
 
 our @trusted_ami_owners = (
