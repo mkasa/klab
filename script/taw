@@ -107,6 +107,7 @@ sub cmd_stop(@);
 sub cmd_update(@);
 sub convert_region_nick_name($);
 sub create_new_instance($$$$$$$@);
+sub create_instance_interactively();
 sub ensure_command($);
 sub error_if_jq_result_is_too_small(@);
 sub exec_and_print_in_format($$$$;$);
@@ -272,8 +273,8 @@ sub cmd_help($)
     }
     if($subcommand =~ m|^create$|i) {
         print STDERR "Usage: taw create <target> [target specific options...]\n\n";
-        print STDERR "Create a new instance:\n";
-        print STDERR "\ttaw create instance <name> <ami-id/quickimage-name> <key-name> <subnet> <security-group> <ip-type> [options...] [-- additional options for aws ec2 run-instances]\n";
+        print STDERR "Create a new instance by giving parameters:\n";
+        print STDERR "\ttaw create inst[ance] <name> <ami-id/quickimage-name> <key-name> <subnet> <security-group> <ip-type> [options...] [-- additional options for aws ec2 run-instances]\n";
         print STDERR "\tAdditional options you might be interested in are:\n";
         print STDERR "\t\t--disable-api-termination | --enable-api-termination\tdisable or enable API termination (default: disabled).\n";
         print STDERR "\t\t--instance-initiated-shutdown-behavior <stop|terminate>\tstop or terminate when shutdown.\n";
@@ -281,6 +282,8 @@ sub cmd_help($)
         print STDERR "\t\t--client-token <token>\tspecify a client token for idempotency.\n";
         print STDERR "\t\t--ebs-optimized | --no-ebs-optimized\toptimize EBS I/O. (costs more money!)\n";
         print STDERR "\teg) taw create instance web1 ami-0123abcd mysshkey default\n\n";
+        print STDERR "Create a new instance interactively:\n";
+        print STDERR "\ttaw create iinst[ance]\n\n";
         print STDERR "Create a new VPC:\n";
         print STDERR "\ttaw create vpc <CIDR>\n";
         print STDERR "\teg) taw create vpc 172.16.0.0/16\n\n";
@@ -523,7 +526,7 @@ sub cmd_create(@)
         print STDERR "       target is one of instance, vpc, subnet\n";
         exit 1;
     }
-    if($subcmd eq 'instance') {
+    if($subcmd eq 'instance' || $subcmd eq 'inst') {
         my $a1 = shift(@args);
         my $a2 = shift(@args);
         my $a3 = shift(@args);
@@ -532,6 +535,8 @@ sub cmd_create(@)
         my $a6 = shift(@args);
         my $a7 = shift(@args);
         create_new_instance($a1, $a2, $a3, $a4, $a5, $a6, $a7, @args);
+    } elsif($subcmd eq 'instanceinteractive' || $subcmd eq 'iinstance' || $subcmd eq 'iinst') {
+        create_instance_interactively();
     } elsif($subcmd eq 'vpc') {
         my $cidr = shift(@args);
         unless(defined $cidr) {
@@ -1031,6 +1036,47 @@ sub create_new_instance($$$$$$$@)
     exit 0;
 }
 
+sub create_instance_interactively()
+{
+    print STDERR "CMD_CREATE_INSTANCE_INTERACTIVELY\n" if($debug);
+    my $test = ask_with_prompt("hello", undef, undef, 1);
+    print "$test\n";
+    exit 0;
+}
+
+sub ask_with_prompt($$$$)
+{
+    my ($msg, $default_value, $prompt_str, $need_confirm) = @_;
+    $prompt_str = '> ' unless(defined $prompt_str);
+    $| = 0;
+    LONGLOOP: while(1) {
+        print $msg;
+        my $instr;
+        while(1) {
+            print $prompt_str;
+            $instr = <STDIN>;
+            chomp $instr;
+            if(defined $default_value && $instr eq '') {
+                $instr = $default_value; last;
+            }
+            last if($instr ne '');
+        }
+        unless($need_confirm) {
+            return $instr;
+        }
+        print "Your answer is '$instr' (without quotes).\nIs that OK? ([Y]/n)> ";
+        while(1) {
+            my $ans = <STDIN>; chomp $ans;
+            if($ans eq '' || $ans =~ /^y(es)?$/i) {
+                return $instr;
+            }
+            if($ans =~ /^n(o)?/i) {
+                last;
+            }
+        }
+    }
+}
+
 sub cmd_fw(@)
 {
     my $subcmd = shift;
@@ -1443,7 +1489,12 @@ Create something such as instances, VPCs, subnets, etc.
 See the following items for the details of each command.
 
 =item B<taw create instance>
-Creates a new instance.
+Create a new instance by giving parameters in the command line. B<taw create inst> is allowed for short.
+
+=item B<taw create iinstance>
+Create a new instance interactively. This is much easier for newbies.
+You can use B<taw create instanceinteractive> if you prefer a long but selfexplainingname.
+If you need a shorter name, use B<taw create iinst>.
 
 =item B<taw create vpc>
 Creates a new VPC.
