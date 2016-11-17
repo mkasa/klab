@@ -184,6 +184,7 @@ if($subcommand =~ m|^show$|i) {
 if($subcommand =~ m|^list$|i) {
     my @subcmds = @ARGV;
     cmd_list(@subcmds);
+    exit 0; # cmd_list() does not exists although other cmd_*() calls exit()
 }
 cmd_images() if($subcommand =~ m|^images?$|i);
 if($subcommand =~ m|^(r?ssh)$|i) {
@@ -442,7 +443,6 @@ sub cmd_list(@)
         print STDERR "'taw show $list_target' might be the one you expected.\n";
         exit 1;
     }
-    exit 0;
 }
 
 # This sub is used to execute a command line that outputs JSON, and turns it into a format specified by command line
@@ -1039,8 +1039,23 @@ sub create_new_instance($$$$$$$@)
 sub create_instance_interactively()
 {
     print STDERR "CMD_CREATE_INSTANCE_INTERACTIVELY\n" if($debug);
-    my $test = ask_with_prompt("hello", undef, undef, 1);
-    print "$test\n";
+    my $hostname;
+    while(1) {
+        $hostname = ask_with_prompt("What is a host name? (Type 'l' to list existing instances)\n", undef, undef, 0);
+        if($hostname eq 'l') {
+            cmd_list("instance");
+        } else {
+            print "Check if a host with the same name exists ...";
+            my $id_with_same_name = get_instance_id_from_name($hostname);
+            if($id_with_same_name) {
+                print "\n";
+                print STDERR "ERROR: There already is a host with the same name (instance ID: $id_with_same_name)\n"; exit 1;
+            }
+            print " done\n";
+            last;
+        }
+    }
+    print "Host name will be '$hostname'\n";
     exit 0;
 }
 
