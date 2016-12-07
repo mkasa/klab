@@ -2624,6 +2624,13 @@ public:
         sequences.erase(sequences.find(old_name));
         return true;
     }
+    bool deleteSequence(const string& old_name) {
+        if(sequences.count(old_name) == 0) {
+            cerr << "Could not find a sequence '" << old_name << "', which you tried to delete\n"; return false;
+        }
+        sequences.erase(old_name);
+        return true;
+    }
     bool duplicateSequence(const string& old_name, const string& new_name) {
         if(sequences.count(old_name) == 0) {
             cerr << "Could not find a sequence '" << old_name << "', which you tried to duplicate to '" << new_name << "'\n"; return false;
@@ -2917,6 +2924,16 @@ public:
                     cerr << "ERROR: an error occurred." << endl;
                     exit(2);
                 }
+            } else if(cmd == "delete") {
+                if(subargs.size() != 1) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: delete <sequence name>\n";
+                    return;
+                }
+                if(!deleteSequence(subargs[0])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
             } else if(cmd == "complement") {
                 if(subargs.size() != 2) {
                     cerr << "ERROR: # of the argument is invalid.\n";
@@ -3121,6 +3138,7 @@ void show_help(const char* subcommand)
         cerr << "\t\tloadone\tload a specified sequence in a file (arg1) with name arg2 into memory (index is used when available)\n";
         cerr << "\t\tsaveone\tsave a specified sequence (arg2) into a file (arg1)\n";
         cerr << "\t\trename\trename a sequence (arg1) into arg2\n";
+        cerr << "\t\tdelete\tdelete a sequence (arg1)\n";
         cerr << "\t\tsetdesc\tset a description (arg2) to a specified sequence (arg1)\n";
         cerr << "\t\ttrim5\ttrim the 5'-end of a specified sequence (arg1) in memory by arg2 bp\n";
         cerr << "\t\ttrim3\ttrim the 3'-end of a specified sequence (arg1) in memory by arg2 bp\n";
