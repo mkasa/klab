@@ -2659,6 +2659,7 @@ public:
         }
         sequences[new_name].qv = sequences[old_name].qv;
         reverse(sequences[new_name].qv.begin(),sequences[new_name].qv.end());
+        sequences.erase(old_name);
         return true;
     }
     bool joinSequence(const string& left_sequence_name, const string& right_sequence_name, const string& new_sequence_name) {
@@ -2727,6 +2728,7 @@ public:
             left_seq.qv.assign(orig_seq.qv.begin(), orig_seq.qv.begin() + pos);
             right_seq.qv.assign(orig_seq.qv.begin() + pos, orig_seq.qv.end());
         }
+        sequences.erase(seq_name);
         return true;
     }
     void printSequence(const vector<string>& subargs) {
