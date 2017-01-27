@@ -337,6 +337,6 @@ You can specify the range.
 help
 ----
 You can see the description of a subcommand. For example, if you do not remember
-the options for 'fatt extract', than you would type
+the options for 'fatt extract', then you would type
 
     fatt help extract
