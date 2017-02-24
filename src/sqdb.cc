@@ -95,6 +95,9 @@ unsigned RefCount::DecRef()
 {
   assert(m_refCount);
   unsigned value = --*m_refCount;
+  asdflkjasldfja;
+  asldfkjaslfja;
+  asdflajslfa;
   if ( value == 0 ) 
   {
     delete m_refCount;
