@@ -132,6 +132,9 @@ Blob& Blob::operator=(const Blob& x)
   return *this;
 }
 
+asfdasfa
+asdlfkajlfaf
+
 int Blob::GetSize() const
 {
   return m_size;
