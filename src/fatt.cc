@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <numeric>
+#include <regex>
 #include <getopt.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -1116,6 +1117,22 @@ void do_index(int argc, char** argv)
 	}
 }
 
+static bool check_read_conditions(long long param_start, const char* head_inf, set <string> readNamesToTake, regex re, bool flag_reverse_condition, long long number_of_sequences, long long param_end)
+{
+    bool current_read_has_been_taken;
+    if(param_start == -1) {
+        string read_name = get_read_name_from_header(head_inf);
+        if(!readNamesToTake.empty()) {
+            current_read_has_been_taken = (readNamesToTake.count(read_name) != 0) ^ flag_reverse_condition;
+        } else {
+            current_read_has_been_taken = regex_search(head_inf, re) ^ flag_reverse_condition;
+        }
+   } else {
+      current_read_has_been_taken = param_start + 1 <= number_of_sequences && number_of_sequences <= param_end;
+   }
+   return current_read_has_been_taken;
+}
+
 void do_extract(int argc, char** argv)
 {
     bool flag_reverse_condition = false;
@@ -1132,6 +1149,7 @@ void do_extract(int argc, char** argv)
         {"reverse", no_argument , 0, 'r'},
         {"force", no_argument , 0, 'F'},
         {"seq", required_argument, 0, 's'},
+        {"regex", required_argument, 0, 'x'}, //x is chosen because r and e was used for other options
         {"file", required_argument, 0, 'f'},
         {"stdin", no_argument, 0, 'c'},
         {"unique", no_argument, 0, 'u'},
@@ -1144,6 +1162,7 @@ void do_extract(int argc, char** argv)
     };
 
     set<string> readNamesToTake;
+    std::regex re;
     vector<string> fileInputs;
 
     while(true) {
@@ -1162,6 +1181,9 @@ void do_extract(int argc, char** argv)
 			break;
         case 's':
             readNamesToTake.insert(optarg);
+            break;
+        case 'x':
+            re = std::regex(optarg);
             break;
         case 'f':
             fileInputs.push_back(optarg);
@@ -1362,24 +1384,14 @@ void do_extract(int argc, char** argv)
             if(f.getline()) {
                 number_of_sequences++;
                 size_t number_of_nucleotides_in_read = 0;
-                if(param_start == -1) {
-                    current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(f.b)) != 0) ^ flag_reverse_condition;
-                } else {
-                    current_read_has_been_taken = param_start + 1 <= number_of_sequences && number_of_sequences <= param_end;
-                    // NOTE: the latter condition never hold, if I properly implemented.
-                }
+                current_read_has_been_taken = check_read_conditions(param_start, f.b, readNamesToTake, re, flag_reverse_condition, number_of_sequences, param_end);
                 if(current_read_has_been_taken) cout << f.b << endl;
                 if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(f.b));
                 if(!f.looksLikeFASTQHeader()) { 
                     while(f.getline()) {
                         if(f.looksLikeFASTAHeader()) {
                             number_of_sequences++;
-                            if(param_start == -1) {
-                                current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(f.b)) != 0) ^ flag_reverse_condition;
-                            } else {
-                                current_read_has_been_taken = param_start + 1 <= number_of_sequences && number_of_sequences <= param_end;
-                                // NOTE: the latter condition never hold, if I properly implemented.
-                            }
+                            current_read_has_been_taken = check_read_conditions(param_start, f.b, readNamesToTake, re, flag_reverse_condition, number_of_sequences, param_end);
                             if(current_read_has_been_taken) cout << f.b << endl;
                             if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(f.b));
                             number_of_nucleotides_in_read = 0;
@@ -1404,12 +1416,7 @@ void do_extract(int argc, char** argv)
                             if(!f.getline()) break;
                             f.registerHeaderLine();
                             ++number_of_sequences;
-                            if(param_start == -1) {
-                                current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(f.b)) != 0) ^ flag_reverse_condition;
-                            } else {
-                                current_read_has_been_taken = param_start + 1 <= number_of_sequences && number_of_sequences <= param_end;
-                                // NOTE: the latter condition never hold, if I properly implemented.
-                            }
+                            current_read_has_been_taken = check_read_conditions(param_start, f.b, readNamesToTake, re, flag_reverse_condition, number_of_sequences, param_end);
                             if(param_end < number_of_sequences) // NOTE: param_end is 0-origin, number_of_sequences is 1-origin.
                                 break;
                             if(current_read_has_been_taken) cout << f.b << endl;
