@@ -127,6 +127,19 @@ static bool is_file_fastq(const char* fastq_file_name)
     return true;
 }
 
+class FileBuffering
+{
+    vector<char> buffer;
+public:
+    FileBuffering(size_t size = 256 * 1024u * 1024u) {
+        buffer.resize(size);
+    }
+    void connectToStream(ostream& os) {
+        os.rdbuf()->pubsetbuf(&*buffer.begin(), buffer.size());
+        std::ios_base::sync_with_stdio(false);
+    }
+};
+
 class CoutBuffering
 {
     vector<char> buffer;
@@ -738,7 +751,7 @@ void do_len(int argc, char** argv)
 	}
 }
 
-void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_json, const bool is_contig = false)
+void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_json, const char * contig_or_scaff = "scaffold")
 {
     sort(lengths.rbegin(), lengths.rend());
     const size_t total_length = accumulate(lengths.begin(), lengths.end(), 0ull);
@@ -800,44 +813,56 @@ void print_n50(vector<size_t>& lengths, const bool flag_html, const bool flag_js
         cout << "}";
     } else {
         cout << "Total # of bases = " << sep_comma(total_length) << "\n";
-        const string scaffold_str = is_contig ? "contig" : "scaffold";
-        cout << "# of " << scaffold_str << "s = " << sep_comma(lengths.size()) << "\n";
+        cout << "# of " << contig_or_scaff << "s = " << sep_comma(lengths.size()) << "\n";
         cout << "Max size = " << sep_comma(max_length) << " (# = 1)\n";
-        cout << "N50 " << scaffold_str << " size = " << sep_comma(n50_length) << " (# = " << sep_comma(n50_sequence_index) << ")\n";
-        cout << "N70 " << scaffold_str << " size = " << sep_comma(n70_length) << " (# = " << sep_comma(n70_sequence_index) << ")\n";
-        cout << "N80 " << scaffold_str << " size = " << sep_comma(n80_length) << " (# = " << sep_comma(n80_sequence_index) << ")\n";
-        cout << "N90 " << scaffold_str << " size = " << sep_comma(n90_length) << " (# = " << sep_comma(n90_sequence_index) << ")\n";
+        cout << "N50 " << contig_or_scaff << " size = " << sep_comma(n50_length) << " (# = " << sep_comma(n50_sequence_index) << ")\n";
+        cout << "N70 " << contig_or_scaff << " size = " << sep_comma(n70_length) << " (# = " << sep_comma(n70_sequence_index) << ")\n";
+        cout << "N80 " << contig_or_scaff << " size = " << sep_comma(n80_length) << " (# = " << sep_comma(n80_sequence_index) << ")\n";
+        cout << "N90 " << contig_or_scaff << " size = " << sep_comma(n90_length) << " (# = " << sep_comma(n90_sequence_index) << ")\n";
         cout << "Min size = " << sep_comma(min_length) << "\n";
-        cout << "Total " << scaffold_str << " # = " << sep_comma(lengths.size()) << "\n";
+        cout << "Total " << contig_or_scaff << " # = " << sep_comma(lengths.size()) << "\n";
         cout << "Avg size = " << sep_comma(avg_length) << "\n";
     }
 }
 
 void do_stat(int argc, char** argv)
 {
-	bool flag_html = false;
+    bool flag_html = false;
     bool flag_json = false;
+    bool flag_contig = false;
+    bool flag_scaffold = false;
+    bool flag_all = true;
     static struct option long_options[] = {
         {"html", no_argument, 0, 'h'},
         {"json", no_argument, 0, 'j'},
+        {"contig", no_argument, 0, 'c'},
+        {"scaffold", no_argument, 0, 's'},
         {0, 0, 0, 0} // end of long options
     };
     while(true) {
-		int option_index = 0;
-		int c = getopt_long(argc, argv, "", long_options, &option_index);
-		if(c == -1) break;
-		switch(c) {
-		case 0:
-			// you can see long_options[option_index].name/flag and optarg (null if no argument).
-			break;
-		case 'h':
-            flag_html = true;
-			break;
-        case 'j':
-            flag_json = true;
-            break;
+    	int option_index = 0;
+    	int c = getopt_long(argc, argv, "", long_options, &option_index);
+    	if(c == -1) break;
+    	switch(c) {
+            case 0:
+           // you can see long_options[option_index].name/flag and optarg (null if no argument).
+                break;
+            case 'h':
+                flag_html = true;
+                break;
+            case 'j':
+                flag_json = true;
+                break;
+            case 'c':
+                flag_contig = true;
+                flag_all = false;
+                break;
+            case 's':
+                flag_scaffold = true;
+                flag_all = false;
+                break;
         }
-	}
+    }
     if(flag_html && flag_json) {
         cerr << "ERROR: You can use either --html or --json\n";
         return;
@@ -846,11 +871,11 @@ void do_stat(int argc, char** argv)
     vector<size_t> length_of_scaffolds_wogap;
     vector<size_t> length_of_contigs;
     int number_of_successfully_processed_files = 0;
-	for(int i = optind + 1; i < argc; ++i) {
-		if(calculate_n50_statistics(argv[i], length_of_scaffolds_wgap, length_of_scaffolds_wogap, length_of_contigs)) {
+    for(int i = optind + 1; i < argc; ++i) {
+    	if(calculate_n50_statistics(argv[i], length_of_scaffolds_wgap, length_of_scaffolds_wogap, length_of_contigs)) {
             number_of_successfully_processed_files++;
         }
-	}
+    }
     if(number_of_successfully_processed_files <= 0) {
         cerr << "ERROR: All file(s) could not be opened." << endl;
         return;
@@ -859,31 +884,37 @@ void do_stat(int argc, char** argv)
         cerr << "Assertion failed. Maybe you found a bug! Please report to the author.\n";
         return;
     }
-    if(flag_html) {
-        cout << "<table border=\"2\" bgcolor=\"#ffffff\">\n";
-        cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (w/gap) statistics</th></tr>\n";
-    } else if(flag_json) {
-        cout << "{\"scaffold_wgap\": ";
-    } else {
-        cout << "Scaffold (w/gap) statistics\n";
+    if(flag_all || flag_scaffold) {
+        if(flag_html) {
+            cout << "<table border=\"2\" bgcolor=\"#ffffff\">\n";
+            cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (w/gap) statistics</th></tr>\n";
+        } else if(flag_json) {
+            cout << "{\"scaffold_wgap\": ";
+        } else {
+            cout << "Scaffold (w/gap) statistics\n";
+        }
+        print_n50(length_of_scaffolds_wgap, flag_html, flag_json, "scaffold");
     }
-    print_n50(length_of_scaffolds_wgap, flag_html, flag_json, false);
-    if(flag_html) {
-        cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (wo/gap) statistics</th></tr>\n";
-    } else if(flag_json) {
-        cout << ",\"scaffold_wogap\": ";
-    } else {
-        cout << "\nScaffold (wo/gap) statistics\n";
+    if(flag_all) {
+        if(flag_html) {
+            cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (wo/gap) statistics</th></tr>\n";
+        } else if(flag_json) {
+            cout << ",\"scaffold_wogap\": ";
+        } else {
+            cout << "\nScaffold (wo/gap) statistics\n";
+        }
+        print_n50(length_of_scaffolds_wogap, flag_html, flag_json, "scaffold");
     }
-    print_n50(length_of_scaffolds_wogap, flag_html, flag_json, false);
-    if(flag_html) {
-        cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Contig statistics</th></tr>\n";
-    } else if(flag_json) {
-        cout << ",\"contig\": ";
-    } else {
-        cout << "\nContig statistics\n";
+    if(flag_all || flag_contig) {
+        if(flag_html) {
+            cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Contig statistics</th></tr>\n";
+        } else if(flag_json) {
+            cout << ",\"contig\": ";
+        } else {
+            cout << "\nContig statistics\n";
+        }
+        print_n50(length_of_contigs, flag_html, flag_json, "contig");
     }
-    print_n50(length_of_contigs, flag_html, flag_json, true);
     if(flag_html) {
         cout << "</table>\n";
     } else if(flag_json) {
@@ -2276,6 +2307,48 @@ struct Sequence {
     }
 };
 
+char complement_char(char c)
+{
+//      'atgcrymkdhvbswn'
+//      'tacgyrkmhdbvswn'
+// a compiler might optimize to a table lookup...
+  switch(c){
+    case 'a': return 't';
+    case 'c': return 'g';
+    case 'g': return 'c';
+    case 't': return 'a';
+    case 'A': return 'T';
+    case 'C': return 'G';
+    case 'G': return 'C';
+    case 'T': return 'A';
+
+    case 'n': return 'n';
+    case 'N': return 'N';
+
+    case 'r': return 'y';
+    case 'y': return 'r';
+    case 'm': return 'k';
+    case 'k': return 'm';
+    case 'd': return 'h';
+    case 'h': return 'd';
+    case 'v': return 'b';
+    case 'b': return 'v';
+    case 's': return 's';
+    case 'w': return 'w';
+
+    case 'R': return 'Y';
+    case 'Y': return 'R';
+    case 'M': return 'K';
+    case 'K': return 'M';
+    case 'D': return 'H';
+    case 'H': return 'D';
+    case 'V': return 'B';
+    case 'B': return 'V';
+    case 'S': return 'S';
+    case 'W': return 'W';
+  }
+  return c;
+}
 class GenomeEditScript {
     bool is_fastq;
     bool has_file_type_determined;
@@ -2463,6 +2536,7 @@ public:
             ost << '>' << s.name;
             if(!s.description.empty()) ost << ' ' << s.description;
             ost << '\n';
+            ost << s.sequence << endl;
         }
         return true;
     }
@@ -2550,6 +2624,13 @@ public:
         sequences.erase(sequences.find(old_name));
         return true;
     }
+    bool deleteSequence(const string& old_name) {
+        if(sequences.count(old_name) == 0) {
+            cerr << "Could not find a sequence '" << old_name << "', which you tried to delete\n"; return false;
+        }
+        sequences.erase(old_name);
+        return true;
+    }
     bool duplicateSequence(const string& old_name, const string& new_name) {
         if(sequences.count(old_name) == 0) {
             cerr << "Could not find a sequence '" << old_name << "', which you tried to duplicate to '" << new_name << "'\n"; return false;
@@ -2559,6 +2640,26 @@ public:
         }
         sequences[new_name] = sequences[old_name];
         sequences[new_name].name = new_name;
+        return true;
+    }
+    bool complementSequence(const string& old_name, const string& new_name) {
+        if(sequences.count(old_name) == 0) {
+            cerr << "Could not find a sequence '" << old_name << "', which you tried to duplicate to '" << new_name << "'\n"; return false;
+        }
+        if(sequences.count(new_name)) {
+            cerr << "There is already a sequence '" << new_name << "', to which you tried to duplicate a sequence '" << old_name << "'\n"; return false;
+        }
+        size_t length = sequences[old_name].sequence.size();
+        sequences[new_name].name = new_name;
+        sequences[new_name].description = sequences[old_name].description;
+        sequences[new_name].sequence = vector<char>(length);
+        for(int i = 0; i < length; ++i) {
+          char c = complement_char(sequences[old_name].sequence[i]);
+          sequences[new_name].sequence[length-1-i] = c;
+        }
+        sequences[new_name].qv = sequences[old_name].qv;
+        reverse(sequences[new_name].qv.begin(),sequences[new_name].qv.end());
+        sequences.erase(old_name);
         return true;
     }
     bool joinSequence(const string& left_sequence_name, const string& right_sequence_name, const string& new_sequence_name) {
@@ -2627,6 +2728,7 @@ public:
             left_seq.qv.assign(orig_seq.qv.begin(), orig_seq.qv.begin() + pos);
             right_seq.qv.assign(orig_seq.qv.begin() + pos, orig_seq.qv.end());
         }
+        sequences.erase(seq_name);
         return true;
     }
     void printSequence(const vector<string>& subargs) {
@@ -2804,7 +2906,7 @@ public:
                 }
                 printSequence(subargs);
             } else if(cmd == "split") {
-                if(subargs.size() != 3) {
+                if(subargs.size() != 4) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: split <sequence name> <split position (0-origin)> <left sequence name> <right sequence name>\n";
                     cerr << "The base at the split position goes to the right sequence.\n" << endl;
@@ -2821,6 +2923,26 @@ public:
                     return;
                 }
                 if(!duplicateSequence(subargs[0], subargs[1])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "delete") {
+                if(subargs.size() != 1) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: delete <sequence name>\n";
+                    return;
+                }
+                if(!deleteSequence(subargs[0])) {
+                    cerr << "ERROR: an error occurred." << endl;
+                    exit(2);
+                }
+            } else if(cmd == "complement") {
+                if(subargs.size() != 2) {
+                    cerr << "ERROR: # of the argument is invalid.\n";
+                    cerr << "usage: complement <sequence name> <new sequence name>\n";
+                    return;
+                }
+                if(!complementSequence(subargs[0], subargs[1])) {
                     cerr << "ERROR: an error occurred." << endl;
                     exit(2);
                 }
@@ -2926,6 +3048,9 @@ void show_help(const char* subcommand)
         cerr << "Usage: fatt stat [options...] <FAST(A|Q) files>\n\n";
         cerr << "--html\tOutput in HTML format.\n";
         cerr << "--json\tOutput in JSON format.\n";
+        cerr << "--contig\tOutput contig statistics.\n";
+        cerr << "--scaffold\tOutput statistics of scaffold with gaps.\n";
+        cerr << "If neither of --contig nor --scaffold is specified, statistics of scaffold with gaps, scaffold without gaps, and contigs are reported.\n";
         return;
     }
     if(subcmd == "index") {
@@ -3013,14 +3138,16 @@ void show_help(const char* subcommand)
         cerr << "\t\tloadall\tload entire sequences in a file (arg1) into memory\n";
         cerr << "\t\tsaveall\tsave entire sequences in memory into a file (arg1)\n";
         cerr << "\t\tloadone\tload a specified sequence in a file (arg1) with name arg2 into memory (index is used when available)\n";
-        cerr << "\t\tsaveone\tsave a specified sequence in memory with name arg1 into a file (arg2)\n";
+        cerr << "\t\tsaveone\tsave a specified sequence (arg2) into a file (arg1)\n";
         cerr << "\t\trename\trename a sequence (arg1) into arg2\n";
+        cerr << "\t\tdelete\tdelete a sequence (arg1)\n";
         cerr << "\t\tsetdesc\tset a description (arg2) to a specified sequence (arg1)\n";
         cerr << "\t\ttrim5\ttrim the 5'-end of a specified sequence (arg1) in memory by arg2 bp\n";
         cerr << "\t\ttrim3\ttrim the 3'-end of a specified sequence (arg1) in memory by arg2 bp\n";
         cerr << "\t\tprint\tprint a specified sequence (arg1) in memory; range [arg2, arg3) is optional\n";
         cerr << "\t\tsplit\tsplit a specified sequence (arg1) at position (arg2; 0-origin; the base at arg2 belongs to the latter fragment) into arg3 and arg4\n";
         cerr << "\t\tdupseq\tduplicate a specified sequence (arg1) and name it arg2\n";
+        cerr << "\t\tcomplement\tconstruct reverse complement of a specified sequence (arg1) and name it arg2\n";
         cerr << "\t\tjoin\tjoin two specified sequences (arg1, arg2) into one (arg3)\n";
         cerr << "\nFiles given in the command line will be loaded by loadall command before executing the edit script.\n";
         return;

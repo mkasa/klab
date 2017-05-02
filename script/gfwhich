@@ -20,27 +20,35 @@ my $flag_fix = 0;
 my $flag_dirfix = 0;
 my $flag_clean = 0;
 my $flag_df = 0;
+my $flag_show_xattr = 0;
 my $flag_whole = 0;
 my $param_gfid = undef;
 my $param_gfid_query = undef;
+my $param_command = undef;
+my $param_resolve_gfid = undef;
+my $param_remove_xattrop = undef;
 
 GetOptions(
-    "debug"    => \$debug,
-    "help"     => \$flag_help,
-    "man"      => \$flag_man,
-    "l=i"      => \$param_left_column_size,
-    "i"        => \$flag_omit_consistent,
-    "d"        => \$flag_show_detail,
-    "fix"      => \$flag_fix,
-    "quickfix" => \$flag_quick_fix,
-    "dirfix"   => \$flag_dirfix,
-    "w"        => \$flag_whole,
-    "clean"    => \$flag_clean,
-    "df"       => \$flag_df,
-    "r=i"      => \$param_num_replica,
-    "gfid=s"   => \$param_gfid,
-    "qgfid=s"  => \$param_gfid_query,
-    "sudo"     => \$flag_sudo
+    "debug"         => \$debug,
+    "help"          => \$flag_help,
+    "man"           => \$flag_man,
+    "l=i"           => \$param_left_column_size,
+    "i"             => \$flag_omit_consistent,
+    "d"             => \$flag_show_detail,
+    "fix"           => \$flag_fix,
+    "quickfix"      => \$flag_quick_fix,
+    "dirfix"        => \$flag_dirfix,
+    "w"             => \$flag_whole,
+    "clean"         => \$flag_clean,
+    "df"            => \$flag_df,
+    "lsattr"        => \$flag_show_xattr,
+    "resolvegfid=s" => \$param_resolve_gfid,
+    "removexattrop=s" => \$param_remove_xattrop,
+    "r=i"           => \$param_num_replica,
+    "gfid=s"        => \$param_gfid,
+    "qgfid=s"       => \$param_gfid_query,
+    "cmd=s"         => \$param_command,
+    "sudo"          => \$flag_sudo
 );
 
 my $param_fix_file;
@@ -134,10 +142,56 @@ sub fix_dir
 {
     my $dir_name = shift;
     my $tmp_dir_name = "$dir_name.tmp.$$";
-    print_and_do("mkdir $tmp_dir_name");
-    print_and_do("mv $dir_name/* $tmp_dir_name");
-    print_and_do("rmdir $dir_name");
-    print_and_do("mv $tmp_dir_name $dir_name");
+    print_and_do("mkdir '$tmp_dir_name'");
+    {
+        my $cmd = "sh -c 'mv ";
+        my $any_file_exists = 0;
+        my @regular_files = <$dir_name/*>;
+        if(0 < @regular_files) {
+            $cmd .= "\"$dir_name\"/*";
+            $any_file_exists = 1;
+        }
+        my @dot_files = <$dir_name/.*>;
+        if(2 < @dot_files) { # we always see '.' and '..'
+            $cmd .= " " if($any_file_exists);
+            $cmd .= "\"$dir_name\".[0-9a-z]*"; # this is to avoid matching against '.' or '..'
+            $any_file_exists = 1;
+        }
+        $cmd .= " \"$tmp_dir_name\"/'";
+        if($any_file_exists) {
+            print_and_do($cmd);
+        }
+    }
+    print_and_do("rmdir '$dir_name'");
+    print_and_do("mv '$tmp_dir_name' '$dir_name'");
+}
+
+sub shell_escape
+{
+    my $s = shift;
+    $s =~ s|(['"\\])|\\$1|g;
+    return $s;
+}
+
+sub execute_command
+{
+    my ($gpath, $cwd, $command, @bricks) = @_;
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        my $path = $brick->{"path"};
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        {
+            $command =~ s|:P|$path/$cwd|;
+            my $pcmd = "sh -c \"cd $path/$cwd; " . shell_escape($command) . "\"";
+            $cmd .= "\"" . shell_escape($pcmd) ."\"";
+        }
+        print "\$ $cmd\n" if($debug);
+        print "On host $host:\n";
+        system $cmd;
+    }
 }
 
 sub print_disk_free_space
@@ -169,12 +223,21 @@ sub print_disk_free_space
 sub print_gfid_dir
 {
     my ($gfid, $suffix, @bricks) = @_;
+    $gfid =~ s|^xattrop-||;
+    $gfid =~ s|^0x||;
     $gfid =~ tr/A-Z/a-z/;
     unless($gfid =~ m|^([\da-f][\da-f])([\da-f][\da-f])|) {
         print STDERR "ERROR: '$gfid' does not look like a gfid.\n";
         exit 3;
     }
     my $p1 = $1; my $p2 = $2;
+    if(length($gfid) < 36) {   # reformat gfid
+        $gfid = substr($gfid,  0, 8) . "-" .
+                substr($gfid,  8, 4) . "-" .
+                substr($gfid, 12, 4) . "-" .
+                substr($gfid, 16, 4) . "-" .
+                substr($gfid, 20)
+    }
     my $lpath = ".glusterfs/$p1/$p2/$gfid";
     for my $brick (@bricks) {
         my $host = $brick->{"host"};
@@ -183,8 +246,24 @@ sub print_gfid_dir
         $cmd .= "-t " if($flag_sudo);
         $cmd .= "$host ";
         $cmd .= "sudo " if($flag_sudo);
-        $cmd .= "env LANG=C ls -ald $path/$lpath";
+        $cmd .= "env LANG=C ls -iald $path/$lpath";
         $cmd .= "/$suffix" if(defined $suffix && $suffix ne '');
+        print "\$ $cmd\n" if($debug);
+        system $cmd;
+    }
+}
+
+sub print_indices_xattr
+{
+    my @bricks = @_;
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        my $path = $brick->{"path"};
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        $cmd .= "env LANG=C ls -al $path/.glusterfs/indices/xattrop";
         print "\$ $cmd\n" if($debug);
         system $cmd;
     }
@@ -214,6 +293,109 @@ sub print_gfid_of_file_or_dir
     }
 }
 
+sub remove_xattrop
+{
+    my ($fname, $spec_host, @bricks) = @_;
+    if($fname =~ /^\s*$/) {
+        print STDERR "USAGE gfwhich -removexattrop host fname\n";
+        exit 1;
+    }
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        next if($spec_host ne $host);
+        my $path = $brick->{"path"};
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        $cmd .= "env LANG=C rm $path/.glusterfs/indices/xattrop/$fname";
+        print "\$ $cmd\n" if($debug);
+        system $cmd;
+    }
+}
+
+sub resolve_gfid
+{
+    my ($attr_fname, $mount_point, @bricks) = @_;
+    my @gfids = ();
+    open my $fh, "<", $attr_fname or die "Could not open '$attr_fname'";
+    while(<$fh>) {
+        chomp;
+        while(m|([\da-f]+)-([\da-f]+)-([\da-f]+)-([\da-f]+)-([\da-f]+)|ig) {
+            push(@gfids, "$1-$2-$3-$4-$5");
+            print STDERR "Found GFID '" . $gfids[-1] . "'\n" if($debug > 0);
+        }
+    }
+    close $fh;
+    my $host_2_inums = {};
+    print STDERR "Gathering GFID info...\n";
+    for my $gfid (@gfids) {
+        unless($gfid =~ m|^([\da-f][\da-f])([\da-f][\da-f])|) {
+            print STDERR "ERROR: '$gfid' does not look like a gfid.\n";
+            next;
+        }
+        my $p1 = $1; my $p2 = $2;
+        my $lpath = ".glusterfs/$p1/$p2/$gfid";
+        for my $brick (@bricks) {
+            my $host = $brick->{"host"};
+            my $path = $brick->{"path"};
+            my $cmd = "ssh ";
+            $cmd .= "-t " if($flag_sudo);
+            $cmd .= "$host ";
+            $cmd .= "sudo " if($flag_sudo);
+            $cmd .= "env LANG=C ls -iald $path/$lpath";
+            print "\$ $cmd\n" if($debug);
+            use File::Temp qw/tempfile/;
+            my ($fh, $fname) = tempfile("gfwhichXXXXXX", DIR => "/tmp", UNLINK => 0);
+            system "$cmd > $fname";
+            for(`cat $fname`) {
+                if(/^\s*(\d+)/) {
+                    my $inode_number = $1;
+                    push(@{$host_2_inums->{$host}}, $inode_number);
+                    print STDERR "Found inum $inode_number at host $host\n" if($debug > 0);
+                }
+            }
+            unlink $fname;
+        }
+    }
+    my $number_of_inodes_found = 0;
+    while(my ($k, $v) = each %$host_2_inums) {
+        $number_of_inodes_found += length(@$v);
+    }
+    if($number_of_inodes_found <= 0) {
+        print STDERR "No inode number found. Abort.\n";
+        return;
+    }
+    print STDERR "$number_of_inodes_found inode numbers found.\n";
+    print STDERR "Searching files with specified GFID. This may take a long time.\n";
+    for my $brick (@bricks) {
+        my $host = $brick->{"host"};
+        my $path = $brick->{"path"};
+        my $cmd = "ssh ";
+        $cmd .= "-t " if($flag_sudo);
+        $cmd .= "$host ";
+        $cmd .= "sudo " if($flag_sudo);
+        $cmd .= "env LANG=C find $path -name .glusterfs -prune";
+        for my $inum (@{$host_2_inums->{$host}}) {
+            $cmd .= " -o -inum $inum -print";
+        }
+        $path .= "/" unless($path =~ m|/$|);
+        $mount_point .= "/" unless($mount_point =~ m|/$|);
+        $cmd .= " | perl -ple 's|^$path|$mount_point|'";
+        print "\$ $cmd\n" if($debug);
+        system "$cmd";
+    }
+}
+
+sub ensure_you_have_root
+{
+    if($ENV{'USER'} ne 'root' && !$flag_sudo) {
+        print STDERR "ERROR: you need to be root, or add -sudo option.\n";
+        exit 1;
+    }
+    0;
+}
+
 my $ini = read_config();
 my $gluster_path = $ini->{"gluster_path"};
 my @bricks = @{$ini->{"bricks"}};
@@ -221,13 +403,32 @@ if($flag_df) {
     print_disk_free_space(@bricks);
     exit 0;
 }
+
 if(defined $param_gfid) {
+    ensure_you_have_root();
     print_gfid_dir($param_gfid, "", @bricks);
     exit 0;
 }
 my $cwd = getcwd();
 if(defined $param_gfid_query) {
+    ensure_you_have_root();
     print_gfid_of_file_or_dir($gluster_path, $cwd, $param_gfid_query, @bricks);
+    exit 0;
+}
+if($flag_show_xattr) {
+    ensure_you_have_root();
+    print_indices_xattr(@bricks);
+    exit 0;
+}
+if(defined $param_resolve_gfid) {
+    ensure_you_have_root();
+    resolve_gfid($param_resolve_gfid, $gluster_path, @bricks);
+    exit 0;
+}
+if(defined $param_remove_xattrop) {
+    ensure_you_have_root();
+    my $fname = shift;
+    remove_xattrop($fname, $param_remove_xattrop, @bricks);
     exit 0;
 }
 
@@ -245,6 +446,10 @@ if($flag_fix) {
 }
 if($flag_dirfix) {
     fix_dir($param_fix_file);
+    exit 0;
+}
+if(defined $param_command) {
+    execute_command($gluster_path, $cwd, $param_command, @bricks);
     exit 0;
 }
 
@@ -477,8 +682,11 @@ gfwhich - Checking the hostnames in which files in the current directory are sto
 =head1 SYNOPSIS
 
 gfwhich [options]
+
 gfwhich --fix <filename> <host>
+
 gfwhich --dirfix <dirname>
+
 gfwhich --quickfix
 
 =head1 OPTIONS
@@ -545,6 +753,70 @@ then please give B<-clean>. The original (split-brain and possibly
 corrupted) file will be removed, and never gets back. You should be
 careful when you use this option. You can just type "rm *.orig" to
 do the same thing even after running it with B<--fix> and without B<-clean>.
+
+=item B<-gfid>
+B<-gfid> shows the underlying files (or directories) behind the specified file or directory.
+If the specified is a file, you will see replicated files in physical bricks.
+If the specified is a directory, you will see the directory replicated in all of the physical bricks.
+You can check the GFID of the parent directory of the specified file/directory by this option.
+
+This option requires a root priviledge--you need a root account or at least that you can do sudo.
+
+=item B<-qgfid>
+B<-qgfid> queries the GFID of a given file. For example, 'gfwhich -sudo -qgfid abc' will show the GFID of a file (or directory) abc.
+
+This option requires a root priviledge--you need a root account or at least that you can do sudo.
+
+=item B<-lsattr>
+B<-lsattr> shows the GFIDs of pending operations (such as self-heal) 
+
+This option requires a root priviledge--you need a root account or at least that you can do sudo.
+
+=item B<-resolvegfid>
+B<-resolvegfid> resolves GFIDs in the specified input file into gluster paths.
+Here is an example::
+
+    host1% echo f5a34588-1ea3-4c9d-8252-ac0241921627 > /tmp/foo
+    host1% gfwhich -resolvegfid /tmp/foo
+
+The input file is matched against the GUID regular expression, and the matched strings are
+used as input GFIDs. In other words, you do not have to remove non-GUID (non-GFID) strings
+before you give it to gfwhich. Therefore you can easily feed the output of other tools into gfwhich B<-resolvegfid>.
+The following example shows the paths (for user) for files being self-healed.
+
+    host1% gfwhich -lsattr > somefile
+    host1% gfwhich -resolvegfid somefile
+
+Initially, gfwhich -resolvegfid inputs file names from the stdin. However, using a non-tty stdin led to
+rejection in sudo command, which was unacceptable for resolving GFIDs requiring a root priviledge.
+
+=item B<-removexattrop>
+B<-removexattrop> removes a specified xattrop file. An example is here::
+
+    host2% gfwhich -removexattrop host1 xattrop-2b1232dc-79f9-4880-a55e-98488b0fa7f3
+    host2% gfwhich -removexattrop host2 f723067f-fcce-4b94-8db2-598d763592ab
+
+=item B<-cmd>
+B<-cmd> executes a specified command on all of the bricks on the remote hosts.
+For example, the following command will show you the path of the remote directories::
+
+    $ cwd
+    /gluster/foo/bar/baz
+    $ gfwhich -cmd pwd
+    On host host00:
+    /export/g/foo/bar/baz
+    On host host01:
+    /export/g/foo/bar/baz
+    On host host02:
+    /export/g/foo/bar/baz
+    On host host03:
+    /export/g/foo/bar/baz
+
+You may need to escape spaces and parentheses if any::
+
+    $ gfwhich -cmd 'ls -al'
+
+If the command includes ':P' (without parens), it is expanded into the corresponding physical path (on a brick) of the current directory.
 
 =back
 

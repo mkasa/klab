@@ -1,0 +1,1602 @@
+#!/usr/bin/env perl
+# vim: ts=4:sw=4:expandtab :
+
+use strict;
+use Getopt::Long;
+use Pod::Usage;
+use File::Temp qw(tempfile);
+use JSON;
+
+# Option state
+
+my $flag_output_json   = 0;
+my $flag_output_csv    = 0;
+my $flag_output_pretty = 0;
+my $flag_output_raw    = 0;
+my $flag_no_header     = 0;
+my $flag_dry_run       = 0;
+my $flag_help          = 0;
+my $flag_verbose       = 0;
+my $flag_man           = 0;
+my $flag_force         = 0;
+my $debug = 0;
+my $debug_leave_file = 0;
+my $param_region;
+
+# Constants
+our %region_name_2_region_str = (
+    "us-east-1"      => "virginia",
+    "us-west-1"      => "california",
+    "us-west-2"      => "oregon",
+    "sa-east-1"      => "sanpaulo",
+    "eu-west-1"      => "ireland",
+    "eu-central-1"   => "frankfurt",
+    "ap-southeast-1" => "singapore",
+    "ap-southeast-2" => "sydney",
+    "ap-northeast-1" => "tokyo",
+    "ap-northeast-2" => "seoul",
+    "ap-south-1"     => "mumbai"
+);
+
+our %instance_type_name_2_instance_type = (
+    "t2.nano"        => {"vcpu" =>   1, "mem" =>  0.5, "desc" =>  "3 credit minutes/hour, EBS backend"},
+    "t2.micro"       => {"vcpu" =>   1, "mem" =>    1, "desc" =>  "6 credit minutes/hour, EBS backend"},
+    "t2.small"       => {"vcpu" =>   1, "mem" =>    2, "desc" =>  "12 credit minutes/hour, EBS backend"},
+    "t2.medium"      => {"vcpu" =>   2, "mem" =>    4, "desc" =>  "24 credit minutes/hour, EBS backend"},
+    "t2.large"       => {"vcpu" =>   2, "mem" =>    8, "desc" =>  "36 credit minutes/hour, EBS backend"},
+    "m4.large"       => {"vcpu" =>   2, "mem" =>    8, "desc" =>  "450Mbps EBS, EBS backend"},
+    "m4.xlarge"      => {"vcpu" =>   4, "mem" =>   16, "desc" =>  "750Mbps EBS, EBS backend"},
+    "m4.2xlarge"     => {"vcpu" =>   8, "mem" =>   32, "desc" =>  "1Gbps EBS, EBS backend"},
+    "m4.4xlarge"     => {"vcpu" =>  16, "mem" =>   64, "desc" =>  "2Gbps EBS, EBS backend"},
+    "m4.10xlarge"    => {"vcpu" =>  40, "mem" =>  160, "desc" =>  "4Gbps EBS, EBS backend"},
+    "m3.medium"      => {"vcpu" =>   1, "mem" => 3.75, "desc" =>  "1x4GB SSD"},
+    "m3.large"       => {"vcpu" =>   2, "mem" =>  7.5, "desc" =>  "1x32GB SSD"},
+    "m3.xlarge"      => {"vcpu" =>   4, "mem" =>   15, "desc" =>  "2x40GB SSD"},
+    "m3.2xlarge"     => {"vcpu" =>   8, "mem" =>   30, "desc" =>  "2x80GB SSD"},
+    "c4.large"       => {"vcpu" =>   2, "mem" => 3.75, "desc" =>  "500Mbps EBS, EBS backend"},
+    "c4.xlarge"      => {"vcpu" =>   4, "mem" =>  7.5, "desc" =>  "750Mbps EBS, EBS backend"},
+    "c4.2xlarge"     => {"vcpu" =>   8, "mem" =>   15, "desc" =>  "1Gbps EBS, EBS backend"},
+    "c4.4xlarge"     => {"vcpu" =>  16, "mem" =>   30, "desc" =>  "2Gbps EBS, EBS backend"},
+    "c4.8xlarge"     => {"vcpu" =>  32, "mem" =>   60, "desc" =>  "4Gbps EBS, EBS backend"},
+    "c3.large"       => {"vcpu" =>   2, "mem" => 3.75, "desc" =>  "2x16GB SSD"},
+    "c3.xlarge"      => {"vcpu" =>   4, "mem" =>  7.5, "desc" =>  "2x40GB SSD"},
+    "c3.2xlarge"     => {"vcpu" =>   8, "mem" =>   15, "desc" =>  "2x80GB SSD"},
+    "c3.4xlarge"     => {"vcpu" =>  16, "mem" =>   30, "desc" =>  "2x160GB SSD"},
+    "c3.8xlarge"     => {"vcpu" =>  32, "mem" =>   60, "desc" =>  "2x320GB SSD"},
+    "x1.32xlarge"    => {"vcpu" => 128, "mem" => 1952, "desc" =>  "2x1920GB SSD, 10Gbps EBS"},
+    "r3.large"       => {"vcpu" =>   2, "mem" => 15.25, "desc" =>  "1x32GB SSD"},
+    "r3.xlarge"      => {"vcpu" =>   4, "mem" => 30.5, "desc" =>  "1x80GB SSD"},
+    "r3.2xlarge"     => {"vcpu" =>   8, "mem" =>   61, "desc" =>  "1x160GB SSD"},
+    "r3.4xlarge"     => {"vcpu" =>  16, "mem" =>  122, "desc" =>  "1x320GB SSD"},
+    "r3.8xlarge"     => {"vcpu" =>  32, "mem" =>  244, "desc" =>  "2x320GB SSD"},
+    "g2.2xlarge"     => {"vcpu" =>   8, "mem" =>   15, "desc" =>  "1 GPU (Kepler, GK104), 1x60GB SSD"},
+    "g2.8xlarge"     => {"vcpu" =>  32, "mem" =>   60, "desc" =>  "4 GPUs (Kepler, GK104), 2x120GB SSD"},
+    "i2.xlarge"      => {"vcpu" =>   4, "mem" => 30.5, "desc" =>  "1x800GB SSD"},
+    "i2.2xlarge"     => {"vcpu" =>   8, "mem" =>   61, "desc" =>  "2x800GB SSD"},
+    "i2.4xlarge"     => {"vcpu" =>  16, "mem" =>  122, "desc" =>  "4x800GB SSD"},
+    "i2.8xlarge"     => {"vcpu" =>  32, "mem" =>  244, "desc" =>  "8x800GB SSD"},
+    "d2.xlarge"      => {"vcpu" =>   4, "mem" => 30.5, "desc" =>  "3x2TB HDD"},
+    "d2.2xlarge"     => {"vcpu" =>   8, "mem" =>   61, "desc" =>  "6x2TB HDD"},
+    "d2.4xlarge"     => {"vcpu" =>  16, "mem" =>  122, "desc" =>  "12x2TB HDD"},
+    "d2.8xlarge"     => {"vcpu" =>  36, "mem" =>  244, "desc" =>  "24x2TB HDD"},
+    "p2.xlarge"      => {"vcpu" =>   4, "mem" =>   61, "desc" =>  "1GPU (K80, 12GB)"},
+    "p2.8xlarge"     => {"vcpu" =>  32, "mem" =>  488, "desc" =>  "8GPU (K80, 12GB), 10Gb network"},
+    "p2.16xlarge"    => {"vcpu" =>  64, "mem" =>  732, "desc" =>  "16GPU (K80, 12GB), 20Gb network"}
+);
+
+our @trusted_ami_owners = (
+    'amazon',         # Amazon, of course
+    '309956199498',   # RedHat
+    '099720109477'    # Ubuntu
+);
+
+# Prototypes
+sub cmd_cache_image();
+sub cmd_create(@);
+sub cmd_delete(@);
+sub cmd_fw(@);
+sub cmd_help($);
+sub cmd_images();
+sub cmd_list(@);
+sub cmd_mosh($@);
+sub cmd_scp($$);
+sub cmd_setdns($$);
+sub cmd_show($);
+sub cmd_ssh($$@);
+sub cmd_stop(@);
+sub cmd_update(@);
+sub convert_region_nick_name($);
+sub create_new_instance($$$$$$$@);
+sub create_instance_interactively();
+sub ensure_command($);
+sub error_if_jq_result_is_too_small(@);
+sub exec_and_print_in_format($$$$;$);
+sub exec_and_print_in_format_original_csv($$$$;$);
+sub exec_and_return_array($$);
+sub exec_and_return_json($$);
+sub exec_and_exit_if_error($$);
+sub exec_with_retry_and_exit_if_error($$$$);
+sub save_to_tmp_file_and_return_file_name(@);
+sub get_effective_region_name();
+sub get_image_info_cache_file_name();
+sub get_instance_id_from_name($);
+sub get_security_group_id_from_name($);
+sub get_quick_image_file_name();
+sub is_region_name_sane($);
+sub is_valid_cidr($);
+sub is_valid_private_cidr($);
+sub normalize_cidr($);
+sub print_valid_cidr_examples();
+sub save_to_tmp_file_and_return_file_name(@);
+
+# Program starts here
+GetOptions(
+    "json"       => \$flag_output_json,
+    "csv"        => \$flag_output_csv,
+    "pretty|p"   => \$flag_output_pretty,
+    "raw"        => \$flag_output_raw,
+    "noheader"   => \$flag_no_header,
+    "dry|n"      => \$flag_dry_run,
+    "verbose"    => \$flag_verbose,
+    "force"      => \$flag_force,
+    "help"       => \$flag_help,
+    "man"        => \$flag_man,
+    "region=s"   => \$param_region,
+    "debug"      => \$debug,
+    "leavefile"  => \$debug_leave_file
+);
+
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man; 
+
+# Parameter defaulting
+if(defined $param_region) {
+    $param_region = convert_region_nick_name($param_region);
+    unless(is_region_name_sane($param_region)) {
+        print STDERR "ERROR: region name '" . $param_region . "' is unknown.\n";
+        exit 1;
+    }
+    $ENV{'AWS_DEFAULT_REGION'} = $param_region;
+    print STDERR "AWS_DEFAULT_REGION is set to '$param_region'\n" if($debug);
+}
+unless($flag_output_raw || $flag_output_csv || $flag_output_json || $flag_output_pretty) {
+    $flag_output_pretty = 1;
+}
+our $ec2_flag_dry_run = "";
+$ec2_flag_dry_run = "--dry-run " if($flag_dry_run);
+
+# Process a subcommand
+my $subcommand = shift;
+cmd_help(undef) unless(defined $subcommand);
+if($subcommand =~ m|^help$|i) {
+    my $subsubcmd = shift;
+    cmd_help($subsubcmd);
+}
+ensure_command('aws');
+ensure_command('jq');
+ensure_command('csvgrep');
+ensure_command('csvlook');
+ensure_aws_credential();
+if($subcommand =~ m|^show$|i) {
+    my $type = shift;
+    cmd_show($type);
+}
+if($subcommand =~ m|^list$|i) {
+    my @subcmds = @ARGV;
+    cmd_list(@subcmds);
+    exit 0; # cmd_list() does not exists although other cmd_*() calls exit()
+}
+cmd_images() if($subcommand =~ m|^images?$|i);
+if($subcommand =~ m|^(r?ssh)$|i) {
+    my $ssh_cmd_name = $1;
+    my $hostname = shift;
+    cmd_ssh($hostname, $ssh_cmd_name);
+}
+if($subcommand =~ m|^scp$|i) {
+    my $src = shift;
+    my $dest = shift;
+    cmd_scp($src, $dest);
+}
+if($subcommand =~ m|^mosh$|i) {
+    my $hostname = shift;
+    cmd_mosh($hostname);
+}
+if($subcommand =~ m|^setdns$|i) {
+    my $hostname = shift;
+    my $domainname = shift;
+    cmd_setdns($hostname, $domainname);
+}
+if($subcommand =~ m|^create$|i) {
+    my @subcmds = @ARGV;
+    cmd_create(@subcmds);
+}
+if($subcommand =~ m|^stop$|i) {
+    my @subcmds = @ARGV;
+    cmd_stop(@subcmds);
+}
+if($subcommand =~ m|^delete$|i) {
+    my @subcmds = @ARGV;
+    cmd_delete(@subcmds);
+}
+if($subcommand =~ m|^fw$|i) {
+    my @subcmds = @ARGV;
+    cmd_fw(@subcmds);
+}
+if($subcommand =~ m|^update$|i) {
+    my @subcmds = @ARGV;
+    cmd_update(@subcmds);
+}
+if($subcommand =~ m|^terminate$|i) {
+    my @subcmds = @ARGV;
+    cmd_terminate(@subcmds);
+}
+
+print STDERR "Unknown Subcommand '$subcommand'.\n";
+print STDERR "Type 'taw help' to list the available subcommands.\n";
+exit 1;
+
+sub cmd_help($)
+{
+    my $subcommand = shift;
+    unless(defined $subcommand) {
+        print STDERR "Usage: taw <subcommand> [options..] [arguments..]\n\n";
+        print STDERR "Subcommands:\n";
+        print STDERR "\thelp\tthis message\n";
+        print STDERR "\tlist\tlist various info (eg, instances)\n";
+        print STDERR "\tfw\tshow/modify firewall rules\n";
+        print STDERR "\tssh\tssh to a specified instance\n";
+        print STDERR "\trssh\trssh to a specified instance\n";
+        print STDERR "\tscp\tscp to a specified instance\n";
+        print STDERR "\tmosh\tmosh to a specified instance\n";
+        print STDERR "\tsetdns\tset an A record to DNS (hosted by Route 53)\n";
+        print STDERR "\timages\tlist the images\n";
+        print STDERR "\tcreate\tcreate something such as a new instance\n";
+        print STDERR "\tshow\tshow various info (eg, the region names)\n";
+        print STDERR "\nGlobal options:\n";
+        print STDERR "\t--debug\tenable debugging. (may be helpful when debugging)\n";
+        print STDERR "\t--region\tspecify the region to work with\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^list$|i) {
+        print STDERR "Usage: taw list [object] [options..]\n\n";
+        print STDERR "Available objects are:\n";
+        print STDERR "\tinstances\tinstances. this is the default.\n";
+        print STDERR "\tvpc\tVPCs\n";
+        print STDERR "\tfw\tFirewall rules\n";
+        print STDERR "\n";
+        print STDERR "Options:\n";
+        print STDERR "\t-csv\toutput in CSV\n";
+        print STDERR "\t-v\tverbose output\n";
+        print STDERR "\t-n\tno header (works only when -csv is given)\n";
+        print STDERR "\t-json\toutput in JSON\n";
+        print STDERR "\t-pretty\toutput in pretty table (may need a wide screen)\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^create$|i) {
+        print STDERR "Usage: taw create <target> [target specific options...]\n\n";
+        print STDERR "Create a new instance by giving parameters:\n";
+        print STDERR "\ttaw create inst[ance] <name> <ami-id/quickimage-name> <key-name> <subnet> <security-group> <ip-type> [options...] [-- additional options for aws ec2 run-instances]\n";
+        print STDERR "\tAdditional options you might be interested in are:\n";
+        print STDERR "\t\t--disable-api-termination | --enable-api-termination\tdisable or enable API termination (default: disabled).\n";
+        print STDERR "\t\t--instance-initiated-shutdown-behavior <stop|terminate>\tstop or terminate when shutdown.\n";
+        print STDERR "\t\t--private-ip-address <IP>\tgive a specific private IP address.\n";
+        print STDERR "\t\t--client-token <token>\tspecify a client token for idempotency.\n";
+        print STDERR "\t\t--ebs-optimized | --no-ebs-optimized\toptimize EBS I/O. (costs more money!)\n";
+        print STDERR "\teg) taw create instance web1 ami-0123abcd mysshkey default\n\n";
+        print STDERR "Create a new instance interactively:\n";
+        print STDERR "\ttaw create iinst[ance]\n\n";
+        print STDERR "Create a new VPC:\n";
+        print STDERR "\ttaw create vpc <CIDR>\n";
+        print STDERR "\teg) taw create vpc 172.16.0.0/16\n\n";
+        print STDERR "Create a new subnet:\n";
+        print STDERR "\ttaw create subnet <VPC ID> <CIDR> [Availability Zone (AZ)]\n";
+        print STDERR "\teg) taw create subnet vpc-27583914 172.16.4.0/24 ap-northeast-1c\n\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^delete$|i) {
+        print STDERR "Usage: taw delete <target> [target specific options...]\n\n";
+        print STDERR "Delete an instance:\n";
+        print STDERR "\ttaw delete instance <name> [options...] [-- additional options for aws ec2 run-instances]\n\n";
+        print STDERR "Delete a VPC:\n";
+        print STDERR "\ttaw delete vpc <VPC ID>\n";
+        print STDERR "\teg) taw delete vpc vpc-27583914\n\n";
+        print STDERR "Delete a new subnet:\n";
+        print STDERR "\ttaw delete subnet <Subnet ID>\n";
+        print STDERR "\teg) taw delete subnet subnet-553bc60d\n\n";
+        print STDERR "Delete an allocated IP:\n";
+        print STDERR "\ttaw delete ip <Allocation ID>\n\n";
+        print STDERR "\teg) taw delete ip eipalloc-35983145\n\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^(r?ssh)$|i) {
+        my $cmd_name = $1;
+        print STDERR "Usage: taw $cmd_name <name> [options...] [-- options for SSH]\n\n";
+        print STDERR "Example:\n";
+        print STDERR "\ttaw $cmd_name foo --region=california -- -l myuser -I ~/.ssh/mykey.pem\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^mosh$|i) {
+        print STDERR "Usage: taw mosh <name> [options...] [-- options for mosh]\n\n";
+        print STDERR "Example:\n";
+        print STDERR "\ttaw mosh foo --region=california -- -l myuser\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^scp$|i) {
+        print STDERR "Usage: taw scp <src> <dest> [options...] [-- options for scp]\n\n";
+        print STDERR "Example:\n";
+        print STDERR "\ttaw scp local.dir awsnodename:/home/ec2user/ -- -r\n";
+        print STDERR "\ttaw scp awsnodename:/home/ec2user/test.conf ./\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^setdns$|i) {
+        print STDERR "Usage: taw setdns <name> <full domain name> [-- options for cli53]\n";
+        print STDERR "       taw setdns <IP address> <full domain name> [-- options for cli53]\n\n";
+        print STDERR "Example:\n";
+        print STDERR "\ttaw setdns nginxinstance www.example.com -- --ttl 3600 --weight 10 --replace\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^images$|i) {
+        print STDERR "Usage: taw images\n\n";
+        print STDERR "Options:\n";
+        print STDERR "\tNone available\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^show$|i) {
+        print STDERR "Usage: taw show <type>\n\n";
+        print STDERR "The types include 'region', 'key', 'quickimage', 'instancetype'.\n";
+        print STDERR "Options:\n";
+        print STDERR "\tNone available\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^fw$|i) {
+        print STDERR "Usage: taw fw add <name (or ID)> tcp <port> <cidr>\n";
+        print STDERR "       taw fw add <name (or ID)> udp <port> <cidr>\n";
+        print STDERR "       taw fw add <name (or ID)> icmp <cidr>\n";
+        print STDERR "       taw fw remove <name (or ID)> tcp <port> <cidr>\n";
+        print STDERR "       taw fw remove <name (or ID)> udp <port> <cidr>\n";
+        print STDERR "       taw fw remove <name (or ID)> icmp <cidr>\n";
+        print STDERR "Options:\n";
+        print STDERR "\tNone available\n";
+        print_valid_cidr_examples();
+        exit 0;
+    }
+    if($subcommand =~ m|^update$|i) {
+        print STDERR "Usage: taw update <update target>\n\n";
+        print STDERR "Valid update targets are:\n";
+        print STDERR "\tcache\tImage (AMI names) cache\n";
+        exit 0;
+    }
+    if($subcommand =~ m|^terminate$|i) {
+        print STDERR "Usage: taw terminate <instance names/IDs> [--force]\n\n";
+        print STDERR "Run 'taw terminate' first to show an actual command line to terminate instances.\n";
+        print STDERR "Next add '--force' to execute it.\n";
+        exit 0;
+    }
+    print STDERR "Unknown Subcommand '$subcommand'.\n";
+    print STDERR "Type 'taw help' to list the available subcommands.\n";
+    exit 0;
+}
+
+sub cmd_update(@)
+{
+    my @subcmds = @_;
+    print STDERR "CMD_UPDATE\n" if($debug);
+    my $subsubcmd = shift(@subcmds);
+    if($subsubcmd =~ m|^cache$|i) {
+        cmd_cache_image();
+        exit 0;
+    } elsif(defined $subsubcmd) {
+        print STDERR "Unknown update target '$subsubcmd'\n";
+        exit 1;
+    } else {
+        print STDERR "Usage: taw update <update target>\n";
+        print STDERR "'taw help update' for details.\n";
+        exit 0;
+    }
+}
+
+sub cmd_list(@)
+{
+    my @args = @_;
+    my $list_target = shift(@args);
+    $list_target = 'instance' unless(defined $list_target);
+    print STDERR "CMD_LIST '$list_target'\n" if($debug);
+    if($list_target =~ m|^i(n(s(t(ances?)?)?)?)?$|) {
+        my $cmd = "aws ec2 describe-instances $ec2_flag_dry_run";
+        my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
+        my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
+        print "TMPFILE: $tmpfile\n" if($debug);
+        my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | " .
+                   "{id: .InstanceId, state: .State.Name, pubip: .PublicIpAddress, name: (.Tags // [{Key: \"Name\", Value: \"(no name)\"}]) | .[] | select(.Key==\"Name\").Value, " .
+                   "key: .KeyName, type: .InstanceType, reason: .StateReason.Message, az: .Placement.AvailabilityZone, " .
+                   "sg: .SecurityGroups[0].GroupName, subnet: .SubnetId, vpc: .VpcId, tags: (.Tags // []) | map(\"\\(.Key)=\\(.Value)\") | join(\",\")" .
+                   "} else {noinstance: \"No instances\"} end'";
+        exec_and_print_in_format($ncmd, "jq/json2csv/csvlook had an error.", [qw(id state name type az sg)], [qw(id state name pubip key type az reason sg subnet vpc tags)]);
+        unlink($tmpfile) unless($debug_leave_file);
+    } elsif($list_target =~ m|^v(pc?)?$|i) {
+        my $ncmd = "aws ec2 describe-vpcs $ec2_flag_dry_run | jq -c '.Vpcs[]'";
+        exec_and_print_in_format($ncmd, "cannot list VPCs", [qw(VpcId State CidrBlock IsDefault)], undef);
+    } elsif($list_target =~ m|^s(ub(n(ets?)?)?)?$|i) {
+        my $ncmd = "aws ec2 describe-subnets $ec2_flag_dry_run | jq -c '.Subnets[]'";
+        exec_and_print_in_format($ncmd, "cannot list subnets", [qw(SubnetId VpcId CidrBlock State AvailabilityZone)], undef);
+    } elsif($list_target =~ m|^fw$|i) {
+        my $group_or_id = shift(@args);
+        my $cmd = "aws ec2 describe-security-groups $ec2_flag_dry_run | jq -c ";
+        if(defined $group_or_id) {
+            $cmd .= "'.SecurityGroups[] | select(.GroupName==\"$group_or_id\" or .GroupId==\"$group_or_id\") | .IpPermissions[] | " .
+                    "{Prot: .IpProtocol, Port: (if .FromPort == .ToPort then .FromPort | tostring else [.FromPort,.ToPort] | " .
+                    "map(tostring) | join(\"-\") end), Ranges: .IpRanges | map(.CidrIp) | join(\",\")}'";
+            exec_and_print_in_format($cmd, "Failed to list security groups", [qw(Prot Port Ranges)], undef);
+        } else {
+            $cmd .= "'.SecurityGroups[] | {ID: .GroupId, Name: .GroupName, Desc: .Description, Permission: .IpPermissions} '";
+            exec_and_print_in_format($cmd, "Failed to list security groups", [qw(ID Name Desc)], undef);
+        }
+    } elsif($list_target =~ m{^(az|availabilityzone)$}i) {
+        my $ncmd = "aws ec2 describe-availability-zones $ec2_flag_dry_run | jq -c '.AvailabilityZones[]'";
+        exec_and_print_in_format($ncmd, "cannot list availability zones", [qw(RegionName ZoneName State Messages)], [qw(RegionName ZoneName State Messages)]);
+    } elsif($list_target =~ m{^(ip|addresse?)s?$}i) {
+        my $ncmd = "aws ec2 describe-addresses $ec2_flag_dry_run | jq -c '.Addresses[] | .InstanceId=.InstanceId? | .PrivateIpAddress=.PrivateIpAddress?'";
+        exec_and_print_in_format($ncmd, "cannot list IP addresses", [qw(PublicIp InstanceId PrivateIpAddress AllocationId)], undef);
+    } else {
+        print STDERR "Unknown target '$list_target'\n";
+        print STDERR "If $list_target can be shown without querying to Amazon EC2,\n";
+        print STDERR "'taw show $list_target' might be the one you expected.\n";
+        exit 1;
+    }
+}
+
+# This sub is used to execute a command line that outputs JSON, and turns it into a format specified by command line
+sub exec_and_print_in_format($$$$;$)
+{
+    my ($command_line, $message_on_error, $columns_to_show, $columns_to_show_with_verbose_option, $expect_no_output) = @_;
+    my @columns_to_show;
+    if($flag_verbose) {
+        @columns_to_show = @{$columns_to_show_with_verbose_option} if(defined $columns_to_show_with_verbose_option);
+    } else {
+        @columns_to_show = @{$columns_to_show} if(defined $columns_to_show);
+    }
+    if($flag_output_csv || $flag_output_pretty) {
+        ensure_command('csvlook') if($flag_output_pretty);
+        $command_line .= "| json2csv";
+        if($expect_no_output) {
+            $command_line .= " -z Success";
+        } else {
+            $command_line .= " -z NotFound";
+        }
+        if(0 < @columns_to_show) {
+            $command_line .= " -c " . join(',', @columns_to_show);
+        }
+        $command_line .= " -n" if($flag_no_header);
+        $command_line .= " | csvlook" if($flag_output_pretty);
+        $command_line .= " -H" if($flag_output_pretty && $flag_no_header);
+    } elsif($flag_output_json) {
+        $command_line .= " | jq -c '{";
+        $command_line .= join(', ', map {"\"$_\": .$_"} @columns_to_show);
+        $command_line .= "}'";
+    }
+    exec_and_exit_if_error($command_line, $message_on_error);
+}
+
+# This sub is used to execute a command line that outputs *CSV*, and turns it into a format specified by command line
+sub exec_and_print_in_format_original_csv($$$$;$)
+{
+    my ($command_line, $message_on_error, $columns_to_show, $columns_to_show_with_verbose_option, $need_pipe) = @_;
+    my @columns_to_show;
+    if($flag_verbose) {
+        @columns_to_show = @{$columns_to_show_with_verbose_option} if(defined $columns_to_show_with_verbose_option);
+    } else {
+        @columns_to_show = @{$columns_to_show} if(defined $columns_to_show);
+    }
+    if($flag_output_csv || $flag_output_pretty) {
+        ensure_command('csvlook') if($flag_output_pretty);
+        if(0 < @columns_to_show) {
+            ensure_command('csvcut');
+            $command_line .= " | csvcut -c " . join(',', @columns_to_show);
+        }
+        $command_line .= " -n" if($flag_no_header);
+        $command_line .= " | csvlook" if($flag_output_pretty);
+        $command_line .= " -H" if($flag_output_pretty && $flag_no_header);
+    } elsif($flag_output_json) {
+        ensure_command('csv-to-json');
+        $command_line .= " | csv-to-json";
+    }
+    unless($need_pipe) {
+        exec_and_exit_if_error($command_line, $message_on_error);
+        return 1;
+    } else {
+        my $fh;
+        print "DEBUG: EXE: $command_line\n" if($debug);
+        unless(open($fh, "| " . $command_line)) {
+            print STDERR "ERROR: $message_on_error\n";
+            exit 1;
+        }
+        return $fh;
+    }
+}
+
+sub cmd_create(@)
+{
+    my @args = @_;
+    my $subcmd = shift(@args);
+    # NOTE: we don't allow fluctuation in the subcmd string.
+    #       any create command usually costs more money,
+    #       so we need to take an extra caution for safety.
+    unless(defined $subcmd) {
+        print STDERR "Usage: taw create <target> [target specific options...]\n";
+        print STDERR "       target is one of instance, vpc, subnet\n";
+        exit 1;
+    }
+    if($subcmd eq 'instance' || $subcmd eq 'inst') {
+        my $a1 = shift(@args);
+        my $a2 = shift(@args);
+        my $a3 = shift(@args);
+        my $a4 = shift(@args);
+        my $a5 = shift(@args);
+        my $a6 = shift(@args);
+        my $a7 = shift(@args);
+        create_new_instance($a1, $a2, $a3, $a4, $a5, $a6, $a7, @args);
+    } elsif($subcmd eq 'instanceinteractive' || $subcmd eq 'iinstance' || $subcmd eq 'iinst') {
+        create_instance_interactively();
+    } elsif($subcmd eq 'vpc') {
+        my $cidr = shift(@args);
+        unless(defined $cidr) {
+            print STDERR "Usage: taw create vpc <CIDR>\n";
+            exit 1;
+        }
+        unless(is_valid_cidr($cidr)) {
+            print STDERR "'$cidr' doesn't look like a valid CIDR.\n";
+            print STDERR "e.g.: 10.0.0.0/16\n";
+            exit 1;
+        }
+        unless(is_valid_private_cidr($cidr)) {
+            print STDERR "'$cidr' doesn't look like a private IP address range.\n";
+            print STDERR "Private IP ranges are:\n";
+            print STDERR "\t192.168.0.0 - 192.168.255.255\n";
+            print STDERR "\t172.16.0.0 - 172.31.255.255\n";
+            print STDERR "\t10.0.0.0 - 10.255.255.255\n";
+            exit 1;
+        }
+        my $ncmd = "aws ec2 create-vpc $ec2_flag_dry_run --cidr-block $cidr | jq -c .Vpc";
+        exec_and_print_in_format($ncmd, "Cannot create a new VPC block", undef, undef, 1);
+    } elsif($subcmd eq 'subnet') {
+        my $vpc_id = shift(@args);
+        my $cidr = shift(@args);
+        my $az = shift(@args);
+        unless(defined $vpc_id && defined $cidr) {
+            print STDERR "Usage: taw create subnet <VPC ID> <CIDR> [AZ]\n";
+            exit 1;
+        }
+        unless(is_valid_cidr($cidr)) {
+            print STDERR "'$cidr' doesn't look like a valid CIDR. Also, it must be within the range of the VPC.\n";
+            print STDERR "e.g.: 10.0.0.0/16\n";
+            exit 1;
+        }
+        my $ncmd = "aws ec2 create-subnet $ec2_flag_dry_run --vpc-id $vpc_id --cidr-block $cidr";
+        $ncmd .= " --availability-zone $az" if(defined $az);
+        exec_and_print_in_format($ncmd, "Cannot create a new subnet", undef, undef, 1);
+    } else {
+        print STDERR "Unknown target '$subcmd'\n";
+        exit 1;
+    }
+    exit 0;
+}
+
+sub cmd_delete(@)
+{
+    my @args = @_;
+    my $subcmd = shift(@args);
+    # NOTE: we don't allow fluctuation in the subcmd string.
+    #       any delete command might be disasterous.
+    #       so we need to take an extra caution for safety.
+    if($subcmd eq 'instance') {
+        print "Not yet implemented.\n"; exit 1;
+    } elsif($subcmd eq 'vpc') {
+        my $vpc_id = shift(@args);
+        my $ncmd = "aws ec2 delete-vpc $ec2_flag_dry_run --vpc-id $vpc_id";
+        exec_and_print_in_format($ncmd, "Cannot create a new VPC block", undef, undef, 1);
+    } elsif($subcmd eq 'subnet') {
+        my $subnet_id = shift(@args);
+        my $ncmd = "aws ec2 delete-subnet $ec2_flag_dry_run --subnet-id $subnet_id";
+        exec_and_print_in_format($ncmd, "Cannot create a new subnet", undef, undef, 1);
+    } elsif($subcmd eq 'ip') {
+        my $allocation_id = shift(@args);
+        my $ncmd = "aws ec2 release-address $ec2_flag_dry_run --allocation-id $allocation_id";
+        exec_and_print_in_format($ncmd, "Cannot remove IP", undef, undef, 1);
+    } else {
+        print STDERR "Unknown target '$subcmd'\n";
+        exit 1;
+    }
+    exit 0;
+}
+
+sub get_instance_ids_from_names(@)
+{
+    my @instance_names = @_;
+    my $at_least_one_id_found = 0;
+    my @retval = ();
+    for my $id_name (@instance_names) {
+        my $real_id = get_instance_id_from_name($id_name);
+        if(exists $real_id->{id}) {
+            push(@retval, $real_id->{id});
+            $at_least_one_id_found = 1;
+        } else {
+            print STDERR "ERROR: cannot find the instance id of '$id_name'\n";
+            exit 1;
+        }
+    }
+    return @retval;
+}
+
+sub cmd_terminate(@)
+{
+    my @args = @_;
+    my $cmd = "aws ec2 terminate-instances $ec2_flag_dry_run --instance-ids ";
+    my @converted_instance_ids = get_instance_ids_from_names(@args);
+    unless(0 < @converted_instance_ids) {
+        print STDERR "Usage: taw terminate <host names/instance IDs>\n";
+        exit 1;
+    }
+    $cmd .= join(' ', @converted_instance_ids);
+    $cmd .= " | jq -c " .
+            "'.TerminatingInstances[] | {InstanceId: .InstanceId, Current: .CurrentState.Name, Previous: .PreviousState.Name}'";
+    if($flag_force) {
+        exec_and_print_in_format($cmd, "Cannot terminate instance(s)", [qw(InstanceId Current Previous)], undef, 1);
+    } else {
+        print "Please add --force to execute the following command.\n";
+        print "\t$cmd\n";
+    }
+    exit 0;
+}
+
+sub cmd_stop(@)
+{
+    my @instances = @_;
+    my $cmd = "aws ec2 stop-instances $ec2_flag_dry_run --instance-ids";
+    my @converted_instance_ids = get_instance_ids_from_names(@instances);
+    unless(0 < @converted_instance_ids) {
+        print STDERR "Usage: taw stop <host names/instance IDs>\n";
+        exit 1;
+    }
+    $cmd .= join(' ', @converted_instance_ids);
+    $cmd .= " | jq -c " .
+            "'.StoppedInstances[] | {InstanceId: .InstanceId, Current: .CurrentState.Name, Previous: .PreviousState.Name}'";
+    if($flag_force) {
+        exec_and_print_in_format($cmd, "Cannot stop instance(s)", [qw(InstanceId Current Previous)], undef, 1);
+    } else {
+        print "Please add --force to execute the following command.\n";
+        print "\t$cmd\n";
+    }
+    exit 0;
+}
+
+sub get_instance_id_from_name($)
+{
+    my $name = shift;
+    my $cmd = "aws ec2 describe-instances";
+    my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
+    my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
+    my $ncmd = "cat $tmpfile | jq -c 'if (.Reservations | length != 0) then .Reservations[].Instances[] | ";
+    $ncmd .= "{id: .InstanceId, state: .State.Name, pubdns: .PublicDnsName, pubip: .PublicIpAddress, keyname: .KeyName, " .
+              "name: (((.Tags // []) | .[] | select(.Key==\"Name\").Value) // .InstanceId), " .
+              "root: (((.Tags // []) | .[] | select(.Key == \"root\").Value) // \"\")" .
+             "} else {noinstance: \"No instances\"} end'";
+    my @jq_result = exec_and_return_array($ncmd, "jq had an error.");
+    unlink($tmpfile) unless($debug_leave_file);
+    error_if_jq_result_is_too_small(@jq_result);
+    my $first_line_json_obj = decode_json($jq_result[0]);
+    if(exists $first_line_json_obj->{"noinstance"}) {
+        return undef;
+    }
+    my $retval = undef;
+    for my $json_string (@jq_result) {
+        my $json_obj = decode_json($json_string);
+        print STDERR "OBJ: $json_string\n" if($debug && $debug_leave_file);
+        print STDERR "Matching '$name' with $json_obj->{'name'} ...\n" if($debug);
+        if($json_obj->{'name'} eq $name) {
+            if(defined $retval) {
+                print "WARNING: '$name' has multiple candidates.\n";
+                print "         For example, $retval->{'id'} and $json_obj->{'id'} have the same name.\n";
+                return undef; # return undef if multiple instances hit the keyword
+            }
+            $retval = $json_obj;
+        }
+    }
+    return $retval;
+}
+
+sub get_security_group_id_from_name($)
+{
+    my $group_or_id = shift;
+    my $cmd = "aws ec2 describe-security-groups";
+    my @awscli_result = exec_and_return_array($cmd, "awscli had an error");
+    my $tmpfile = save_to_tmp_file_and_return_file_name(@awscli_result);
+    print "TMPFILE: $tmpfile\n" if($debug);
+    my $ncmd = "cat $tmpfile | jq -c '.SecurityGroups[] | select(.GroupName==\"$group_or_id\" or .GroupId==\"$group_or_id\") | .GroupId // \"noinstance\"'";
+    my @jq_result = exec_and_return_array($ncmd, "jq had an error.");
+    unlink($tmpfile) unless($debug_leave_file);
+    error_if_jq_result_is_too_small(@jq_result);
+    my $result = $jq_result[0]; chomp $result;
+    return undef if($result eq 'noinstance');
+    return $result;
+}
+
+sub get_quick_image_file_name()
+{
+    return $ENV{'HOME'} . "/.aws/images.csv";
+}
+
+sub cmd_ssh($$@)
+{
+    print STDERR "CMD_SSH\n" if($debug);
+    my ($name, $ssh_cmd_name, @other_opts) = @_;
+    unless(defined $name) {
+        print STDERR "ERROR: taw $ssh_cmd_name to where?\n";
+        print STDERR "       Type 'taw help $ssh_cmd_name' for help.\n";
+        exit 1;
+    }
+    if($debug) {
+        print STDERR "SSH($ssh_cmd_name) to $name\n";
+        print STDERR "Arguments are:\n\t";
+        print STDERR join("\n\t", @ARGV), "\n";
+    }
+    my $instance_json = get_instance_id_from_name($name);
+    unless(defined $instance_json) {
+        print STDERR "ERROR: No such instance (name '$name') available\n";
+        exit 1;
+    }
+    print "SSH to $instance_json->{pubip}\n" if($debug);
+    print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
+    my $root_account = $instance_json->{root};
+    if($root_account eq '') {
+        unless(grep {$_ eq '-l'} @other_opts) {
+            print STDERR "WARNING: The instance does not have a tag 'root', so the root user name is defaulted to 'ec2-user'.\n";
+        }
+        $root_account = "ec2-user";
+    }
+    unless($instance_json->{pubip}) {
+        print STDERR "ERROR: The instance does not have a public IP.\n";
+        exit 1;
+    }
+    my $cmd = "$ssh_cmd_name $instance_json->{pubip} -l $root_account ";
+    {
+        my $key_file = $ENV{'HOME'} . "/.ssh/" . $instance_json->{keyname} . ".pem";
+        print STDERR "Try key file : $key_file\n" if($debug);
+        if(-e $key_file) {
+            $cmd .= "-i $key_file ";
+        }
+    }
+    $cmd .= join(' ', @other_opts); # TODO: shell escaping
+    print STDERR "CMD: $cmd\n" if($debug);
+    system $cmd;
+    if($? == 127) {
+        # User pushed CTRL+D
+    } elsif($? >> 8) {
+        my $exit_code = $? >> 8;
+        if($exit_code != 255) {
+            print STDERR "taw: an error occurred. exit = $exit_code\n";
+            exit $exit_code;
+        }
+    }
+    exit 0;
+}
+
+sub cmd_mosh($@)
+{
+    print STDERR "CMD_MOSH\n" if($debug);
+    my ($name, @other_opts) = @_;
+    unless(defined $name) {
+        print STDERR "ERROR: taw mosh to where?\n";
+        print STDERR "       Type 'taw help mosh' for help.\n";
+        exit 1;
+    }
+    if($debug) {
+        print STDERR "mosh to $name\n";
+        print STDERR "Arguments are:\n\t";
+        print STDERR join("\n\t", @ARGV), "\n";
+    }
+    my $instance_json = get_instance_id_from_name($name);
+    unless(defined $instance_json) {
+        print STDERR "ERROR: No such instance (name '$name') available\n";
+        exit 1;
+    }
+    print "MOSH to $instance_json->{pubip}\n" if($debug);
+    print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
+    my $root_account = $instance_json->{root}; $root_account = "ec2-user" if($root_account eq '');
+    my $cmd = "mosh $instance_json->{pubip} --ssh 'ssh -l $root_account";
+    {
+        my $key_file = $ENV{'HOME'} . "/.ssh/" . $instance_json->{keyname} . ".pem";
+        print STDERR "Try key file : $key_file\n" if($debug);
+        if(-e $key_file) {
+            $cmd .= " -i $key_file";
+        }
+    }
+    $cmd .= "' ";
+    $cmd .= join(' ', @other_opts); # TODO: shell escaping
+    print STDERR "CMD: $cmd\n" if($debug);
+    system $cmd;
+    if($? == 127) {
+        # User pushed CTRL+D
+    } elsif($? >> 8) {
+        print STDERR "taw: an error occurred.\n";
+        exit ($? >> 8);
+    }
+    exit 0;
+}
+
+sub cmd_scp($$)
+{
+    my ($src, $dest) = @_;
+    print STDERR "CMD_SCP $src $dest\n" if($debug);
+    unless(defined $src && defined $dest) {
+        print STDERR "ERROR: taw scp to where?\n";
+        print STDERR "       Type 'taw help scp' for help.\n";
+        exit 1;
+    }
+    my $ctca = $src =~ /:/; my $ctcb = $dest =~ /:/;
+    unless($ctca ^ $ctcb) {
+        print STDERR "ERROR: either of the source or the destination must be remote.\n";
+        print STDERR "       Use the normal cp for local copy.\n";
+        exit 1;
+    }
+    if($debug) {
+        print STDERR "SCP from $src TO $dest\n";
+        print STDERR "Arguments are:\n\t";
+        print STDERR join("\n\t", @ARGV), "\n";
+    }
+    my $key_name;
+    if($src =~ m|^(.*?):(.*)$|) {
+        my ($name, $path) = ($1, $2);
+        my $instance_json = get_instance_id_from_name($name);
+        unless(defined $instance_json) {
+            print STDERR "ERROR: No such instance (name '$name') available\n";
+            exit 1;
+        }
+        print "SCP SRC $instance_json->{pubip}\n";
+        print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
+        my $root_account = $instance_json->{root}; $root_account = "ec2-user" if($root_account eq '');
+        $src = "$root_account\@$instance_json->{pubip}:$path";
+        $key_name = $instance_json->{keyname};
+    }
+    if($dest =~ m|^(.*?):(.*)$|) {
+        my ($name, $path) = ($1, $2);
+        my $instance_json = get_instance_id_from_name($name);
+        unless(defined $instance_json) {
+            print STDERR "ERROR: No such instance (name '$name') available\n";
+            exit 1;
+        }
+        print "SCP DEST $instance_json->{pubip}\n";
+        print "DEBUG: ", encode_json($instance_json), "\n" if($debug);
+        my $root_account = $instance_json->{root}; $root_account = "ec2-user" if($root_account eq '');
+        $dest = "$root_account\@$instance_json->{pubip}:$path";
+        $key_name = $instance_json->{keyname};
+    }
+    my $cmd = "scp ";
+    {
+        my $key_file = $ENV{'HOME'} . "/.ssh/" . $key_name . ".pem";
+        print STDERR "Try key file : $key_file\n" if($debug);
+        if(-e $key_file) {
+            $cmd .= "-i $key_file ";
+        }
+    }
+    $cmd .= join(' ', @ARGV); # TODO: shell escaping
+    $cmd .= " $src $dest";
+    print STDERR "CMD: $cmd\n" if($debug);
+    system $cmd;
+    if($? == 127) {
+        # User pushed CTRL+D
+    } elsif($? >> 8) {
+        print STDERR "taw scp: an error occurred.\n";
+        exit ($? >> 8);
+    }
+    exit 0;
+}
+
+sub error_if_jq_result_is_too_small(@)
+{
+    my @jq_result = @_;
+    if(@jq_result < 1) {
+        print STDERR "ERROR: jq ended unexpectedly (please report it to the author).\n";
+        if($debug) {
+            print STDERR "jq results:\nSTARTHERE\n";
+            print STDERR join("\n", @jq_result), "\nENDHERE\n";
+        } else {
+            print STDERR "       It might be helpful to rerun the command with --debug and include the results in the report.\n";
+        }
+        exit 1;
+    }
+}
+
+sub cmd_images()
+{
+    print STDERR "CMD_IMAGES\n" if($debug);
+    my $cmd = "aws ec2 describe-images $ec2_flag_dry_run --owners=self | jq -c '.Images[]'";
+    exec_and_print_in_format($cmd, "Cannot retrieve the image info", [qw(ImageId Name State Architecture RootDeviceType Description)], undef);
+    exit 0;
+}
+
+sub cmd_setdns($$)
+{
+    print STDERR "CMD_SETDNS\n" if($debug);
+    ensure_command("cli53");
+    my ($name, $domain) = @_;
+    unless(defined $name) {
+        print STDERR "ERROR: taw setdns for which instance?\n";
+        print STDERR "       Type 'taw help setdns' for help.\n";
+        exit 1;
+    }
+    unless($domain =~ m|^([\w\d-]+)\.(.*)$|) {
+        print STDERR "ERROR: '$domain' does not look like a domain name\n";
+        print STDERR "       Type 'taw help setdns' for help.\n";
+        exit 1;
+    }
+    my $host = $1;
+    my $zone_name = $2;
+    my $ip;
+    if($name =~ m|^(\d+)\.(\d+)\.(\d+)\.(\d+)$|) {
+        print "'$name' looks like an IP.\n" if($debug);
+        $ip = $name;
+    } else {
+        print "Query the host name '$name'\n" if($debug);
+        my $instance_json = get_instance_id_from_name($name);
+        unless(defined $instance_json) {
+            print STDERR "ERROR: No such instance (name '$name') available\n";
+            exit 1;
+        }
+        $ip = $instance_json->{'pubip'};
+        print "HOST: $host\nZONE: $zone_name\nIP: $ip\n" if($debug);
+    }
+    my $cmd = "cli53 rrcreate $zone_name $host A $ip " . join(" ", @ARGV);
+    exec_and_exit_if_error($cmd, "cli53 error.");
+    exit 0;
+}
+
+sub create_new_instance($$$$$$$@)
+{
+    my ($hostname, $image_id, $key_name, $instance_type, $subnet_id, $security_groups, $ip_type, @other_opts) = @_;
+    print STDERR "CMD_CREATE_INSTANCE\n" if($debug);
+    unless(defined $hostname && defined $image_id && defined $key_name && defined $instance_type && defined $subnet_id && defined $security_groups && defined $ip_type) {
+        print STDERR "Usage: taw create instance <unique hostname> <Image ID or Quick Image Name> <Key Name> <Instance Type> <Subnet ID> <Security Group IDs> <IP type (public/private)> [additional options ...]\n";
+        print STDERR "  Use 'taw list instance' for checking existing instances.\n";
+        print STDERR "  Use 'taw show quickimage' for showing selected official Image IDs.\n";
+        print STDERR "           (of course you can pick one from third parties, though taw cannot show such lists).\n";
+        print STDERR "  Use 'taw list image' for images of your own.\n";
+        print STDERR "  Use 'taw show instancetype' for the available instance types.\n";
+        print STDERR "  Use 'taw list subnet' for available subnets.\n";
+        print STDERR "  Use 'taw list fw' for firewall rules (security groups).\n";
+        print STDERR "  If you wish to specify more than one security group IDs, quote it and separate items by a single space.\n"; 
+        print STDERR "eg) taw create instance webserver2 ami-374db956 sshkey-1 t2.micro subnet-c6cadf8c sg-338a3a1f public\n";
+        exit 1;
+    }
+    if($ip_type ne 'public' && $ip_type ne 'private') {
+        print STDERR "IP type ('$ip_type') must be either 'public' or 'private'.\n";
+        exit 1;
+    }
+    my $existing_instance_with_the_same_name = get_instance_id_from_name($hostname);
+    if(!$flag_force && defined $existing_instance_with_the_same_name) {
+        print STDERR "ERROR: There already exists an instance with name '$hostname'\n";
+        print STDERR "       If you wish to ignore this error and if you know what you are going to do, add --force option.\n";
+        exit 1;
+    }
+    unless($flag_force || -e "$ENV{'HOME'}/.ssh/$key_name.pem") {
+        print STDERR "ERROR: The key '$key_name' does not seem to exist under ~/.ssh\n";
+        print STDERR "       If you wish to ignore this error and if you know what you are going to do, add --force option.\n";
+        exit 1;
+    }
+    my $quick_images = load_quick_images();
+    my $tag_to_add = undef;
+    for my $qimg(@$quick_images) {
+        if($qimg->{name} eq $image_id) {
+            print STDERR "Quick Image '$image_id' was found.\n" if($debug);
+            $image_id = $qimg->{imageid};
+            $tag_to_add = $qimg->{tag};
+            print STDERR "TAGS = $tag_to_add\n" if($debug);
+            last;
+        }
+    }
+    my $cmd = "aws ec2 run-instances $ec2_flag_dry_run --image-id $image_id --instance-type $instance_type --key-name $key_name --subnet-id $subnet_id --security-group-ids $security_groups";
+    if(0 < @other_opts) {
+        $cmd .= " " . join(" ", @other_opts); # NOTE: shell escape
+    }
+    # | json2csv -c InstanceType,InstanceId,State,Reason,VpcId,SubnetId,AZ,ImageId,Arch,KeyName,RootDeviceType";
+    my $ret_obj = exec_and_return_json($cmd, "Cannot create a new instance");
+    my @display_lines;
+    unless($flag_dry_run) {
+        for my $launched_instance_obj (@{$ret_obj->{Instances}}) {
+            print "INSTANCE = ", encode_json($launched_instance_obj), "\n" if($debug && $debug_leave_file);
+            print "$launched_instance_obj\n" if($debug);
+            my $instance_id = $launched_instance_obj->{InstanceId};
+            push(@display_lines, "$instance_id\n");
+            {   # Assign a name tag and other tags
+                my $ncmd = "aws ec2 create-tags --resource $instance_id --tags Key=Name,Value=$hostname";
+                if($tag_to_add) {
+                    for my $kv (split(/,/, $tag_to_add)) {
+                        my ($k, $v) = split(/\s*=\s*/, $kv);
+                        next if(!defined $k || !defined $v);
+                        $ncmd .= " Key=$k,Value=$v";
+                    }
+                }
+                exec_and_exit_if_error($ncmd, "Cannot add tags to the launched instance '$instance_id'");
+                print "Created tags.\n" if($debug);
+            }
+            # Assign a public IP if needed.
+            if($ip_type eq 'public') {
+                my $ncmd = "aws ec2 allocate-address --domain vpc";
+                my $ret_obj = exec_and_return_json($ncmd, "Cannot allocate an IP (VPC).");
+                my $allocation_id = $ret_obj->{AllocationId};
+                my $ncmd = "aws ec2 associate-address --instance-id $instance_id --allocation-id $allocation_id > /dev/null";
+                exec_with_retry_and_exit_if_error($ncmd, 10, 12, "Cannot allocate a public IP to the launched instance '$instance_id'");
+                print "Associated address.\n" if($debug);
+            }
+        }
+    }
+    my $fh = exec_and_print_in_format_original_csv("cat", "Cannot add tags and possibly IPs", undef, undef, 1);
+    print $fh "InstanceId\n";
+    for(@display_lines) { print $fh $_ }
+    close $fh;
+    exit 0;
+}
+
+sub create_instance_interactively()
+{
+    print STDERR "CMD_CREATE_INSTANCE_INTERACTIVELY\n" if($debug);
+    my $hostname;
+    while(1) {
+        $hostname = ask_with_prompt("What is a host name? (Type 'l' to list existing instances)\n", undef, undef, 0);
+        if($hostname eq 'l') {
+            cmd_list("instance");
+        } else {
+            print "Check if a host with the same name exists ...";
+            my $id_with_same_name = get_instance_id_from_name($hostname);
+            if($id_with_same_name) {
+                print "\n";
+                print STDERR "ERROR: There already is a host with the same name (instance ID: $id_with_same_name)\n"; exit 1;
+            }
+            print " done\n";
+            last;
+        }
+    }
+    print "Host name will be '$hostname'\n";
+    exit 0;
+}
+
+sub ask_with_prompt($$$$)
+{
+    my ($msg, $default_value, $prompt_str, $need_confirm) = @_;
+    $prompt_str = '> ' unless(defined $prompt_str);
+    $| = 0;
+    LONGLOOP: while(1) {
+        print $msg;
+        my $instr;
+        while(1) {
+            print $prompt_str;
+            $instr = <STDIN>;
+            chomp $instr;
+            if(defined $default_value && $instr eq '') {
+                $instr = $default_value; last;
+            }
+            last if($instr ne '');
+        }
+        unless($need_confirm) {
+            return $instr;
+        }
+        print "Your answer is '$instr' (without quotes).\nIs that OK? ([Y]/n)> ";
+        while(1) {
+            my $ans = <STDIN>; chomp $ans;
+            if($ans eq '' || $ans =~ /^y(es)?$/i) {
+                return $instr;
+            }
+            if($ans =~ /^n(o)?/i) {
+                last;
+            }
+        }
+    }
+}
+
+sub cmd_fw(@)
+{
+    my $subcmd = shift;
+    unless(defined $subcmd) {
+        print STDERR "Usage: taw fw <add|remove> <sg name|sg ID> <prot (tcp/udp/icmp> <port (omit when icmp> <cidr>\n";
+        exit 1;
+    }
+    my @rest_args = @_;
+    print STDERR "CMD_FW '$subcmd' [" . join(', ', @rest_args) . "]\n" if($debug);
+    if($subcmd eq 'add' || $subcmd eq 'remove') {
+        print STDERR "taw fw $subcmd\n" if($debug);
+        my $gr_name = shift(@rest_args);
+        my $prot = shift(@rest_args);
+        my $port = "-1";
+        if($prot eq 'tcp' || $prot eq 'udp') {
+            $port = shift(@rest_args);
+        }
+        my $cidr = shift(@rest_args);
+        if($prot =~ m{^(tcp|udp|icmp)$}i) {
+            $cidr = normalize_cidr($cidr);
+            unless(defined $cidr) {
+                print STDERR "Invalid CIDR '$cidr'\n";
+                print_valid_cidr_examples();
+                exit 1;
+            }
+            my $group_ip = get_security_group_id_from_name($gr_name);
+            my $cmd;
+            if($subcmd eq 'add') {
+                $cmd = "aws ec2 authorize-security-group-ingress $ec2_flag_dry_run --group-id $group_ip --protocol $prot --port $port --cidr $cidr";
+            } else {
+                $cmd = "aws ec2 revoke-security-group-ingress $ec2_flag_dry_run --group-id $group_ip --protocol $prot --port $port --cidr $cidr";
+            }
+            exec_and_exit_if_error($cmd, "aws error.");
+        } else {
+            print STDERR "usage: taw fw add <security group name (or ID)> <prot (tcp/udp/icmp)> <port (omit when icmp)> <cidr> \n";
+        }
+    } else {
+        print STDERR "Unkown subcommand $subcmd\n";
+        exit 1;
+    }
+    exit 0;
+}
+
+sub print_valid_cidr_examples()
+{
+    print STDERR "Valid examples are:\n";
+    print STDERR "\t123.45.67.89\n";
+    print STDERR "\t123.45.67.0/24\n";
+    print STDERR "\t123.45.0.0/16\n";
+    print STDERR "\t0.0.0.0/0\n";
+    print STDERR "\tany\n";
+}
+
+sub exec_and_exit_if_error($$)
+{
+    my ($cmd, $errormsg) = @_;
+    print STDERR "CMD: $cmd\n" if($debug);
+    system $cmd;
+    if($?) {
+        print STDERR "ERROR: " . $errormsg . "\n";
+        exit ($? >> 8);
+    }
+    return 0;
+}
+
+sub exec_with_retry_and_exit_if_error($$$$)
+{
+    my ($cmd, $interval_in_sec, $retry_count, $errormsg) = @_;
+    while(0 < $retry_count) {
+        print STDERR "CMD: $cmd\n" if($debug);
+        system $cmd;
+        last unless($?);
+        $retry_count--;
+        unless(0 < $retry_count) {
+            print STDERR "ERROR: " . $errormsg . "\n";
+            exit ($? >> 8);
+        }
+        print STDERR "Operation failed but we anticipated it. Waiting $interval_in_sec seconds. $retry_count tries remaining.\n";
+        sleep $interval_in_sec;
+    }
+    return 0;
+}
+
+sub exec_and_return_array($$)
+{
+    my ($cmd, $errormsg) = @_;
+    print STDERR "CMD (expects an array): $cmd\n" if($debug);
+    my @arr = `$cmd`;
+    if($?) {
+        print STDERR "ERROR: " . $errormsg . "\n";
+        print STDERR join("\n", @arr), "\n";
+        exit ($? >> 8);
+    }
+    return @arr;
+}
+
+sub exec_and_return_json($$)
+{
+    my ($cmd, $errormsg) = @_;
+    print STDERR "CMD (expects JSON): $cmd\n" if($debug);
+    my @arr = `$cmd`;
+    if($?) {
+        print STDERR "ERROR: " . $errormsg . "\n";
+        print STDERR join("\n", @arr), "\n";
+        exit ($? >> 8);
+    }
+    my $combined_str = join(' ', @arr);
+    my $decoded_json = decode_json($combined_str);
+    return $decoded_json;
+}
+
+sub is_region_name_sane($)
+{
+    my $param_region = shift;
+    for my $region (keys %region_name_2_region_str) {
+        return 1 if($param_region eq $region);
+    }
+    return 0;
+}
+
+sub convert_region_nick_name($)
+{
+    my $nickname = shift;
+    while(my ($k, $v) = each %region_name_2_region_str) {
+        return $k if($nickname =~ m|^$v$|);
+    }
+    return $nickname;
+}
+
+sub cmd_show($)
+{
+    my $type = shift;
+    if($type =~ /^regions?$/i) {
+        my $fh = exec_and_print_in_format_original_csv("cat", "Cannot convert format", undef, undef, 1);
+        print $fh "Region,Nickname\n";
+        for my $region (sort (keys %region_name_2_region_str)) {
+            print $fh $region, ",", $region_name_2_region_str{$region}, "\n";
+        }
+    } elsif($type =~ /^keys?$/i) {
+        my $key_dir = $ENV{'HOME'} . "/.ssh";
+        my @files = <$key_dir/*.pem>;
+        for my $i (@files) {
+            $i =~ s|.*/||;
+            $i =~ s|\.pem$||;
+            print "$i\n";
+        }
+    } elsif($type =~ /^quickimages?/i) {
+        my $my_region_name = get_effective_region_name();
+        my $csv_fn = get_quick_image_file_name();
+        exec_and_print_in_format_original_csv("csvgrep -c 5 -m $my_region_name $csv_fn", "Cannot open $csv_fn", undef, undef);
+    } elsif($type =~ /^instancetypes?/i) {
+        my $fh = exec_and_print_in_format_original_csv("cat", "Cannot convert format", undef, undef, 1);
+        print $fh "Instance Name,VCPUs,Memory,Description\n";
+        for my $instance_name(sort(keys %instance_type_name_2_instance_type)) {
+            my $obj = $instance_type_name_2_instance_type{$instance_name};
+            print $fh "$instance_name,$obj->{vcpu},$obj->{mem},\"$obj->{desc}\"\n";
+        }
+        close $fh;
+    } else {
+        if(defined $type) {
+            print STDERR "Unknown data type '$type'\n";
+            print STDERR "If you meant to query to Amazon EC2, 'taw list $type' might be what you expected.\n";
+        } else {
+            print STDERR "You need to specify the data type.\n";
+        }
+        print STDERR "'taw help show' for more details.\n";
+        exit 1;
+    }
+    exit 0;
+}
+
+sub get_effective_region_name()
+{
+    unless(defined $param_region) {
+        if(defined $ENV{'AWS_DEFAULT_REGION'}) {
+            return $ENV{'AWS_DEFAULT_REGION'};
+        } else {
+            return 'default';
+        }
+    }
+    return $param_region;
+}
+
+sub get_image_info_cache_file_name()
+{
+    return $ENV{'HOME'} . "/.aws/.image-cache." . get_effective_region_name() . ".json";
+}
+
+sub cmd_cache_image()
+{
+    my $image_info_cache_file_name = get_image_info_cache_file_name();
+    print "DEBUG: cache file is '$image_info_cache_file_name'\n" if($debug);
+    my $cmd = 'aws ec2 describe-images $ec2_flag_dry_run --owners';
+    for my $owner_name (@trusted_ami_owners) {
+        $cmd .= " $owner_name";
+    }
+    $cmd .= ' --filters';
+    $cmd .= ' "Name=architecture,Values=x86_64"';     # you don't need i386 on cloud, right?
+    $cmd .= ' "Name=image-type,Values=machine"';      # if you need something other than machines, I guess you can use awscli directly.
+    $cmd .= ' "Name=virtualization-type,Values=hvm"'; # paravirtualization is old, so again we hardcode hvm here.
+    $cmd .= " | jq '.Images | map(select(.Platform != \"windows\"))'"; # doesn't need Windows in academia (at least in biology).
+    $cmd .= " > $image_info_cache_file_name.new";
+    exec_and_exit_if_error($cmd, "Failed to retrieve AMI info");
+    rename("$image_info_cache_file_name.new", $image_info_cache_file_name);
+    print "Success.\n";
+}
+
+sub ensure_command($)
+{
+    my $command = shift;
+    my $p = `which $command`; chomp $p;
+    unless(-x $p) {
+        print STDERR "ERROR: $command is not available.\n";
+        print STDERR "       Please make sure that $command is on PATH.\n";
+        print STDERR "       Ask your system administrator if this message does not make sense to you.\n";
+        exit 1;
+    }
+}
+
+sub save_to_tmp_file_and_return_file_name(@)
+{
+    my @arr = @_;
+    my ($fh, $filename) = tempfile();
+    print "TMPFILE: $filename\n" if($debug);
+    for(@arr) {
+        print $fh $_;
+    }
+    close $fh;
+    return $filename;
+}
+
+sub is_valid_private_cidr($)
+{
+    my $cstr = shift;
+    return undef unless($cstr =~ m|^(\d+).(\d+).(\d+).(\d+)/(\d+)$|);
+    my ($a1, $a2, $a3, $a4, $nb) = ($1, $2, $3, $4, $5);
+    return undef unless(0 <= $a1 && $a1 <= 255);
+    return undef unless(0 <= $a2 && $a2 <= 255);
+    return undef unless(0 <= $a3 && $a3 <= 255);
+    return undef unless(0 <= $a4 && $a4 <= 255);
+    return undef unless(0 <= $nb && $nb <= 32);
+    if($a1 == 192 && $a2 == 168) {
+        return 16 <= $nb;
+    }
+    if($a1 == 172 && 16 <= $a2 && $a2 <= 31) {
+        return 12 <= $nb;
+    }
+    if($a1 == 10) {
+        return 8 <= $nb;
+    }
+    return undef;
+}
+
+sub is_valid_cidr($)
+{
+    my $cstr = shift;
+    return $cstr =~ m|^(\d+).(\d+).(\d+).(\d+)/(\d+)$|;
+}
+
+sub normalize_cidr($)
+{
+    my $cstr = shift;
+    if($cstr =~ m|^(\d+)\.(\d+).(\d+).(\d+)/(\d+)$|) {
+        return $cstr;
+    }
+    if($cstr =~ m|^(\d+)\.(\d+).(\d+).(\d+)$|) {
+        return $cstr . "/32";
+    }
+    if($cstr =~ m{^(all|any)$}i) {
+        return "0.0.0.0/0";
+    }
+    return undef;
+}
+
+sub load_quick_images()
+{
+    my $csv_fn = get_quick_image_file_name();
+    my $fh;
+    unless(open $fh, "<", $csv_fn) {
+        return [];
+    }
+    my @retval;
+    while(<$fh>) {
+        chomp; chop if(/\r$/);
+        my ($name, $image_id, $tag, $description, $region) = split(/,/);
+        push(@retval, {name => $name, imageid => $image_id, tag => $tag, desc => $description, region => $region});
+    }
+    close $fh;
+    return \@retval;
+}
+
+sub ensure_aws_credential()
+{
+    return if($param_region);
+    return if(exists $ENV{'AWS_DEFAULT_REGION'});
+    return if(-e "$ENV{'HOME'}/.aws/config");
+    return if(-e "$ENV{'HOME'}/.aws/credentials");
+    print STDERR "AWS credential info is missing.\n";
+    print STDERR "See http://docs.aws.amazon.com/cli/latest/userguide/cli-chap-getting-started.html for details.\n";
+    exit 2;
+}
+
+__END__
+
+=head1 NAME
+
+taw - Tiny Amazon EC2 Wrapper
+
+=head1 SYNOPSIS
+
+taw E<lt>commandE<gt> [options...] [arguments...]
+
+Options:
+
+=head1 COMMANDS
+
+=over 8
+
+=item B<taw help>
+
+'taw help' shows how to invoke taw subcommands.
+'taw help subcmd' shows how to use a taw subcommand. For example, 'taw help list' shows how to use 'taw list' subcommand.
+
+=item B<taw list>
+
+Show various information. The first argument of B<taw list> is a listing target, for which a user wants to know.
+If the listing target is omitted, instances are shown.
+To output in CSV, give B<-csv>. When B<-csv> is given, B<-n> suppresses the header line. B<-json> is given, it outputs in JSON. B<-pretty> is given, it outputs in human-friendly table format.
+
+See the following items for each target.
+
+=item B<taw list instance>
+Show instances.
+
+=item B<taw list fw>
+Show the firewall rules. To change the rules, use B<taw fw add> or B<taw fw remove>.
+
+=item B<taw list vpc>
+Show the VPCs.
+
+=item B<taw list subnet>
+Show the subnets.
+
+=item B<taw list ip>
+Show the allocated IPs.
+
+=item B<taw list address>
+Same as B<taw list ip>
+
+=item B<taw ssh>
+
+SSH to the specified machine. For example, when you type 'taw ssh foo', taw will search the instance with name (tag) 'foo', and ssh to that instance.
+The default user is 'ec2-user'. You can set the user name by 'taw ssh foo -- -l user_name'. If you set 'root' tag to an instance, the value of 'root' tag is used as the default user name.
+
+=item B<taw rssh>
+
+rssh to the specified machine. 'taw rssh' is almost the same to 'taw ssh' but it uses rssh instead of ssh.
+
+=item B<taw scp>
+
+Copy files using scp. You can use an AWS machine name instead of FQDN of the remote host.
+
+=item B<taw stop>
+
+Stop instances It does not stop instances without B<--force> option.
+
+=item B<taw mosh>
+
+Almost same to B<taw ssh>, but it uses mosh instead of SSH. mosh must be installed on the remote side.
+
+=item B<taw fw>
+
+This subcommand needs a subsubcommand.
+B<taw fw add> adds a new rule to a specified security group.
+B<taw fw remove> adds a new rule to a specified security group.
+See B<taw help fw> for examples.
+
+=item B<taw setdns>
+
+Use Amazon Route 53 to associate a domain name to a specified instance.
+For example, 'taw setdns hoge www.example.com -- --ttl 3600 --weight 10 --replace' will set an A-record so that www.example.com will point to an instance with name hoge. Options that come after '--' will be passed through to cli53.
+
+=item B<taw show>
+
+Show the list of a specified type of infomation.
+The difference between B<taw list> and B<taw show> is that B<taw show> displays information without querying to Amazon EC2.
+
+For example, B<taw show regions> will show the list of available regions (and their nicknames) in Amazon EC2, which is hardcoded in the B<taw> script..
+You can use the nickname of a region name (of Amazon EC2) instead of the region name itself for B<--region> option (e.g., --region=tokyo is equivalent to --rewgion=ap-northeast-1)
+
+B<taw show keys> will show the list of available SSH keys on your computer. It will search only "~/.ssh/*.pem".
+
+B<taw show quickimage> will show the list of quick images. Quick images are defined in "~/.aws/images.csv".
+It must contains the following columns in this order; Name,ImageId,Description,Region.
+Name is used to specify a particular image (instead of directly specifying ImageId).
+Please make sure that Region matches to a region in which you want to create a new instance. Here is an example::
+
+    Name,ImageId,Description,Region
+    Amazon20160303,ami-374db956,"Amazon Linux AMI 2016.03.3 (HVM), SSD Volume Type",ap-northeast-1
+    RHEL72,ami-0dd8f963,"Red Hat Enterprise Linux 7.2 (HVM), SSD Volume Type",ap-northeast-1
+    Ubuntu14,ami-a21529cc,"Ubuntu Server 14.04 LTS (HVM), SSD Volume Type",ap-northeast-1
+
+B<taw show instancetypes> will show the list of available instance types on AWS.
+The list shown here does not mean that the displayed instance types are avalilable on the region you use.
+The list is hardcoded in the script.
+
+=item B<taw create>
+
+Create something such as instances, VPCs, subnets, etc.
+See the following items for the details of each command.
+
+=item B<taw create instance>
+Create a new instance by giving parameters in the command line. B<taw create inst> is allowed for short.
+
+=item B<taw create iinstance>
+Create a new instance interactively. This is much easier for newbies.
+You can use B<taw create instanceinteractive> if you prefer a long but selfexplainingname.
+If you need a shorter name, use B<taw create iinst>.
+
+=item B<taw create vpc>
+Creates a new VPC.
+
+=item B<taw create subnet>
+Creates a new subnet.
+If you omit the avilability zone, it will be automatically selected (at random by Amazon EC2).
+
+=item B<taw delete>
+
+Delete something such as instances, VPCs, subnets, etc.
+See the following items for the details of each command.
+
+=item B<taw delete instance>
+Delete an instance.
+
+=item B<taw delete vpc>
+Delete a VPC. If any subnet is associated with the given VPC, the command will fail.
+
+=item B<taw delete subnet>
+Delete a subnet. If any (non-terminated) instance is associated with the subnet, the command will fail.
+
+=item B<taw delete ip>
+Delete an allocated IP. If any instance is associated with the allocated IP, the command will fail.
+
+=item B<taw terminate>
+Terminate instance(s). You can specify instances by their names or instance IDs.
+B<taw terminate> will not actually terminate any instances without giving B<--force> option,
+so please run B<taw terminate> without B<--force> to check what you are going to do,
+and then run with B<--force> to actually execute it.
+
+=item B<taw images>
+
+Show the list of (private) images of mine in Amazon EC2.
+
+=back
+
+=head1 COMMON OPTIONS
+
+=over 8
+
+=item B<--region>
+Specify a region (of Amazon EC2) to work with.
+
+=item B<--debug>
+Enable a debug mode.
+
+=item B<--leave>
+When the debug mode is enabled, giving this option will leave temporary files that contain the result JSON files from Amazon EC2.
+This might help debugging.
+
+=item B<--verbose>
+When combined with some subcommands such as list, it will output more items.
+
+=item B<--help>
+Show a help message.
+
+=item B<--man>
+Show the man page of B<taw>.
+
+=back
+
+=head1 DESCRIPTION
+
+B<taw>, Tiny Amazon ec2 Wrapper,
+
+=head1 HOW TO INSTALL
+
+B<taw> requires Amazon Commandline Interface (Python version). You have to setup and configure Amazon Command Line Tool first.
+Type 'sudo pip install awscli' or 'sudo easy_install awscli' to install Amazon Commandline Interface.
+
+B<taw> also requires jq (http://stedolan.github.io/jq/) and csvkit (https://github.com/onyxfish/csvkit).
+As of writing, csvkit in PyPI does not work (cannot be installed because of incorrect dependency declaration in the package), so we recommend you to masnually install csvkit from the HEAD in GitHub (git clone && sudo python setup.py).
+
+B<taw> setdns subcommand uses B<cli53> (https://github.com/barnybug/cli53).
+
+B<taw> depends on JSON module, so please install it (Usually, this is done by 'sudo cpan install JSON').
+
+B<taw> also requires SSH keys to be placed under "~/.ssh". If you generage a key pair on AWS and you download it, copy the pem file to "~/.ssh/".
+
+=head1 LICENSE
+
+B<taw> is distributed under the 2-clause BSD license (http://opensource.org/licenses/BSD-2-Clause).
+
+=head1 AUTHOR
+
+Masahiro Kasahara <masahiro at kasahara.ws>
+
+=cut
+

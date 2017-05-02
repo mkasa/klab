@@ -28,7 +28,7 @@ This utility heavily depends on jq, so you must have jq installed on your system
 
 """
 
-version_string = "1.02"
+version_string = "1.3.0"
 
 import os,sys,subprocess,csv,json,argparse
 
@@ -83,6 +83,8 @@ def main():
     parser.add_argument('-t', '--tsv',  action='store_true', help="Output in Tab-Separated Values (TSV)")
     parser.add_argument('-l', '--html',  action='store_true', help="Output in HTML")
     parser.add_argument('-c', '--columns', action='store', help="Specify the order of columns")
+    parser.add_argument('-z', '--notfound', action='store', help="Specify the message when the input is empty")
+    parser.add_argument('-a', '--allowempty',  action='store_true', help="Allow an empty input")
     args = parser.parse_args()
 
     if args.version:
@@ -92,6 +94,11 @@ def main():
     # Get keys in the first line (using jq)
     first_line = sys.stdin.readline().strip()
     if len(first_line) < 2:
+        if args.notfound:
+            print args.notfound
+            sys.exit(0)
+        if args.allowempty and len(first_line) <= 0:
+            sys.exit(0)
         print >>sys.stderr, "ERROR: Input too short. Did put a JSON recond in a line? (if not, pass data through 'jq -c .')"
         sys.exit(1)
     if first_line[0] != '{' or first_line[-1] != '}':

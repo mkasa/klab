@@ -54,7 +54,7 @@ if($command eq 'pull')    { cmd_pull(); exit 0; }
 if($command eq 'pullall') { cmd_pullall(); exit 0; }
 if($command eq 'pullall_child') { my $dir = shift; cmd_pullall_child($dir); exit 0; }
 if($command eq 'stat' || $command eq 'status') {
-    cmd_status(); exit 0; 
+    cmd_status(); exit 0;
 }
 if($command eq 'statall' || $command eq 'statusall') {
     cmd_statusall(); exit 0;
@@ -613,7 +613,7 @@ syntax: regexp
 # Do not forget to do 'hg add .hgignore' when you store it in the repository.
 EOF
         }
-    } 
+    }
 }
 
 __DATA__
