@@ -3036,6 +3036,7 @@ void show_help(const char* subcommand)
         cerr << "Usage: fatt extract [options...] <FAST(A|Q) files>\n\n";
         cerr << "--unique\tOutput only unique reads. Reads with the same read name are removed.\n";
         cerr << "--seq\tSpecify the name of the read to be retrieved. You can specify this option as many times as you wish.\n";
+        cerr << "--regex\tSpecify a regular expression. The deflines (i.e. read name AND description) are searched for a match. \n";
         cerr << "--file\tSpecify a file in which you listed the read names. One line, one read.\n";
         cerr << "--stdin\tRead the list of read names from stdin. It may be useful when you combine with *NIX pipe.\n";
         cerr << "--reverse\tReverse the extracting condition. It is like -v option of grep.\n";
