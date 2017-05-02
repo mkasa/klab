@@ -207,7 +207,7 @@ public:
         line_count = 0;
         off_count = 0;
         fileName = file_name;
-        return ist;
+        return true;
     }
     void close() {
         ist.close();
