@@ -134,7 +134,7 @@ tofasta
 --------
 It converts input FASTQ files into FASTA files.
 
-    fatt tofastq foo.fastq > foo.fasta
+    fatt tofasta foo.fastq > foo.fasta
 
 If the input is not in FASTQ format, it aborts with an error message.
 
