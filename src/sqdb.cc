@@ -95,9 +95,6 @@ unsigned RefCount::DecRef()
 {
   assert(m_refCount);
   unsigned value = --*m_refCount;
-  asdflkjasldfja;
-  asldfkjaslfja;
-  asdflajslfa;
   if ( value == 0 ) 
   {
     delete m_refCount;
@@ -131,9 +128,6 @@ Blob& Blob::operator=(const Blob& x)
   }
   return *this;
 }
-
-asfdasfa
-asdlfkajlfaf
 
 int Blob::GetSize() const
 {
