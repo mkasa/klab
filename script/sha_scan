@@ -11,15 +11,17 @@ use File::Find;
 my $debug = 0;
 my $flag_add = 0;
 my $flag_search = 0;
+my $flag_remove = 0;
 my $flag_skip_error = 0;
 my $flag_summary = 0;
 
 GetOptions(
-	'a|add' => \$flag_add,
-	's'     => \$flag_search,
-    'eskip' => \$flag_skip_error,
-	'h'     => \$flag_summary,
-	'debug' => \$debug
+	'a|add'  => \$flag_add,
+	's'      => \$flag_search,
+    'remove' => \$flag_remove,
+    'eskip'  => \$flag_skip_error,
+	'h'      => \$flag_summary,
+	'debug'  => \$debug
 );
 
 my $dbname = shift;
@@ -28,12 +30,13 @@ my $dirname = shift;
 my $flag_show_usage = 0;
 $flag_show_usage = 1 unless(defined $dirname);
 $flag_show_usage = 1 unless(defined $dbname);
-$flag_show_usage = 1 unless(defined $flag_add && defined $flag_search);
+$flag_show_usage = 1 unless(defined $flag_add || defined $flag_search || defined $flag_remove);
 $flag_show_usage = 1 unless(defined $dbname && defined $dirname);
 
 if($flag_show_usage) {
 	print STDERR "usage: sha_scan -a <DB name> <directory to scan>   (This is for the first scan phase)\n";
 	print STDERR "       sha_scan -s <DB name> <directory to scan>   (This is to check files)\n";
+	print STDERR "       sha_scan --remove <DB name> <directory to scan>   (This is to remove redundant files)\n";
 	exit 1;
 }
 
@@ -105,8 +108,40 @@ sub scan_wanted
 	            $count_of_found_files++;
 	        }
 	    } else {
-		    print "Skipped $f (error)\n";
+		    print "Skipped $f (DB error)\n";
 	    }
+	}
+}
+
+sub remove_wanted
+{
+    # NOTE: this sub is basically dup of scan_wanted so should be refactored later.
+	my $f = $_;
+	my $ctx = Digest::SHA1->new;
+	unless(-d $f) {
+	    unless(open FH, "<", $f) {
+ 	        print STDERR "Could not open '$f'";
+	        die unless($flag_skip_error);
+	        return;
+        }
+        $ctx->addfile(*FH);
+        close FH;
+        my $dgst = $ctx->hexdigest();
+        if($db_select->execute($dgst)) {
+            my $ft = $db_select->fetch();
+            unless(defined $ft) {
+                print "$f\tnot found\n" unless($flag_summary);
+                $count_of_notfound_files++;
+            } else {
+                print "$f\tfound\t$ft->[0]\n" unless($flag_summary);
+                unless(unlink $f) {
+                    print "$f\tcould not be removed (error): $!\n" unless($flag_summary);
+                }
+                $count_of_found_files++;
+            }
+        } else {
+            print "Skipped $f (DB error)\n";
+        }
 	}
 }
 
@@ -118,10 +153,14 @@ unless(-x $dirname) {
 if($flag_add) {
 	finddepth(\&add_wanted, $dirname);
 } else {
-	finddepth(\&scan_wanted, $dirname);
-	if($flag_summary) {
-		print "$count_of_found_files files found, $count_of_notfound_files not found.\n";
-	}
+    if($flag_remove) {
+        finddepth(\&remove_wanted, $dirname);
+    } else {
+        finddepth(\&scan_wanted, $dirname);
+    }
+    if($flag_summary) {
+        print "$count_of_found_files files found, $count_of_notfound_files not found.\n";
+    }
 }
 
 =pod
@@ -140,6 +179,10 @@ Check (files in) a directory:
 
 B<sha_scan> -s E<lt>DB fileE<gt> E<lt>input directoryE<gt>
 
+Removed files in a directory when their hashes are in DB file:
+
+B<sha_scan> --remove E<lt>DB fileE<gt> E<lt>input directoryE<gt>
+
 =head1 DESCRIPTION
 
 First, you scan through a directory to create database of SHA1 hashes of files in a directory.
@@ -152,11 +195,18 @@ put hashes from different directories together in a single database file.
 
 Next, you want to see whether files in a specified directory match to the already-scanned files
 in the database.
- 
+
 B<sha_scan> -s E<lt>DB fileE<gt> E<lt>checking directoryE<gt>
 
 For each file, it outputs whether a file of the same contents exists.
 If such a file exists, it also outputs the path of the file in the database.
+
+If you wish to directly remove redacted files, please use
+
+B<sha_scan> --remove E<lt>DB fileE<gt> E<lt>checking directoryE<gt>
+
+This will scan through all files under the given directory, and remove files if their hashes
+are in the database file.
 
 =head1 OPTIONS
 
@@ -170,7 +220,7 @@ you just do not want to see a long list of results.
 You just need whether all files in the directory are known or not.
 When this option is given, sha_scan outputs only the number of known/unknown files.
 
-=item B<-eskip>
+=item B<--eskip>
 When a file could not be opened, B<sha_scan> immediately quits, but it continues
 when this option is given.
 
