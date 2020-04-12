@@ -13,7 +13,7 @@ def configure(conf):
         conf.check_perl_version((5,6,0))
         conf.check_perl_ext_devel()
     conf.check_python_version((2,4,2))
-    conf.env.append_unique('CXXFLAGS', ['-O2', '-DVERSION_STRING=' + VERSION])
+    conf.env.append_unique('CXXFLAGS', ['-std=c++11', '-O2', '-DVERSION_STRING=' + VERSION])
     conf.env.INCLUDES += '.'
     conf.env.LIB += ['pthread', 'dl']
 
