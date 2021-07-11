@@ -14,6 +14,7 @@ my $flag_search = 0;
 my $flag_remove = 0;
 my $flag_skip_error = 0;
 my $flag_summary = 0;
+my $flag_show_only_new_files = 0;
 
 GetOptions(
 	'a|add'  => \$flag_add,
@@ -21,6 +22,7 @@ GetOptions(
     'remove' => \$flag_remove,
     'eskip'  => \$flag_skip_error,
 	'h'      => \$flag_summary,
+	'n'      => \$flag_show_only_new_files,
 	'debug'  => \$debug
 );
 
@@ -101,10 +103,18 @@ sub scan_wanted
 	    if($db_select->execute($dgst)) {
 	        my $ft = $db_select->fetch();
 	        unless(defined $ft) {
-	            print "$f\tnot found\n" unless($flag_summary);
+                unless($flag_summary) {
+                    if($flag_show_only_new_files) {
+                        print "$f\n";
+                    } else {
+                        print "$f\tnot found\n";
+                    }
+                }
 	            $count_of_notfound_files++;
 	        } else {
-	            print "$f\tfound\t$ft->[0]\n" unless($flag_summary);
+                unless($flag_show_only_new_files) {
+                    print "$f\tfound\t$ft->[0]\n" unless($flag_summary);
+                }
 	            $count_of_found_files++;
 	        }
 	    } else {
@@ -179,6 +189,10 @@ Check (files in) a directory:
 
 B<sha_scan> -s E<lt>DB fileE<gt> E<lt>input directoryE<gt>
 
+Check files in a directory but shows only new files:
+
+B<sha_scan> -n -s E<lt>DB fileE<gt> E<lt>input directoryE<gt>
+
 Removed files in a directory when their hashes are in DB file:
 
 B<sha_scan> --remove E<lt>DB fileE<gt> E<lt>input directoryE<gt>
@@ -223,6 +237,9 @@ When this option is given, sha_scan outputs only the number of known/unknown fil
 =item B<--eskip>
 When a file could not be opened, B<sha_scan> immediately quits, but it continues
 when this option is given.
+
+=item B<-n>
+Show only new files. This option can be used only with -s.
 
 =back
 
