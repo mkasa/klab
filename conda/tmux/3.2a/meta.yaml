@@ -1,0 +1,16 @@
+{% set version = "3.2a" %}
+
+package:
+  name: tmux
+  version: {{ version }}
+
+source:
+  url: https://github.com/tmux/tmux/releases/download/{{ version }}/tmux-{{ version }}.tar.gz
+
+requirements:
+  build:
+    - ncurses
+    - libevent
+  run:
+    - ncurses
+    - libevent
