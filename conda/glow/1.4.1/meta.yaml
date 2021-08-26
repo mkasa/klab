@@ -8,8 +8,7 @@ source:
   url: https://github.com/charmbracelet/glow/releases/download/v{{ version }}/glow_{{ version }}_linux_x86_64.tar.gz
 
 build:
-  script: cp glow ${PREFIX}/bin
 
-  about:
-    home: https://github.com/charmbracelet/glow/
-    license: MIT
+about:
+  home: https://github.com/charmbracelet/glow/
+  license: MIT
