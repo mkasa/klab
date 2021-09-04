@@ -1,0 +1,12 @@
+{% set version = "2.7.3" %}
+
+package:
+  name: stack
+  version: {{ version }}
+
+source:
+  url: https://get.haskellstack.org/stable/linux-x86_64.tar.gz
+
+about:
+  home: https://docs.haskellstack.org/
+  license: MIT
