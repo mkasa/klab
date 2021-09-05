@@ -1,0 +1,19 @@
+{% set version = "1.3.0" %}
+
+package:
+  name: haskell-language-server
+  version: {{ version }}
+
+requirements:
+  run:
+    - zlib
+    - ncurses
+    - icu
+  build:
+    - stack
+    - zlib
+    - ncurses
+    - icu
+
+source:
+  url: https://github.com/haskell/haskell-language-server/archive/refs/tags/{{ version }}.tar.gz
