@@ -1,0 +1,11 @@
+{% set version = "6.6.7" %}
+
+package:
+  name: gnu-global
+  version: {{ version }}
+
+source:
+  url: https://ftp.gnu.org/pub/gnu/global/global-{{ version }}.tar.gz
+
+about:
+  home: https://www.gnu.org/
