@@ -1,5 +1,0 @@
-#!/bin/bash
-
-(sleep 1; open http://localhost:5000) &
-grip --gfm --context=example/repo
-
