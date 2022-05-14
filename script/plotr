@@ -1,0 +1,188 @@
+#!/usr/bin/env perl
+
+use strict;
+use Getopt::Long;
+use Pod::Usage;
+use Term::ANSIColor;
+use File::Temp qw/tempfile/;
+
+my $flag_editlong    = 0;
+my $flag_help        = 0;
+my $flag_man         = 0;
+my $flag_leavefile   = 0;
+my $flag_showscript  = 0;
+my $param_csv        = undef;
+my $flag_csv_stdin   = 0;
+my $param_tsv        = undef;
+my $param_image_file = undef;
+my $flag_tsv_stdin   = 0;
+my $debug = 0;
+
+GetOptions(
+    "edit|e"     => \$flag_editlong,
+    'help|?'     => \$flag_help,
+    'man'        => \$flag_man,
+    'leave'      => \$flag_leavefile,
+    'showscript' => \$flag_showscript,
+    'csv|c=s'    => \$param_csv,
+    'tsv|t=s'    => \$param_tsv,
+    'C'          => \$flag_csv_stdin,
+    'T'          => \$flag_tsv_stdin,
+    'output|o=s' => \$param_image_file,
+    'debug'      => \$debug,
+) or pod2usage(2);
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man;
+pod2usage(2) if(@ARGV < 1);
+if((defined $param_csv || $flag_csv_stdin) && (defined $param_tsv || $flag_tsv_stdin)) {
+    print STDERR "ERROR: You cannot specify both --csv/-C and --tsv/-T\n";
+    exit 2;
+}
+
+my $rcmd = join(";", @ARGV);
+
+my $tmp = File::Temp->new( UNLINK => 0, SUFFIX => '.R' );
+if($param_image_file) {
+    print $tmp "file_name <- \"$param_image_file\";"
+} else {
+    print $tmp <<'EOS'
+# generate a temporary file name
+file_name <- tempfile(pattern = "file", tmpdir = tempdir(), fileext = "")
+EOS
+;
+}
+
+print $tmp <<'EOS'
+# set the output to the temporary png file
+png(file_name)
+# load tidyverse and ggplot2 but suppress the loading messages
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(ggplot2))
+EOS
+;
+
+if($param_csv | $param_tsv | $flag_csv_stdin | $flag_tsv_stdin) {
+    my $function_name = "read_csv";
+    my $filename = "\"$param_csv\"";
+    my $extra_opts = '';
+    if($param_tsv || $flag_tsv_stdin) {
+        $function_name = "read_tsv";
+        $filename = "\"$param_tsv\"";
+    }
+    $filename = 'file("stdin")' if($flag_csv_stdin || $flag_tsv_stdin);
+    print $tmp "a <- $function_name($filename$extra_opts);\n";
+}
+print $tmp "$rcmd;\n";
+if($rcmd =~ /ggplot/) {
+    print $tmp "plot(g);\n";
+}
+print $tmp <<'EOS'
+# suppress messages
+dont_use_value <- dev.off()
+# show the png image if generated
+if(file.exists(file_name)) {
+    # suppress messages
+    dont_use_value <- system2("imgcat", file_name)
+}
+EOS
+;
+unless($param_image_file) {
+    print $tmp "unlink(file_name);\n";
+}
+close $tmp;
+
+if($flag_showscript) {
+    system "cat $tmp\n";
+    exit 0;
+}
+if($debug) {
+    print "Rscript $tmp\n";
+}
+system "Rscript $tmp\n";
+
+if($debug) {
+    print "rm $tmp\n";
+}
+unlink $tmp;
+
+
+=pod
+
+=head1 NAME
+
+ggplot - display a graphical plot on terminal using iTerm2
+
+=head1 SYNOPSIS
+
+ggplot [options...] [--csv <CSV file> | --tsv <TSV file>] <R command to plot>
+
+Options:
+   --csv|-c           read CSV file
+   -C                 read CSV fron stdin
+   --tsv|-t           read TSV file
+   -T                 read TSV from stdin
+   --help             brief help message
+   --man              full documentation
+   --leave            leave temporary files
+   --debug            enable debugging output
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--csv|-c>
+
+Read from a specified CSV file. The file is read by B<read_csv> and stored in valuable B<a>.
+
+=item B<-C>
+
+Read from stdin (in CSV).
+
+=item B<--tsv|-t>
+
+Read from a specified TSV file. The file is read by B<read_tsv> and stored in valuable B<a>.
+When the filename is B<->, B<plotr> reads from stdin.
+
+=item B<-T>
+
+Read from stdin (in TSV).
+
+=item B<--leave>
+
+Leave temporary files. This option may help you debug the plot.
+
+=item B<--showscript>
+
+Show the R script used for generating the plot, and exit.
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-man>
+
+Prints the manual page and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+B<plotr> creates a graphical plot using R, and put the image on your terminal.
+B<plotr> uses B<imgcat> and the function of iTerm2, so you need to install B<imgcat> and iTerm2 in advance.
+iTerm2 is available at https://iterm2.com/ (macOS only). B<imgcat> can be installed by typing B<pip install imgcat>.
+
+Another prerequisite is B<R>. In the B<R> environment, B<plotr> uess B<tidyverse> and B<plotr>, so they both must be installed in advance.
+
+The command line arguments are basically a series of R commands.
+
+=head1 EXAMPLE
+Read from a CSV file with a single column, and plot the histogram of it using the base R.
+
+    plotr 'a <- scan("input.csv")' 'hist(a)'
+
+Read from 'test.csv' with a column named "value", and plot the histogram of "value".
+
+    plotr -c test.csv 'g <- ggplot(a, aes(x = value)) + geom_histogram()'
+
+=cut
+
