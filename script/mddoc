@@ -1,4 +1,0 @@
-#!/bin/bash
-
-# Markdown.pl $1 | lynx -stdin
-pandoc $* | lynx -stdin
