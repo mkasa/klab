@@ -11,6 +11,8 @@ my $flag_help        = 0;
 my $flag_man         = 0;
 my $flag_leavefile   = 0;
 my $flag_showscript  = 0;
+my $flag_download    = 0;
+my $flag_yank        = 0;
 my $param_csv        = undef;
 my $flag_csv_stdin   = 0;
 my $param_tsv        = undef;
@@ -28,7 +30,9 @@ GetOptions(
     'tsv|t=s'    => \$param_tsv,
     'C'          => \$flag_csv_stdin,
     'T'          => \$flag_tsv_stdin,
+    'download|d' => \$flag_download,
     'output|o=s' => \$param_image_file,
+    'yank|y'     => \$flag_yank,
     'debug'      => \$debug,
 ) or pod2usage(2);
 pod2usage(1) if $flag_help;
@@ -41,7 +45,31 @@ if((defined $param_csv || $flag_csv_stdin) && (defined $param_tsv || $flag_tsv_s
 
 my $rcmd = join(";", @ARGV);
 
+sub ensure_iterm2_is_there()
+{
+    system "~/.iterm2/it2check";
+    if($? < 0) {
+        print STDERR "ERROR: could not execute it2check, which is needed for downloading. Note that this feature is strictly for iTerm2 on macOS.\n";
+        exit 2;
+    }
+    if(0 < ($? >> 8)) {
+        print STDERR "ERROR: your terminal is not iTerm2. Abordted.\n";
+        exit 2;
+    }
+}
+
 my $tmp = File::Temp->new( UNLINK => 0, SUFFIX => '.R' );
+if($flag_download && !$param_image_file) {
+    my $num = 1;
+    while(1) {
+        my $fname = sprintf("figure%d.png", $num);
+        unless(-e $fname) {
+            $param_image_file = $fname;
+            last;
+        }
+        $num++;
+    }
+}
 if($param_image_file) {
     print $tmp "file_name <- \"$param_image_file\";"
 } else {
@@ -80,12 +108,17 @@ print $tmp <<'EOS'
 # suppress messages
 dont_use_value <- dev.off()
 # show the png image if generated
+EOS
+;
+unless($flag_yank) {
+    print $tmp <<'EOS'
 if(file.exists(file_name)) {
     # suppress messages
     dont_use_value <- system2("imgcat", file_name)
 }
 EOS
 ;
+}
 unless($param_image_file) {
     print $tmp "unlink(file_name);\n";
 }
@@ -95,15 +128,30 @@ if($flag_showscript) {
     system "cat $tmp\n";
     exit 0;
 }
-if($debug) {
-    print "Rscript $tmp\n";
+if($flag_yank) {
+    ensure_iterm2_is_there();
+    my $stdout_tmp = File::Temp->new( UNLINK => 0, SUFFIX => '.txt' );
+    print "Rscript $tmp 2>&1 | tee $stdout_tmp\n" if($debug);
+    system "Rscript $tmp 2>&1 | tee $stdout_tmp\n";
+    my $cmd = "~/.iterm2/it2copy $stdout_tmp";
+    print STDERR "CMDLINE: $cmd\n" if($debug);
+    system $cmd;
+    unlink $stdout_tmp unless($flag_leavefile);
+} else {
+    print "Rscript $tmp\n" if($debug);
+    system "Rscript $tmp\n";
 }
-system "Rscript $tmp\n";
 
+if($flag_download) {
+    ensure_iterm2_is_there();
+    my $cmd = "~/.iterm2/it2dl $param_image_file";
+    print STDERR "CMDLINE: $cmd\n" if($debug);
+    system $cmd;
+}
 if($debug) {
     print "rm $tmp\n";
 }
-unlink $tmp;
+unlink $tmp unless($flag_leavefile);
 
 
 =pod
@@ -154,6 +202,18 @@ Leave temporary files. This option may help you debug the plot.
 =item B<--showscript>
 
 Show the R script used for generating the plot, and exit.
+
+=item B<--download|-d>
+
+Download the generated image file using iTerm2. When you use B<--download> on a remote server,
+you will download the file on your local computer. This function is implemented using the function
+of iTerm2, so cannot use other terminals.
+
+=item B<--yank|-y>
+
+Copy the generated output (text) to your local clipboard. When you use B<--yank> on a remote server,
+the result will be copied to your local clipboard. This function is implemented using the function of iTerm2,
+so cannot use other terminals.
 
 =item B<-help>
 
