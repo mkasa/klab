@@ -184,5 +184,20 @@ Read from 'test.csv' with a column named "value", and plot the histogram of "val
 
     plotr -c test.csv 'g <- ggplot(a, aes(x = value)) + geom_histogram()'
 
+=head1 TROUBLESHOOTING
+
+=item B<Is R installed?>
+
+You need to make sure R is installed and is on PATH.
+
+=item B<Is tidyverse installed?>
+
+You need to install tidyverse even if you do not use it on plotr.
+
+=item B<Is ggplot2 installed?>
+
+You need to install ggplot2 even if you do not use it on plotr.
+
+
 =cut
 
