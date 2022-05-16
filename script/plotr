@@ -6,44 +6,50 @@ use Pod::Usage;
 use Term::ANSIColor;
 use File::Temp qw/tempfile/;
 
-my $flag_editlong    = 0;
-my $flag_help        = 0;
-my $flag_man         = 0;
-my $flag_leavefile   = 0;
-my $flag_showscript  = 0;
-my $flag_download    = 0;
-my $flag_yank        = 0;
-my $param_csv        = undef;
-my $flag_csv_stdin   = 0;
-my $param_tsv        = undef;
-my $param_image_file = undef;
-my $flag_tsv_stdin   = 0;
-my $debug = 0;
+my $flag_leavefile          = 0;
+my $flag_showscript         = 0;
+my $flag_download           = 0;
+my $flag_yank               = 0;
+my $flag_interactive_first  = 0;
+my $flag_interactive_second = 0;
+my $param_csv               = undef;
+my $flag_csv_stdin          = 0;
+my $param_tsv               = undef;
+my $param_image_file        = undef;
+my $flag_tsv_stdin          = 0;
+
+my $flag_help = 0;
+my $flag_man  = 0;
+my $debug     = 0;
 
 GetOptions(
-    "edit|e"     => \$flag_editlong,
-    'help|?'     => \$flag_help,
-    'man'        => \$flag_man,
-    'leave'      => \$flag_leavefile,
-    'showscript' => \$flag_showscript,
-    'csv|c=s'    => \$param_csv,
-    'tsv|t=s'    => \$param_tsv,
-    'C'          => \$flag_csv_stdin,
-    'T'          => \$flag_tsv_stdin,
-    'download|d' => \$flag_download,
-    'output|o=s' => \$param_image_file,
-    'yank|y'     => \$flag_yank,
-    'debug'      => \$debug,
+    'help|?'        => \$flag_help,
+    'man'           => \$flag_man,
+    'leave'         => \$flag_leavefile,
+    'showscript'    => \$flag_showscript,
+    'csv|c=s'       => \$param_csv,
+    'tsv|t=s'       => \$param_tsv,
+    'C'             => \$flag_csv_stdin,
+    'T'             => \$flag_tsv_stdin,
+    'interactive|i' => \$flag_interactive_first,
+    "edit|e"        => \$flag_interactive_second,
+    'download|d'    => \$flag_download,
+    'output|o=s'    => \$param_image_file,
+    'yank|y'        => \$flag_yank,
+    'debug'         => \$debug,
 ) or pod2usage(2);
 pod2usage(1) if $flag_help;
 pod2usage(-verbose => 2) if $flag_man;
-pod2usage(2) if(@ARGV < 1);
+pod2usage(2) if(@ARGV < 1 && !$flag_interactive_first && !$flag_interactive_second);
 if((defined $param_csv || $flag_csv_stdin) && (defined $param_tsv || $flag_tsv_stdin)) {
     print STDERR "ERROR: You cannot specify both --csv/-C and --tsv/-T\n";
     exit 2;
 }
+if($debug && !$flag_leavefile) {
+    print STDERR "WARNING: add --leave if you want to examine temporary files.\n";
+}
 
-my $rcmd = join(";", @ARGV);
+my $rcmd = join("\n", @ARGV) . "\n";
 
 sub ensure_iterm2_is_there()
 {
@@ -58,7 +64,7 @@ sub ensure_iterm2_is_there()
     }
 }
 
-my $tmp = File::Temp->new( UNLINK => 0, SUFFIX => '.R' );
+my $tmp = File::Temp->new( UNLINK => 0, SUFFIX => '.r' );
 if($flag_download && !$param_image_file) {
     my $num = 1;
     while(1) {
@@ -100,9 +106,55 @@ if($param_csv | $param_tsv | $flag_csv_stdin | $flag_tsv_stdin) {
     $filename = 'file("stdin")' if($flag_csv_stdin || $flag_tsv_stdin);
     print $tmp "a <- $function_name($filename$extra_opts);\n";
 }
-print $tmp "$rcmd;\n";
+if($flag_interactive_first || $flag_interactive_second) {
+    my ($sec, $min, $hour, $mday, $mon, $year, $wday) = localtime();
+    my $temp_file_name = ($ENV{'TMP'} || $ENV{'TMPDIR'}) . "/" . sprintf("%02d-%02d-%02d.r", $year + 1900, $mon, $mday);
+    my $cmdline = $ENV{'EDITOR'};
+    unless(defined $cmdline && $cmdline ne '') {
+        $cmdline = 'vi';
+    }
+    $cmdline .= " " . $temp_file_name;
+    if($flag_interactive_first && !defined $rcmd && $rcmd ne '') {
+        unless($flag_interactive_second) {
+            # if the file already exists, rename it to a backup file name
+            if(-e $temp_file_name) {
+                my $backup_generation = 1;
+                while(1) {
+                    my $fname = $temp_file_name . "." . $backup_generation;
+                    unless(-e $fname) {
+                        rename($temp_file_name, $fname);
+                        last;
+                    }
+                    $backup_generation++;
+                }
+            }
+            # creates a new template
+            open my $fh, ">", $temp_file_name or die "ERROR: Cannot open $temp_file_name";
+            print $fh, "# a <- read_csv(\"input.csv\")\n";
+            print $fh join("\n", @ARGV);
+            print $fh "\n";
+            print $fh "# assign the ggplot to g\n";
+            print $fh "# g <- ggplot()\n";
+            close $fh;
+        }
+    }
+    system $cmdline;
+    if($?) {
+        print STDERR "ERROR: an editor quits with an error.\n";
+        unless($flag_leavefile) {
+            print "rm $tmp\n" if($debug);
+            unlink $tmp unless($flag_leavefile);
+        }
+        exit 2;
+    }
+    open my $fh, "<", $temp_file_name or die "ERROR: Cannot open $temp_file_name";
+    my @input_program_lines = <$fh>;
+    $rcmd = join("\n", @input_program_lines) . "\n";
+    close $fh;
+}
+print $tmp "$rcmd\n";
 if($rcmd =~ /ggplot/) {
-    print $tmp "plot(g);\n";
+    print $tmp "plot(g)\n";
 }
 print $tmp <<'EOS'
 # suppress messages
@@ -120,7 +172,8 @@ EOS
 ;
 }
 unless($param_image_file) {
-    print $tmp "unlink(file_name);\n";
+    print $tmp "unlink($param_image_file);\n" if($debug);
+    unlink($param_image_file);
 }
 close $tmp;
 
@@ -148,10 +201,10 @@ if($flag_download) {
     print STDERR "CMDLINE: $cmd\n" if($debug);
     system $cmd;
 }
-if($debug) {
-    print "rm $tmp\n";
+unless($flag_leavefile) {
+    print "rm $tmp\n" if($debug);
+    unlink $tmp unless($flag_leavefile);
 }
-unlink $tmp unless($flag_leavefile);
 
 
 =pod
@@ -243,6 +296,10 @@ Read from a CSV file with a single column, and plot the histogram of it using th
 Read from 'test.csv' with a column named "value", and plot the histogram of "value".
 
     plotr -c test.csv 'g <- ggplot(a, aes(x = value)) + geom_histogram()'
+
+Open an editor (specified by B<EDITOR> environment variable), create a plot from it.
+
+    plotr -i
 
 =head1 TROUBLESHOOTING
 
