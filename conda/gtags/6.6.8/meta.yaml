@@ -1,0 +1,15 @@
+{% set version = "6.6.8" %}
+
+package:
+  name: gnu-global
+  version: {{ version }}
+
+source:
+  url: https://ftp.gnu.org/pub/gnu/global/global-{{ version }}.tar.gz
+
+requirements:
+  build:
+    - python >=3.6
+
+about:
+  home: https://www.gnu.org/
