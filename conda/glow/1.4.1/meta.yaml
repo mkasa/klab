@@ -8,6 +8,7 @@ source:
   url: https://github.com/charmbracelet/glow/releases/download/v{{ version }}/glow_{{ version }}_linux_x86_64.tar.gz
 
 build:
+  binary_relocation: False
 
 about:
   home: https://github.com/charmbracelet/glow/
