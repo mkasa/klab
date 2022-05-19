@@ -1,0 +1,8 @@
+{% set version = "2.5.5" %}
+
+package:
+  name: tig
+  version: {{ version }}
+
+source:
+  url: https://github.com/jonas/tig/releases/download/tig-{{ version }}/tig-{{ version }}.tar.gz
