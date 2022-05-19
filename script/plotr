@@ -108,7 +108,7 @@ if($param_csv | $param_tsv | $flag_csv_stdin | $flag_tsv_stdin) {
 }
 if($flag_interactive_first || $flag_interactive_second) {
     my ($sec, $min, $hour, $mday, $mon, $year, $wday) = localtime();
-    my $temp_file_name = ($ENV{'TMP'} || $ENV{'TMPDIR'}) . "/" . sprintf("%02d-%02d-%02d.r", $year + 1900, $mon, $mday);
+    my $temp_file_name = ($ENV{'TMP'} || $ENV{'TMPDIR'} || "/tmp") . "/" . sprintf("%02d-%02d-%02d.r", $year + 1900, $mon, $mday);
     my $cmdline = $ENV{'EDITOR'};
     unless(defined $cmdline && $cmdline ne '') {
         $cmdline = 'vi';
@@ -166,7 +166,7 @@ unless($flag_yank) {
     print $tmp <<'EOS'
 if(file.exists(file_name)) {
     # suppress messages
-    dont_use_value <- system2("imgcat", file_name)
+    dont_use_value <- system2("imgcat2", file_name)
 }
 EOS
 ;
