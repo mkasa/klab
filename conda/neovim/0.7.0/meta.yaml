@@ -1,0 +1,12 @@
+{% set version = "0.7.0" %}
+
+package:
+  name: neovim
+  version: {{ version }}
+
+source:
+  url: https://github.com/neovim/neovim/releases/download/v{{ version }}/nvim-linux64.tar.gz
+
+about:
+  home: https://github.com/neovim/neovim/
+  license: CharityWare
