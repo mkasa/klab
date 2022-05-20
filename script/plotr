@@ -181,6 +181,9 @@ if($flag_showscript) {
     system "cat $tmp\n";
     exit 0;
 }
+unless(defined $ENV{'OPENBLAS_NUM_THREADS'}) {
+    $ENV{'OPENBLAS_NUM_THREADS'} = 4;
+}
 if($flag_yank) {
     ensure_iterm2_is_there();
     my $stdout_tmp = File::Temp->new( UNLINK => 0, SUFFIX => '.txt' );
