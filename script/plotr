@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 
 use strict;
-use Getopt::Long qw(:config no_ignore_case);
+use Getopt::Long qw(:config no_ignore_case bundling);
 use Pod::Usage;
 use Term::ANSIColor;
 use File::Temp qw/tempfile/;
@@ -214,11 +214,11 @@ unless($flag_leavefile) {
 
 =head1 NAME
 
-ggplot - display a graphical plot on terminal using iTerm2
+plotr - display a graphical plot on terminal using iTerm2
 
 =head1 SYNOPSIS
 
-ggplot [options...] [--csv <CSV file> | --tsv <TSV file>] <R command to plot>
+plotr [options...] [--csv <CSV file> | --tsv <TSV file>] <R command to plot>
 
 Options:
    --csv|-c           read CSV file
