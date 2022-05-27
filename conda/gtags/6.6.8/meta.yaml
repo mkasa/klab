@@ -10,6 +10,11 @@ source:
 requirements:
   build:
     - python >=3.6
+    - libiconv
+    - ncurses
+  run:
+    - libiconv
+    - ncurses
 
 about:
   home: https://www.gnu.org/
