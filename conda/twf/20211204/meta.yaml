@@ -1,0 +1,12 @@
+{% set version = "20211204" %}
+
+package:
+  name: twf
+  version: {{ version }}
+
+requirements:
+  build:
+    - go >=1.17
+
+about:
+  home: https://github.com/wvanlint/twf/
