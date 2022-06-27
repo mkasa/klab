@@ -2,6 +2,8 @@
 
 use strict;
 
+use threads;
+use Thread::Queue;
 use Getopt::Long;
 use Digest::SHA1;
 use DBI;
@@ -15,15 +17,16 @@ my $flag_remove = 0;
 my $flag_skip_error = 0;
 my $flag_summary = 0;
 my $flag_show_only_new_files = 0;
+my $param_num_threads = 1;
 
 GetOptions(
-	'a|add'  => \$flag_add,
-	's'      => \$flag_search,
+    'a|add'  => \$flag_add,
+    's'      => \$flag_search,
     'remove' => \$flag_remove,
     'eskip'  => \$flag_skip_error,
-	'h'      => \$flag_summary,
-	'n'      => \$flag_show_only_new_files,
-	'debug'  => \$debug
+    'h'      => \$flag_summary,
+    'n'      => \$flag_show_only_new_files,
+    'debug'  => \$debug
 );
 
 my $dbname = shift;
