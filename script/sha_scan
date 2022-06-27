@@ -4,7 +4,7 @@ use strict;
 
 use threads;
 use Thread::Queue;
-use Getopt::Long;
+use Getopt::Long qw(:config posix_default no_ignore_case gnu_compat);
 use Digest::SHA1;
 use DBI;
 use DBD::SQLite;
@@ -18,16 +18,33 @@ my $flag_skip_error = 0;
 my $flag_summary = 0;
 my $flag_show_only_new_files = 0;
 my $param_num_threads = 1;
+my @exclude_files_regex = ('^\._',
+                           '^\.dropbox\.device$',
+                           '^\.fseventsd$',
+                           '^fseventsd-uuid$',
+                           '^WPSettings\.dat$',
+                           '^desktop\.ini$',
+                          );
 
 GetOptions(
-    'a|add'  => \$flag_add,
-    's'      => \$flag_search,
-    'remove' => \$flag_remove,
-    'eskip'  => \$flag_skip_error,
-    'h'      => \$flag_summary,
-    'n'      => \$flag_show_only_new_files,
-    'debug'  => \$debug
+    'a|add'     => \$flag_add,
+    's'         => \$flag_search,
+    'remove'    => \$flag_remove,
+    'eskip'     => \$flag_skip_error,
+    'h'         => \$flag_summary,
+    'n'         => \$flag_show_only_new_files,
+    'exclude=s' => \@exclude_files_regex,
+    'debug'     => \$debug
 );
+
+sub is_excluded_name
+{
+    my $fname = shift;
+    for my $i (@exclude_files_regex) {
+        if($fname =~ $i) { return 1; }
+    }
+    return 0;
+}
 
 my $dbname = shift;
 my $dirname = shift;
@@ -73,6 +90,7 @@ sub add_wanted
 	my $f = $_;
 	my $fp = $File::Find::name;
 	my $ctx = Digest::SHA1->new;
+    return if(is_excluded_name($f));
 	unless(-d $f) {
 	    unless(open FH, "<", $f) {
  	        print STDERR "Could not open '$f'";
@@ -94,6 +112,7 @@ sub scan_wanted
 {
 	my $f = $_;
 	my $ctx = Digest::SHA1->new;
+    return if(is_excluded_name($f));
 	unless(-d $f) {
 	    unless(open FH, "<", $f) {
  	        print STDERR "Could not open '$f'";
@@ -131,6 +150,7 @@ sub remove_wanted
     # NOTE: this sub is basically dup of scan_wanted so should be refactored later.
 	my $f = $_;
 	my $ctx = Digest::SHA1->new;
+    return if(is_excluded_name($f));
 	unless(-d $f) {
 	    unless(open FH, "<", $f) {
  	        print STDERR "Could not open '$f'";
@@ -240,6 +260,9 @@ When this option is given, sha_scan outputs only the number of known/unknown fil
 =item B<--eskip>
 When a file could not be opened, B<sha_scan> immediately quits, but it continues
 when this option is given.
+
+=item B<--exclude>
+Exclude files whose file name matches to a specified regex pattern.
 
 =item B<-n>
 Show only new files. This option can be used only with -s.
