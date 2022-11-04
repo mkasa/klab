@@ -35,7 +35,7 @@ import os,sys,subprocess,csv,json,argparse
 class TSVWriter:
     def writerow(self, cols):
         cols = [str(x) for x in cols]
-        print "\t".join(cols);
+        print("\t".join(cols));
 
 class HTMLWriter:
     def writeheadrow(self, cols):
@@ -61,17 +61,17 @@ def convert_json_to_anotherformat(jsonobj, array_of_keys, writer, line_no):
     try:
         for key in array_of_keys:
             if not key in jsonobj:
-                print >>sys.stderr, "ERROR: does not contain a key '%s' at line %d" % (key, line_no)
+                print("ERROR: does not contain a key '%s' at line %d" % (key, line_no), file=sys.stderr)
                 sys.exit(2)
             value = jsonobj[key]
             csv_array.append(value)
-    except Exception, e:
-        print >>sys.stderr, "ERROR: ", e, "at line %d" % line_no
+    except Exception as e:
+        print("ERROR: ", e, "at line %d" % line_no, file=sys.stderr)
         sys.exit(2)
     try:
         writer.writerow(csv_array)
-    except Exception, e:
-        print >>sys.stderr, "ERROR: Output error at line %d" % line_no, ": ", e
+    except Exception as e:
+        print("ERROR: Output error at line %d" % line_no, ": ", e, file=sys.stderr)
         sys.exit(2)
 
 def main():
@@ -88,21 +88,21 @@ def main():
     args = parser.parse_args()
 
     if args.version:
-        print "json2csv version %s" % version_string
+        print("json2csv version %s" % version_string)
         sys.exit(0)
 
     # Get keys in the first line (using jq)
     first_line = sys.stdin.readline().strip()
     if len(first_line) < 2:
         if args.notfound:
-            print args.notfound
+            print(args.notfound)
             sys.exit(0)
         if args.allowempty and len(first_line) <= 0:
             sys.exit(0)
-        print >>sys.stderr, "ERROR: Input too short. Did put a JSON recond in a line? (if not, pass data through 'jq -c .')"
+        print("ERROR: Input too short. Did put a JSON recond in a line? (if not, pass data through 'jq -c .')", file=sys.stderr)
         sys.exit(1)
     if first_line[0] != '{' or first_line[-1] != '}':
-        print >>sys.stderr, "ERROR: The first line of the input does not look like a JSON (hash) object."
+        print("ERROR: The first line of the input does not look like a JSON (hash) object.", file=sys.stderr)
         sys.exit(1)
     if args.columns != None:
         array_of_keys = args.columns.split(",")
@@ -110,23 +110,23 @@ def main():
         try:
             p = subprocess.Popen(["jq", "-c", "keys"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, close_fds=True)
         except:
-            print >>sys.stderr, "ERROR: jq did not run. Probably you do not have jq installed properly?"
-            print >>sys.stderr, "       Please type jq [enter] to check if jq can be executed from command line."
-            print >>sys.stderr, "       If it does not help, please ask your system administrator."
+            print("ERROR: jq did not run. Probably you do not have jq installed properly?", file=sys.stderr)
+            print("       Please type jq [enter] to check if jq can be executed from command line.", file=sys.stderr)
+            print("       If it does not help, please ask your system administrator.", file=sys.stderr)
             sys.exit(1)
-        print >>p.stdin, first_line
+        print(first_line, file=p.stdin)
         p.stdin.close()
         processed = p.stdout.readline().strip()
         if len(processed) < 2:
-            print >>sys.stderr, "ERROR: jq error. The output of jq contains less than two characters."
+            print("ERROR: jq error. The output of jq contains less than two characters.", file=sys.stderr)
             sys.exit(1)
         if processed[0] != '[' or processed[-1] != ']':
-            print >>sys.stderr, "ERROR: jq error. The output of jq does not contain an array of keys."
+            print("ERROR: jq error. The output of jq does not contain an array of keys.", file=sys.stderr)
             sys.exit(1)
         try:
             array_of_keys = list(csv.reader([processed[1:-1]]))[0]
         except:
-            print >>sys.stderr, "ERROR: csv module (of Python) could not parse the output of jq (keys)"
+            print("ERROR: csv module (of Python) could not parse the output of jq (keys)", file=sys.stderr)
             sys.exit(1)
 
     # Output the header (if needed)
@@ -143,8 +143,8 @@ def main():
                 writer.writeheadrow(array_of_keys)
             else:
                 writer.writerow(array_of_keys)
-        except Exception, e:
-            print >>sys.stderr, "ERROR: Output error (header) :", e
+        except Exception as e:
+            print("ERROR: Output error (header) :", e, file=sys.stderr)
             sys.exit(1)
     # Output the CSV lines
     line_number = 1
@@ -155,8 +155,8 @@ def main():
             line_number += 1
             json_object = json.loads(line.strip())
             convert_json_to_anotherformat(json_object, array_of_keys, writer, line_number)
-    except Exception, e:
-        print >>sys.stderr, "ERROR: JSON parsing error at line %d : " % line_number, e
+    except Exception as e:
+        print("ERROR: JSON parsing error at line %d : " % line_number, e, file=sys.stderr)
         sys.exit(1)
     # Output the footer (if needed)
     if args.html:
