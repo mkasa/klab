@@ -162,7 +162,7 @@ def main():
     args = parser.parse_args()
 
     if args.version:
-        print "csv2md version %s" % version_string
+        print("csv2md version %s" % version_string)
         sys.exit(0)
     (column_names, header_attrs, data_attrs) = (None, None, None)
     # Get keys in the first line (using jq)
@@ -177,15 +177,15 @@ def main():
                 is_first_line = False
                 try:
                     (column_names, header_attrs, data_attrs) = parse_attributes(args.colfmt, len(line))
-                except Exception, e:
-                    print >> sys.argvstderr, "ERROR: attribute parsing failed: ", e
+                except Exception as e:
+                    print("ERROR: attribute parsing failed: ", e, file=sys.argvstderr)
                     sys.exit(2)
                 if not args.noheader:
                     writer.writeheadrow(line, data_attrs, column_names)
                     continue
             writer.writerow(line, data_attrs)
-    except Exception, e:
-        print >> sys.stderr, "ERROR: ", e, " at line %d" % line_count
+    except Exception as e:
+        print("ERROR: ", e, " at line %d" % line_count, file=sys.stderr)
         sys.exit(3)
 
 if __name__ == '__main__':
