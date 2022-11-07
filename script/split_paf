@@ -1,0 +1,95 @@
+#! /usr/bin/env python3
+
+import sys
+import argparse
+import pprint
+pp = pprint.PrettyPrinter(indent=2)
+import re
+import csv
+
+
+cigar_pattern = re.compile(r"\d+[MXID]")
+class pafData():
+	def __init__(self, qname, qlen, qstart, qend, strand, tname, tlen, tstart, tend, matches, block_len, MQ, cigar):
+		self.qname     = qname
+		self.qlen      = int(qlen)
+		self.qstart    = int(qstart)
+		self.qend      = int(qend)
+		self.strand    = strand
+		self.tname     = tname
+		self.tlen      = int(tlen)
+		self.tstart    = int(tstart)
+		self.tend      = int(tend)
+		self.matches   = int(matches)
+		self.block_len = int(block_len)
+		self.MQ        = MQ
+		self.cigar     = cigar
+	def __str__(self):
+		return f"{self.qname}\t{self.qlen}\t{self.qstart}\t{self.qend}\t{self.strand}\t{self.tname}\t{self.tlen}\t{self.tstart}\t{self.tend}\t{self.matches}\t{self.block_len}\t{self.MQ}\t{self.cigar}"
+	def cut_alignment_at_large_indel(self):
+		#開始座標の確認。strand == "+"かどうかで。
+		#cigarの読み込み。正規表現で分けて、matchesか何かでループする。
+		#q/tの座標をいじりながら別個のpafDataに分けていく
+		#strand="-"の場合、revcompとみなす。chain formatの用法に準拠
+		retArr = []
+		if self.strand == "+":
+			q_current_pos = self.qstart
+			t_current_pos = self.tstart
+			cigar_matches = re.findall(cigar_pattern, self.cigar)
+			for each_cigar_match in cigar_matches:
+				cigar_size = int(each_cigar_match[:-1])
+				cigar_type = each_cigar_match[-1]
+				if cigar_type in ["M", "X"]:
+					retArr.append(pafData(self.qname, self.qlen, q_current_pos, q_current_pos + cigar_size, self.strand, self.tname, self.tlen, t_current_pos, t_current_pos + cigar_size, self.matches, cigar_size, "none", each_cigar_match))
+					q_current_pos = q_current_pos + cigar_size
+					t_current_pos = t_current_pos + cigar_size
+				elif cigar_type in ["I"]:
+					q_current_pos = q_current_pos + cigar_size
+				elif cigar_type in ["D"]:
+					t_current_pos = t_current_pos + cigar_size
+			assert self.qend == q_current_pos, f"{self.qend} != {q_current_pos}"
+			assert self.tend == t_current_pos, f"{self.tend} != {t_current_pos}"
+		elif self.strand == "-":
+			q_current_pos = self.qlen - self.qstart
+			t_current_pos = self.tstart
+			cigar_matches = re.findall(cigar_pattern, self.cigar)
+			for each_cigar_match in cigar_matches:
+				cigar_size = int(each_cigar_match[:-1])
+				cigar_type = each_cigar_match[-1]
+				if cigar_type in ["M", "X"]:
+					retArr.append(pafData(self.qname, self.qlen, q_current_pos - cigar_size, q_current_pos, self.strand, self.tname, self.tlen, t_current_pos, t_current_pos + cigar_size, self.matches, cigar_size, "none", each_cigar_match))
+					q_current_pos = q_current_pos - cigar_size
+					t_current_pos = t_current_pos + cigar_size
+				elif cigar_type in ["I"]:
+					q_current_pos = q_current_pos - cigar_size
+				elif cigar_type in ["D"]:
+					t_current_pos = t_current_pos + cigar_size
+			assert self.qlen - self.qend == q_current_pos, f"{self.qend} != {q_current_pos}"
+			assert self.tend == t_current_pos, f"{self.tend} != {t_current_pos}"
+		return retArr
+
+
+def paf_reader(paf_file_name):
+	retArr = []
+	with open(paf_file_name, 'r') as f:
+		reader = csv.reader(f, delimiter='\t')
+		for line in reader:
+			retArr.append(pafData(*line))
+	return retArr
+
+def main():
+	parser = argparse.ArgumentParser(description='split paf file at INDEL')
+	parser.add_argument("PAFfilename", metavar='PAF', type=str, help='PAF file')
+	parser.add_argument("-o", metavar='FileName', type=str, help='output file name')
+	args          = parser.parse_args()
+	paf_file_name = args.PAFfilename
+	out_file_name = sys.stdout
+	if args.o is not None:
+		out_file_name = open(args.o, "w")
+	paf_data = paf_reader(paf_file_name)
+	for each_paf in paf_data:
+		each_alignment_block = each_paf.cut_alignment_at_large_indel()
+		for i in each_alignment_block:
+			print(i, file = out_file_name)
+if __name__ == '__main__':
+	main()

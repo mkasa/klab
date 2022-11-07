@@ -22,3 +22,5 @@ build
 *.fq
 *.fq.index
 edit.*
+Makefile
+.vscode

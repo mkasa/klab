@@ -1,0 +1,21 @@
+{% set version = "2.0.19" %}
+
+package:
+  name: q
+  version: {{ version }}
+
+source:
+  url: https://github.com/harelba/q/archive/{{ version }}.tar.gz
+
+requirements:
+  build:
+    - python {{ python }}
+    - setuptools
+    - six
+
+  run:
+    - python
+    - six
+
+about:
+  home: http://harelba.github.io/q/

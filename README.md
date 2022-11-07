@@ -67,5 +67,5 @@ The princple is that 3rd party libraries and their derivatives
 are basically licensed under their original licenses, while
 what we developed from scratch are licensed under the modified BSD.
 The 3rd party libraries include SQLite3 (http://www.sqlite.org/), sqdbcpp
-(http://code.google.com/p/sqdbcpp/).
+(http://code.google.com/p/sqdbcpp/), imgcat2 (modified from imgcat, https://iterm2.com/3.2/documentation-images.html).
 

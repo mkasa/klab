@@ -1,0 +1,37 @@
+{% set name = "python-neovim" %}
+{% set orig_name = "neovim" %}
+{% set version = "0.3.1" %}
+
+package:
+  name: "{{ name|lower }}"
+  version: "{{ version }}"
+
+source:
+  url: "https://pypi.io/packages/source/{{ orig_name[0] }}/{{ orig_name }}/{{ orig_name }}-{{ version }}.tar.gz"
+  sha256: a6a0e7a5b4433bf4e6ddcbc5c5ff44170be7d84259d002b8e8d8fb4ee78af60f
+
+build:
+  number: 0
+  script: "{{ PYTHON }} -m pip install . -vv"
+
+requirements:
+  host:
+    - pip
+    - pynvim >=0.3.1
+    - python
+  run:
+    - pynvim >=0.3.1
+    - python
+
+about:
+  home: "http://github.com/neovim/python-client"
+  license: Apache
+  license_family: APACHE
+  license_file: 
+  summary: "Transition packgage for pynvim"
+  doc_url: 
+  dev_url: 
+
+extra:
+  recipe-maintainers:
+    - your-github-id-here

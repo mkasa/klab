@@ -1,0 +1,15 @@
+{% set version = "1.4.1" %}
+
+package:
+  name: glow
+  version: {{ version }}
+
+source:
+  url: https://github.com/charmbracelet/glow/releases/download/v{{ version }}/glow_{{ version }}_linux_x86_64.tar.gz
+
+build:
+  binary_relocation: False
+
+about:
+  home: https://github.com/charmbracelet/glow/
+  license: MIT

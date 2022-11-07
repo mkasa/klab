@@ -1,0 +1,80 @@
+#!/usr/bin/env perl
+
+use strict;
+use JSON;
+
+my $dummy = <>; # skip header
+
+my $quaststats = [];
+my $current_alignment_frags = [];
+my $current_misassembly_frags = [];
+
+my $expect_align_stat = 1;
+
+while(<>){
+    chomp;
+    my @f = split(/\t/);
+    if($f[0] eq "CONTIG") {
+        $expect_align_stat = 1;
+        my ($contig_dummy, $contig_name, $contig_length, $contig_stat) = @f;
+        push(@{$quaststats}, {
+            name => $contig_name,
+            length => $contig_length + 0,
+            stat => $contig_stat,
+            alignments => $current_alignment_frags,
+            misassembly_frags => $current_misassembly_frags
+        });
+        $current_alignment_frags = [];
+        $current_misassembly_frags = [];
+        next;
+    }
+    if($expect_align_stat) {
+        # S1      E1      S2      E2      Reference       Contig  IDY     Ambiguous       Best_group
+        my $alignment_frag = {};
+        $alignment_frag->{ref_start_pos} = int($f[0]);
+        $alignment_frag->{ref_end_pos} = int($f[1]);
+        $alignment_frag->{con_start_pos} = int($f[2]);
+        $alignment_frag->{con_end_pos} = int($f[3]);
+        $alignment_frag->{reference} = $f[4];
+        $alignment_frag->{contig} = $f[5];
+        $alignment_frag->{identity} = $f[6] + 0.0;
+        $alignment_frag->{is_ambiguous} = $f[7] ? \1 : \0;
+        $alignment_frag->{best_group} = $f[7] ? \1 : \0;
+        push(@{$current_alignment_frags}, $alignment_frag);
+        $expect_align_stat = 0;
+    } else {
+        my $misassembly_frag = {};
+        my $mfrag = $f[0];
+        $misassembly_frag->{text} = $f[0];
+        if($mfrag =~ /^fake/) {
+            $misassembly_frag->{type} = "fake";
+        } elsif($mfrag =~ /^indel: indel \(<= 5bp\)/) {
+            $misassembly_frag->{type} = "indel";
+            $misassembly_frag->{size} = 1;
+        } elsif($mfrag =~ /^indel: indel \(> 5bp\)/) {
+            $misassembly_frag->{type} = "indel";
+            $misassembly_frag->{size} = 5;
+        } elsif($mfrag =~ /^indel: stretch/) {
+            $misassembly_frag->{type} = "indel";
+            $misassembly_frag->{size} = 0;
+        } elsif($mfrag =~ /^inversion/) {
+            $misassembly_frag->{type} = "inv";
+        } elsif($mfrag =~ /^local misassembly/) {
+            $misassembly_frag->{type} = "local_misassem";
+        } elsif($mfrag =~ /^relocation, inconsistency = (-?\d+)/) {
+            $misassembly_frag->{type} = "relocation";
+            $misassembly_frag->{size} = $1 + 0;
+        } elsif($mfrag =~ /^translocation/) {
+            $misassembly_frag->{type} = "transloc";
+        } elsif($mfrag =~ /^unknown/) {
+            $misassembly_frag->{type} = "unknown";
+        } else {
+            $misassembly_frag->{type} = "syntax_error";
+        }
+        push(@{$current_misassembly_frags}, $misassembly_frag);
+        $expect_align_stat = 1;
+    }
+}
+
+print encode_json($quaststats);
+

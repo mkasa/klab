@@ -202,7 +202,7 @@ sub return_status_silently($)
     if($type eq 'git') {
         my @s = `git status`;
         if($?) { die; }
-        return $s[-1] !~ m|working directory clean|;
+        return $s[-1] !~ m|working tree clean|;
     } elsif($type eq 'cvs') {
         print "Not implemented.\n";
     } elsif($type eq 'svn') {
