@@ -52,7 +52,6 @@ List
 |gfwhere|general|Find inconsistently replicated files in GlusterFS|
 |json2csv|general|Convert JSON into CSV|
 |csv2html|general|Convert CSV into HTML|
-|csv2md|general|Convert CSV into a table in Markdown extra|
 |split_paf|bio|Split alignments (PAF format) by looking CIGAR string|
 
 Licenses
