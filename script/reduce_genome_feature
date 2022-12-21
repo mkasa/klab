@@ -60,7 +60,7 @@ def parse_fa_idx_file(file_name):
     return retval
 
 
-def reduce_gffgene(gff_file_name, type_str, bin_size, faidx_file_name):
+def reduce_gffgene(gff_file_name, bin_size, faidx_file_name):
     """ cut the input GFF file into 1-Mb chunks
         and count the number of genes in each chunk.
         when a gene overlaps with multiple chunks,
