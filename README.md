@@ -47,16 +47,13 @@ List
 |icc-color|general|Color the output of Intel C++.|
 |mydaemon|general|Automatically set ups crontab to ensure your daemon is running. (Works without root)|
 |rep|general|Simple wrapper for different VCS such as svn/git/hg.|see also perldoc|
-|sq|general|Execute SQL queries over CSV files.|see also perldoc. requires a bunch of Perl modules. DBD::CSV is required.|
-|mddoc|general|Simple wrapper to view formatted Markdown (and restructured) texts via text browser|Requires Markdown.pl or pandoc.|
-|gmddoc|general|Simple wrapper to view formatted GitHub-flavored Markdown via (graphic) web browser|Requires grip (python module).|
 |sha_scan|general|Find duplicated files by collecting SHA1 hashes of files in a given directory.|
 |rep|general|Repository utilitiy (one command, manage svn/cvs/git/hg at once!)|
 |gfwhere|general|Find inconsistently replicated files in GlusterFS|
 |json2csv|general|Convert JSON into CSV|
 |csv2html|general|Convert CSV into HTML|
 |csv2md|general|Convert CSV into a table in Markdown extra|
-|split_paf|bio|Split alignments(PAF format) by looking CIGAR string|
+|split_paf|bio|Split alignments (PAF format) by looking CIGAR string|
 
 Licenses
 --------
