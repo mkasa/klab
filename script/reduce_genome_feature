@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+
+import sys
+import click
+import csv
+from Bio import SeqIO
+
+
+def reduce_fasta(fasta_file_name,
+                 type_str,
+                 minimum_length_to_output,
+                 bin_size=1000000):
+    """
+        Cut the input file into 1-Mb chunks and collect the feature metrics,
+        such as the number of Ns or GC% in each 1-Mb chunk.
+        The binsize is by default 1 Mb, but can be configured by bin_size.
+        Contigs shorter than minimum_length_to_output will be ignored.
+        type_str can be "N" or "GC".
+            When type_str is "N", the output is the number of Ns in each bin.
+            When type_str is "GC", the output is the GC% in each bin.
+    """
+    # show header
+    print("#seq_id\tstart\tend\tvalue")
+    for record in SeqIO.parse(fasta_file_name, "fasta"):
+        seq_name = record.id
+        seq = record.seq
+        if minimum_length_to_output <= len(seq):
+            for s in range(0, len(seq), bin_size):
+                chunk_seq = seq[s:s+bin_size]
+                if type_str == "GC":
+                    value = chunk_seq.count("G") + chunk_seq.count("C")
+                elif type_str == "N":
+                    value = chunk_seq.count("N")
+                else:
+                    print("Error: unknown type_str: {}".format(type_str))
+                    sys.exit(1)
+                end_pos = min(len(seq), s + bin_size)
+                print("{}\t{}\t{}\t{}".format(seq_name,
+                                              s,
+                                              end_pos - 1,
+                                              value / (end_pos - s)))
+
+
+def parse_fa_idx_file(file_name):
+    """ parse faidx file.
+        we assume that the faidx file is created by `samtools faidx`.
+        the function will return a dict of `sequence_name` -> `faidx_record`,
+        where `faidx_record` is a dict of `seq_len` and `offset`.
+        `seq_len` is the sequence length.
+        `offset` is the file offset of the first byte of the sequence.
+    """
+    retval = {}
+    with open(file_name, "r") as f:
+        for cols in csv.reader(f, delimiter="\t"):
+            seq_name = cols[0]
+            seq_len = int(cols[1])
+            byte_offset = int(cols[2])
+            retval[seq_name] = {"seq_len": seq_len, "byte_offset": byte_offset}
+            # print(f"{seq_name=}, {seq_len=}")
+    return retval
+
+
+def reduce_gffgene(gff_file_name, type_str, bin_size, faidx_file_name):
+    """ cut the input GFF file into 1-Mb chunks
+        and count the number of genes in each chunk.
+        when a gene overlaps with multiple chunks,
+        all overlaps chunks will be counted.
+    """
+    # show header for output TSV
+    print("#seq_id\tstart\tend\tvalue")
+    retval = {}
+    seqname_2_faidx_record = parse_fa_idx_file(faidx_file_name)
+    for seqname, faidx_record in seqname_2_faidx_record.items():
+        seq_len = faidx_record["seq_len"]
+        retval[seqname] = [0] * ((seq_len + bin_size - 1) // bin_size)
+    with open(gff_file_name, "r") as f:
+        for cols in csv.reader(f, delimiter="\t"):
+            if cols[2] == "gene":
+                seq_id = cols[0]
+                start = int(cols[3])
+                end = int(cols[4])
+                start_bin = start // bin_size
+                end_bin = (end + bin_size - 1) // bin_size
+                if seq_id not in retval:
+                    retval[seq_id] = []
+                if len(retval[seq_id]) <= end_bin:
+                    retval[seq_id] += [0] * (end_bin + 1 - len(retval[seq_id]))
+                for i in range(start_bin, end_bin + 1):
+                    retval[seq_id][i] += 1
+    for seq_id, vs in retval.items():
+        for i, v in enumerate(vs):
+            print("{}\t{}\t{}\t{}".format(seq_id,
+                                          i * bin_size + 1,
+                                          (i + 1) * bin_size,
+                                          v))
+
+
+def reduce_bed(bed_file_name, bin_size, faidx_file_name):
+    """ cut the input BED file into 1-Mb chunks
+        and collect the feature counts per base.
+    """
+    # show header for output TSV
+    print("#seq_id\tstart\tend\tvalue")
+    retval = {}
+    seqname_2_faidx_record = parse_fa_idx_file(faidx_file_name)
+    for seqname, faidx_record in seqname_2_faidx_record.items():
+        seq_len = faidx_record["seq_len"]
+        retval[seqname] = [0] * ((seq_len + bin_size - 1) // bin_size)
+    with open(bed_file_name, "r") as f:
+        _ = f.readline()  # Skip header
+        for cols in csv.reader(f, delimiter="\t"):
+            seq_id = cols[0]
+            start = int(cols[1])
+            end = int(cols[2])
+            # print(f'{seq_id=}, {start=}, {end=}')
+            ss = start
+            while ss < end:
+                step_size = min(end - ss, bin_size)
+                retval[seq_id][ss // bin_size] += step_size
+                # print(f'  Adding {step_size} to [{ss // bin_size}]')
+                ss += step_size
+    for seqname, faidx_record in seqname_2_faidx_record.items():
+        seq_len = faidx_record["seq_len"]
+        count_array = retval[seqname]
+        # print(f"{seqname=}, lsize = {len(count_array)}, {bin_size=}")
+        for i in range(len(count_array)):
+            start_pos = i * bin_size
+            local_bin_size = min(bin_size, seq_len - start_pos)
+            end_pos = start_pos + local_bin_size
+            print("{}\t{}\t{}\t{:.3f}".format(seqname,
+                                              start_pos + 1,
+                                              end_pos,
+                                              count_array[i] / local_bin_size))
+
+
+@click.command()
+@click.option('--gffgene', is_flag=True, help='reduce gffgene file')
+@click.option('--bed', is_flag=True, help='reduce bed file')
+@click.option('--fastagc', is_flag=True, help='reduce fasta file and calculate GC%')  # noqa: E501
+@click.option('--fastan', is_flag=True, help='reduce fasta file and calculate N%')  # noqa: E501
+@click.option('--minsize', default=1000000, help='minimum size of the sequence to reduce')  # noqa: E501
+@click.option('--binsize', default=1000000, help='bin size')
+@click.option('--faidx', help='specify faidx')
+@click.argument('input_file')
+def main(input_file, gffgene, bed, fastagc, fastan, minsize, binsize, faidx):
+    if fastagc:
+        reduce_fasta(input_file, "GC", minsize, binsize)
+    elif fastan:
+        reduce_fasta(input_file, "N", minsize, binsize)
+    elif gffgene:
+        reduce_gffgene(input_file, binsize, faidx)
+    elif bed:
+        reduce_bed(input_file, binsize, faidx)
+    else:
+        print("Error: no input file type specified")
+
+
+if __name__ == "__main__":
+    main()
+
+"""
+TIPS: type 'perldoc reduce_genome_feature' to see this documentation in terminal.
+
+=pod
+
+=head1 NAME
+
+reduce_genome_feature - reduce genome feature into 1-Mb chunks and output the overview data
+
+=head1 SYNOPSIS
+
+mydaemon [options] 
+
+Options:
+   -help            brief help message
+   -man             full documentation
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+B<reduce_genome_feature> reads a given input genome/annotation file and outputs the overview
+data, which is usually calculated for every 1-Mb chunk.
+
+
+=cut
+"""
+
