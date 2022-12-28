@@ -5,7 +5,7 @@ csv2html: a standalone utility to convert CSV into HTML
 usage: cat example.csv | csv2html [options...] [column names and attributes]
 
 options:
-	-v	show the version and exit
+    -v  show the version and exit
     -n  no header (i.e, the first line of CSV is not a header)
 
 This utility converts an input file of CSV format into an HTML.]
@@ -28,9 +28,13 @@ If you do want to specify an attribute for the header line, you can give it afte
 
 """
 
+import sys
+import csv
+import argparse
+
+
 version_string = "1.00"
 
-import os,sys,csv,argparse
 
 class HTMLWriter:
     def styles_to_style_str(self, styles):
@@ -79,7 +83,7 @@ class HTMLWriter:
         sys.stdout.write("<tr>")
         for i, a, name in zip(cols, attrs, col_names):
             # print "i = ", i, ", a = ", a, ", name = ", name
-            s = str(i) if name == None else name
+            s = str(i) if name is None else name
             a['header'] = True
             sys.stdout.write(self.to_html_tag("th", s, a))
         sys.stdout.write("</tr>\n")
@@ -91,14 +95,17 @@ class HTMLWriter:
             sys.stdout.write(self.to_html_tag("td", str(i), a))
         sys.stdout.write("</tr>\n")
 
+
 def w(a):
     sys.stdout.write(a)
+
 
 def parse_attributes(cfs, col_num):
     """ parses attribute strings, and returns a triplet of the column names, the header attributes and the data attributes """
     cnames = []
     hattr = []
     dattr = []
+
     def parse_attr_str(s):
         d = {'align': None, 'sepc': False, 'ratio': False, 'fmtr': ""}
         if len(s) < 1: return d
@@ -158,6 +165,7 @@ def parse_attributes(cfs, col_num):
         dattr.append(null_attributes)
     return cnames, hattr, dattr
 
+
 def main():
     # Parse arguments
     parser = argparse.ArgumentParser(description='Convert JSON (one JSON object, one line) into CSV')
@@ -185,7 +193,7 @@ def main():
                 try:
                     (column_names, header_attrs, data_attrs) = parse_attributes(args.colfmt, len(line))
                 except Exception as e:
-                    print("ERROR: attribute parsing failed: ", e, file=sys.argvstderr)
+                    print("ERROR: attribute parsing failed: ", e, file=sys.stderr)
                     sys.exit(2)
                 if not args.noheader:
                     writer.writeheadrow(line, header_attrs, column_names)
@@ -196,6 +204,6 @@ def main():
         sys.exit(3)
     if not args.notabletag: w("</table>\n")
 
+
 if __name__ == '__main__':
     main()
-
