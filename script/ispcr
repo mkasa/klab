@@ -42,7 +42,7 @@ GetOptions( 'help|?'           => \$flag_help,
 	        'noNonSpecific'    => \$flag_nononspecific,
 	        'displaynohit'     => \$flag_dispnohit,
 	        'nowholesSequence' => \$isFastaCMDMode,
-                'accurate'         => \$flag_accurate,	    
+            'accurate'         => \$flag_accurate,
 	        'maxPrimingSite=i' => \$param_maxallowablenonspecificlinear
 	        ) or pod2usage(2);
 pod2usage(1) if $flag_help;
