@@ -24,3 +24,6 @@ build
 edit.*
 Makefile
 .vscode
+GPATH
+GTAGS
+GRTAGS
