@@ -16,6 +16,9 @@ my $param_csv               = undef;
 my $flag_csv_stdin          = 0;
 my $param_tsv               = undef;
 my $param_image_file        = undef;
+my $param_height            = undef;
+my $param_width             = undef;
+my $flag_verbose            = 0;
 my $flag_tsv_stdin          = 0;
 
 my $flag_help = 0;
@@ -31,11 +34,14 @@ GetOptions(
     'tsv|t=s'       => \$param_tsv,
     'C'             => \$flag_csv_stdin,
     'T'             => \$flag_tsv_stdin,
+    'height|h=i'    => \$param_height,
+    'width|w=i'     => \$param_width,
     'interactive|i' => \$flag_interactive_first,
     "edit|e"        => \$flag_interactive_second,
     'download|d'    => \$flag_download,
     'output|o=s'    => \$param_image_file,
     'yank|y'        => \$flag_yank,
+    'verbose|v'     => \$flag_verbose,
     'debug'         => \$debug,
 ) or pod2usage(2);
 pod2usage(1) if $flag_help;
@@ -64,36 +70,68 @@ sub ensure_iterm2_is_there()
     }
 }
 
-my $tmp = File::Temp->new( UNLINK => 0, SUFFIX => '.r' );
-if($flag_download && !$param_image_file) {
+sub get_a_figure_file_name()
+{
     my $num = 1;
     while(1) {
         my $fname = sprintf("figure%d.png", $num);
         unless(-e $fname) {
-            $param_image_file = $fname;
-            last;
+            return $fname;
         }
         $num++;
     }
+    die;
+}
+
+my $tmp = File::Temp->new( UNLINK => 0, SUFFIX => '.r' );
+if($flag_download && !$param_image_file) {
+    $param_image_file = get_a_figure_file_name();
 }
 if($param_image_file) {
     print $tmp "file_name <- \"$param_image_file\";"
 } else {
     print $tmp <<'EOS'
 # generate a temporary file name
-file_name <- tempfile(pattern = "file", tmpdir = tempdir(), fileext = "")
+file_name <- tempfile(pattern = "file", tmpdir = tempdir(), fileext = ".png")
 EOS
 ;
 }
 
-print $tmp <<'EOS'
+my $suppress_package_startup_message_begin = '';
+my $suppress_package_startup_message_end = '';
+unless($flag_verbose) {
+    $suppress_package_startup_message_begin = 'suppressPackageStartupMessages(';
+    $suppress_package_startup_message_end = ')';
+}
+
+print $tmp <<"EOS"
 # set the output to the temporary png file
 png(file_name)
 # load tidyverse and ggplot2 but suppress the loading messages
-suppressPackageStartupMessages(library(tidyverse))
-suppressPackageStartupMessages(library(ggplot2))
+${suppress_package_startup_message_begin}library(tidyverse)${suppress_package_startup_message_end}
 EOS
 ;
+
+if($rcmd =~ /gt\(\)/) {
+    print $tmp <<"EOS"
+${suppress_package_startup_message_begin}library(gt)${suppress_package_startup_message_end}
+EOS
+;
+}
+
+if($rcmd =~ /ggplot\(\)/) {
+    print $tmp <<"EOS"
+${suppress_package_startup_message_begin}library(ggplot2)${suppress_package_startup_message_end}
+EOS
+;
+}
+
+my $suppress_message_begin = '';
+my $suppress_message_end = '';
+unless($flag_verbose) {
+    $suppress_message_begin = 'suppressMessages(';
+    $suppress_message_end = ')';
+}
 
 if($param_csv || $param_tsv || $flag_csv_stdin || $flag_tsv_stdin) {
     my $function_name = "read_csv";
@@ -104,7 +142,7 @@ if($param_csv || $param_tsv || $flag_csv_stdin || $flag_tsv_stdin) {
         $filename = "\"$param_tsv\"";
     }
     $filename = 'file("stdin")' if($flag_csv_stdin || $flag_tsv_stdin);
-    print $tmp "a <- $function_name($filename$extra_opts);\n";
+    print $tmp "a <- $suppress_message_begin$function_name($filename$extra_opts)$suppress_message_end;\n";
 }
 if($flag_interactive_first || $flag_interactive_second) {
     my ($sec, $min, $hour, $mday, $mon, $year, $wday) = localtime();
@@ -156,6 +194,9 @@ print $tmp "$rcmd\n";
 if($rcmd =~ /ggplot/) {
     print $tmp "plot(g)\n";
 }
+if($rcmd =~ /gt\(\)/) {
+    print $tmp "${suppress_message_begin}gtsave(g, file_name)${suppress_message_end}\n";
+}
 print $tmp <<'EOS'
 # suppress messages
 dont_use_value <- dev.off()
@@ -166,7 +207,16 @@ unless($flag_yank) {
     print $tmp <<'EOS'
 if(file.exists(file_name)) {
     # suppress messages
-    dont_use_value <- system2("imgcat2", file_name)
+EOS
+;
+    if($param_height) {
+        print $tmp "    dont_use_value <- system2(\"imgcat\", c(\"--height\", $param_height, file_name))\n";
+    } elsif($param_width) {
+        print $tmp "    dont_use_value <- system2(\"imgcat\", c(\"--width\", $param_width, file_name))\n";
+    } else {
+        print $tmp "    dont_use_value <- system2(\"imgcat\", file_name)\n";
+    }
+    print $tmp <<'EOS'
 }
 EOS
 ;
@@ -284,10 +334,11 @@ Prints the manual page and exits.
 =head1 DESCRIPTION
 
 B<plotr> creates a graphical plot using R, and put the image on your terminal.
-B<plotr> uses B<imgcat> and the function of iTerm2, so you need to install B<imgcat> and iTerm2 in advance.
-iTerm2 is available at https://iterm2.com/ (macOS only). B<imgcat> can be installed by typing B<pip install imgcat>.
+B<plotr> uses B<imgcat> and the function of iTerm2, so you need to install B<imgcat> and iTerm2 (or compatible terminals such as Wezterm) in advance.
+B<imgcat> can be installed by typing B<pip install imgcat>.
 
 Another prerequisite is B<R>. In the B<R> environment, B<plotr> uess B<tidyverse> and B<plotr>, so they both must be installed in advance.
+When you use gt's table output, you need to install a couple of more packages, such as B<webshot2>.
 
 The command line arguments are basically a series of R commands.
 
@@ -304,6 +355,14 @@ Open an editor (specified by B<EDITOR> environment variable), create a plot from
 
     plotr -i
 
+The previous run of B<plotr> failed, and you want to edit the script to fix it and to rerun it.
+
+    plotr -e
+
+Load a CSV file, and show the frequency of each publisher in the descending order.
+
+    plotr -c best-selling-manga.csv 'a |> select(Publisher) |> count(Publisher) |> arrange(desc(n)) |> gt() -> g'
+
 =head1 TROUBLESHOOTING
 
 =item B<Is R installed?>
@@ -313,11 +372,6 @@ You need to make sure R is installed and is on PATH.
 =item B<Is tidyverse installed?>
 
 You need to install tidyverse even if you do not use it on plotr.
-
-=item B<Is ggplot2 installed?>
-
-You need to install ggplot2 even if you do not use it on plotr.
-
 
 =cut
 
