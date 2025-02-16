@@ -108,20 +108,20 @@ print $tmp <<"EOS"
 # set the output to the temporary png file
 png(file_name)
 # load tidyverse and ggplot2 but suppress the loading messages
-${suppress_package_startup_message_begin}library(tidyverse)${suppress_package_startup_message_end}
+${suppress_package_startup_message_begin}pacman::p_load(tidyverse)${suppress_package_startup_message_end}
 EOS
 ;
 
 if($rcmd =~ /gt\(\)/) {
     print $tmp <<"EOS"
-${suppress_package_startup_message_begin}library(gt)${suppress_package_startup_message_end}
+${suppress_package_startup_message_begin}pacman::p_load(gt)${suppress_package_startup_message_end}
 EOS
 ;
 }
 
 if($rcmd =~ /ggplot\(\)/) {
     print $tmp <<"EOS"
-${suppress_package_startup_message_begin}library(ggplot2)${suppress_package_startup_message_end}
+${suppress_package_startup_message_begin}pacman::p_load(ggplot2)${suppress_package_startup_message_end}
 EOS
 ;
 }
