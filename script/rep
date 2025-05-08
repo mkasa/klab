@@ -656,7 +656,11 @@ Print a brief help message and exits.
 
 =head1 DESCRIPTION
 
-When you have checkout directories of different versioning system such as CVS/SVN/Mercurial/git, you might often get confused with their slightly difference in command syntax, or you might want to do similar commands to checkout directories of different versioning system. rep provides a capability to help you in such a situation.
+When you have the checkout directories of different versioning system such as CVS/SVN/Mercurial/git,
+you might often get confused with their slight differences in command-line syntax,
+or you might want to do similar commands to checkout directories of different versioning system.
+B<rep> to help you do the jobs in such a situation.
+
 
 =cut
 
