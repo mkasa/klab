@@ -1,0 +1,193 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+sub show_usage()
+{
+    print "Usage: $0 <subcommand>\n";
+    print "Subcommands:\n";
+    print "  hook: Set up a prepare-commit-msg hook\n";
+    print "  unhook: Remove a prepare-commit-msg hook\n";
+    exit 1;
+}
+
+sub generate_commit_msg()
+{
+    my $commit_message_file = $ARGV[0];
+
+    open my $fh, '>', $commit_message_file or die "Could not open $commit_message_file: $!";
+    my @diff_output = `git diff --cached`;
+    my @diffs;
+    my $current_obj = undef;
+    for(@diff_output) {
+        chomp;
+        if(m|^diff --git a/(.*?) b/(.*)$|) {
+            if($current_obj) {
+                push @diffs, $current_obj;
+            }
+            $current_obj = {file => $2, msg => undef, type => undef};
+            next;
+        }
+        if(/^[+-subproject]/) {
+            $current_obj->{msg} = "bump up";
+            $current_obj->{type} = "chore";
+            next;
+        }
+        if(/^new file mode/) {
+            $current_obj->{msg} = "added " . $current_obj->{file};
+            $current_obj->{type} = "feat";
+            next;
+        }
+    }
+    if($current_obj) {
+        push @diffs, $current_obj;
+    }
+
+    for(@diffs) {
+        print $fh "$_->{type}($_->{file}): $_->{msg}\n";
+    }
+    close $fh;
+}
+
+sub ensure_in_git_repo()
+{
+    my $git_dir = '.git';
+    if(!-d $git_dir) {
+        die "Not in a git repository\n";
+    }
+}
+
+sub set_hook()
+{
+    my $hook_dir = '.git/hooks';
+    my $hook_file = 'prepare-commit-msg';
+    my $hook_path = "$hook_dir/$hook_file";
+    my $script_path = $0;
+
+    if(-e $hook_path) {
+        print "hook already exists: $hook_path\n";
+        return;
+    }
+
+    # Create a symlink
+    symlink($script_path, $hook_path) or die "Could not create symlink $hook_path: $!";
+    print "hook created: $hook_path\n";
+}
+
+sub unset_hook()
+{
+    my $hook_dir = '.git/hooks';
+    my $hook_file = 'prepare-commit-msg';
+    my $hook_path = "$hook_dir/$hook_file";
+
+    if(!-e $hook_path) {
+        print "hook does not exist: $hook_path\n";
+        return;
+    }
+
+    unlink($hook_path) or die "Could not remove $hook_path: $!";
+    print "hook removed: $hook_path\n";
+}
+
+use File::Basename;
+my $base_name = basename($0);
+if($base_name eq "prepare-commit-msg") {
+    generate_commit_msg();
+    exit 0;
+}
+
+use Getopt::Long;
+
+my $debug = 0;
+GetOptions(
+    'debug' => \$debug
+);
+
+my $subcmd = shift;
+if($subcmd eq 'hook') {
+    ensure_in_git_repo();
+    set_hook();
+    exit 0;
+}
+if($subcmd eq 'unhook') {
+    ensure_in_git_repo();
+    unset_hook();
+    exit 0;
+}
+
+show_usage();
+
+=pod
+
+=head1 NAME
+
+cco - Prepare commit message generator for git repositories
+
+=head1 SYNOPSIS
+
+cco [options] <subcommand>
+
+=head1 DESCRIPTION
+
+cco is a script that generates commit messages for git repositories based on the changes in the staging area. It can also set up a prepare-commit-msg hook to automate this process.
+The script can be used to generate commit messages based on the changes in the staging area. It can also set up a prepare-commit-msg hook to automate this process.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--debug>
+
+Enable debug mode. This will print additional information to the console.
+
+=item B<--help>
+
+Print a brief help message and exits.
+
+=item B<--version>
+
+Print the version number and exits.
+
+=back
+
+=head1 SUBCOMMANDS
+
+=over 8
+
+=item B<hook>
+
+Set up a prepare-commit-msg hook for a git repo; the current directory is assumed to be the root of the repository. This will create a symlink to the script in the .git/hooks directory.
+
+=item B<unhook>
+
+Remove the prepare-commit-msg hook from a git repo; the current directory is assumed to be the root of the repository. This will remove the symlink from the .git/hooks directory.
+
+=back
+
+=head1 EXAMPLES
+
+=over 8
+
+=item B<cco hook>
+
+Set up a prepare-commit-msg hook for the current git repository.
+
+=item B<cco unhook>
+
+Remove the prepare-commit-msg hook from the current git repository.
+
+=back
+
+=head1 AUTHOR
+
+Masahiro Kasahara
+
+=head1 LICENSE
+
+This script is released under the MIT License.
+
+=cut
+
+
+
