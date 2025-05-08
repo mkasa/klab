@@ -147,10 +147,10 @@ B<mydaemon> manages processes that must be resident on system but works without 
 You may sometimes feel that it is convenient if you could run your daemon when a system
 starts up. B<mydaemon> is a tool for that.
 
-First, B<mydaemon> registers itself to crontab. The use of the crontab must be available;
+First, B<mydaemon> registers itself to crontab. The permission to use crontab must be given to a user;
 if your system admin does not allow you to use crontab, B<mydaemon> would not work at all.
-The registered B<mydaemon> checks periodically whether your daemons are running and up.
-If B<mydaemon> finds that your daemons are not running, it starts them up.
+The registered B<mydaemon> checks periodically whether your daemons are up and running.
+When B<mydaemon> finds that your daemons are not running, it launches them up.
 
 Next, you create a directory under '~/.mydaemon'. One directory corresponds to one daemon.
 Suppose if you created '~/.mydaemon/test'.
