@@ -1,7 +1,7 @@
 
 # -*- python -*-
 APPNAME = 'kalab'
-VERSION = '1.46'
+VERSION = '1.47.0'
 
 def options(opt):
     opt.load(['compiler_c', 'compiler_cxx', 'python', 'perl'])
@@ -25,7 +25,7 @@ def build(bld):
     bld(features = 'cxx c cxxprogram', source = ['src/fatt.cc', 'src/sqlite3.c', 'src/sqdb.cc'], target = 'fatt')
     executables = ['convertsequence', 'fixshebang', 'icc-color', 'gcc-color',
                    'mydaemon', 'rep', 'sha_scan', 'sha_scanp', 'gfwhich', 'json2csv', 'csv2html', 'plotr',
-                   'ispcr', 'headtail', 'recompressbyxz', 'split_paf', 'reduce_genome_feature']
+                   'ispcr', 'headtail', 'recompressbyxz', 'split_paf', 'reduce_genome_feature', 'cco']
     # bld.install_files('${PREFIX}/bin', ['script/' + x for x in executables], chmod=0755)
     bld.install_files('${PREFIX}/bin', ['script/' + x for x in executables], chmod=Utils.O755)
     if bld.options.enable_perl:

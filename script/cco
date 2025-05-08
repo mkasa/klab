@@ -2,13 +2,15 @@
 
 use strict;
 use warnings;
+use Cwd;
 
 sub show_usage()
 {
-    print "Usage: $0 <subcommand>\n";
+    print "\nUsage: $0 <subcommand>\n\n";
     print "Subcommands:\n";
     print "  hook: Set up a prepare-commit-msg hook\n";
     print "  unhook: Remove a prepare-commit-msg hook\n";
+    print "\n";
     exit 1;
 }
 
@@ -64,10 +66,15 @@ sub set_hook()
     my $hook_file = 'prepare-commit-msg';
     my $hook_path = "$hook_dir/$hook_file";
     my $script_path = $0;
+    # Get the absolute path of the script
+    $script_path = Cwd::abs_path($script_path);
 
     if(-e $hook_path) {
         print "hook already exists: $hook_path\n";
         return;
+    }
+    if(-l $hook_path) {
+        print STDERR "WARNING: $hook_path is a symlink, but the target does not exist. Try to overwrite it.\n";
     }
 
     # Create a symlink
@@ -81,7 +88,7 @@ sub unset_hook()
     my $hook_file = 'prepare-commit-msg';
     my $hook_path = "$hook_dir/$hook_file";
 
-    if(!-e $hook_path) {
+    unless(-l $hook_path) {
         print "hook does not exist: $hook_path\n";
         return;
     }
@@ -104,7 +111,7 @@ GetOptions(
     'debug' => \$debug
 );
 
-my $subcmd = shift;
+my $subcmd = shift || '';
 if($subcmd eq 'hook') {
     ensure_in_git_repo();
     set_hook();
