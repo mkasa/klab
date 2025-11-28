@@ -101,6 +101,9 @@ while(my $file = shift) {
 	}
 	close $ofh;
 	close $fh;
+    # preserve the permission of the file
+    my @st = stat($file);
+    chmod($st[2] & 07777, $tmp_file_name) or warn "Could not chmod '$tmp_file_name': $!\n";
 	print "Renaming '$tmp_file_name' to '$file'\n" if($flag_debug);
 	unless(rename($tmp_file_name, $file)) {
 		print STDERR "Could not rename '$tmp_file_name' to '$file'. Maybe permission denied?\n";
