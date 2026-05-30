@@ -87,8 +87,21 @@ function error() {
 }
 
 function show_help() {
-    echo "Usage: imgcat [-p] filename ..." 1>&2
-    echo "   or: cat filename | imgcat" 1>&2
+    echo "Usage: imgcat2 [-p] [-W width] [-H height] filename ..." 1>&2
+    echo "   or: cat filename | imgcat2" 1>&2
+    echo "   or: imgcat2 -u url" 1>&2
+    echo "" 1>&2
+    echo "Options:" 1>&2
+    echo "  -p, --print          print the filename before the image" 1>&2
+    echo "  -W, --width  VALUE   image width  (e.g. 100px, 50%, 10; default 35%)" 1>&2
+    echo "  -H, --height VALUE   image height (e.g. 100px, 50%, 10)" 1>&2
+    echo "  -u, --url    URL     download an image from URL and show it" 1>&2
+    echo "  -h, --help           show this help" 1>&2
+    echo "" 1>&2
+    echo "VALUE for -W/-H follows the iTerm2 spec:" 1>&2
+    echo "  N    number of character cells" 1>&2
+    echo "  Npx  number of pixels" 1>&2
+    echo "  N%   percentage of the terminal width/height" 1>&2
 }
 
 function check_dependency() {
@@ -121,15 +134,15 @@ print_height=""
 # Look for command line flags.
 while [ $# -gt 0 ]; do
     case "$1" in
-    -h | --h | --help)
+    -h | --help)
         show_help
         exit
         ;;
-    -w | --w | --width)
+    -W | --width)
 	print_width=$2
 	shift
 	;;
-    -h | --h | --height)
+    -H | --height)
 	print_height=$2
 	shift
 	;;
