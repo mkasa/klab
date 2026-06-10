@@ -31,9 +31,10 @@ sub generate_commit_msg()
             $current_obj = {file => $2, msg => undef, type => undef};
             next;
         }
-        if(/^[+-subproject]/) {
+        if(/^[+-subproject] (.*)$/) {
             $current_obj->{msg} = "bump up";
             $current_obj->{type} = "chore";
+            $current_obj->{file} = $2;
             next;
         }
         if(/^new file mode/) {
