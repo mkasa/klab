@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <zlib.h>
 #include "sqdb.h"
 //#include <stackdump.h>
 //#include <debug.h>
@@ -119,12 +120,12 @@ static bool doesIndexExist(const char* fastq_file_name)
 
 static bool is_file_fastq(const char* fastq_file_name)
 {
-    ifstream ist(fastq_file_name);
-    if(!ist) return false;
-    string line;
-    if(!getline(ist, line)) return false;
-    if(line.empty() || line[0] != '@') return false;
-    return true;
+    // gzopen() transparently handles both gzip-compressed and plain files.
+    gzFile gzf = gzopen(fastq_file_name, "rb");
+    if(gzf == NULL) return false;
+    const int first_char = gzgetc(gzf);
+    gzclose(gzf);
+    return first_char == '@';
 }
 
 class FileBuffering
@@ -158,9 +159,8 @@ public:
 
 class FileLineBufferWithAutoExpansion
 {
-    ifstream ist;
-    bool is_first_open;
-    vector<char> bufferForIFStream;
+    gzFile gzf; ///< gzopen() reads both gzip-compressed and plain files transparently.
+    bool failed;
     string fileName;
     static const size_t INITIAL_BUFFER_SIZE = 8 * 1024u;
     static const size_t STREAM_BUFFER_SIZE = 16 * 1024u * 1024u;
@@ -201,61 +201,77 @@ public:
         line_count = 0; // Just for safety
         off_count = 0;
         headerID.reserve(INITIAL_BUFFER_SIZE);
-        bufferForIFStream.resize(STREAM_BUFFER_SIZE);
-        is_first_open = true;
+        gzf = NULL;
+        failed = false;
     }
     ~FileLineBufferWithAutoExpansion() {
-        if(!is_first_open) close();
+        close();
         delete[] b;
     }
     bool open(const char* file_name) {
         if(isDirectory(file_name)) { return false; }
-        if(is_first_open) {
-            is_first_open = false;
-            ist.rdbuf()->pubsetbuf(&*bufferForIFStream.begin(), bufferForIFStream.size());
-        } else {
-            close();
-        }
-        ist.open(file_name, ios::binary);
+        close();
+        gzf = gzopen(file_name, "rb");
+        if(gzf == NULL) { failed = true; return false; }
+        gzbuffer(gzf, STREAM_BUFFER_SIZE);
+        failed = false;
         line_count = 0;
         off_count = 0;
         fileName = file_name;
-        return !ist.fail();
+        return true;
     }
     void close() {
-        ist.close();
+        if(gzf != NULL) { gzclose(gzf); gzf = NULL; }
     }
     bool getline() {
         bufferOffsetToBeFill = 0u;
+        bool got_any = false;
         do {
-            if(ist.getline(b + bufferOffsetToBeFill, currentBufferSize - bufferOffsetToBeFill)) {
-                line_count++;
-                off_count += strlen(b) + 1; // for the delimiter
-                const bool isFirstLine = line_count == 1;
-                if(isFirstLine) {
-                    if(looksLikeFASTQHeader()) {
-                        isFASTQMode = true;
-                        registerHeaderLine();
-                    } else if(looksLikeFASTAHeader()) {
-                        isFASTAMode = true;
-                    } else {
-                        cerr << fileName << " does not look like either of FASTA/FASTQ!\n";
-                        exit(1);
-                    }
-                }
-                return true;
+            const size_t remaining = currentBufferSize - bufferOffsetToBeFill;
+            // gzgets() takes the buffer size as an int, so cap the request to avoid overflow.
+            const int space = remaining > 0x40000000u ? 0x40000000 : static_cast<int>(remaining);
+            char* const dst = b + bufferOffsetToBeFill;
+            if(gzgets(gzf, dst, space) == Z_NULL) {
+                if(got_any) break; // Last line that is not terminated by a newline.
+                return false;
             }
-            if(ist.eof()) return false;
-            bufferOffsetToBeFill += ist.gcount();
-            expandBufferDouble();
-            ist.clear();
+            got_any = true;
+            const size_t seglen = strlen(dst);
+            bufferOffsetToBeFill += seglen;
+            if(seglen > 0 && dst[seglen - 1] == '\n') {
+                b[--bufferOffsetToBeFill] = '\0'; // Strip the trailing newline.
+                break;
+            }
+            if(seglen == static_cast<size_t>(space - 1)) {
+                // The chunk was filled without hitting a newline; keep reading the line.
+                if(bufferOffsetToBeFill == currentBufferSize - 1) expandBufferDouble();
+                continue;
+            }
+            break; // Reached EOF in the middle of a line (no trailing newline).
         } while(true);
+        line_count++;
+        off_count += static_cast<off_t>(bufferOffsetToBeFill) + 1; // for the delimiter
+        const bool isFirstLine = line_count == 1;
+        if(isFirstLine) {
+            if(looksLikeFASTQHeader()) {
+                isFASTQMode = true;
+                registerHeaderLine();
+            } else if(looksLikeFASTAHeader()) {
+                isFASTAMode = true;
+            } else {
+                cerr << fileName << " does not look like either of FASTA/FASTQ!\n";
+                exit(1);
+            }
+        }
+        return true;
     }
     bool looksLikeFASTQHeader() const { return b[0] == '@'; }
     bool looksLikeFASTAHeader() const { return b[0] == '>'; }
     bool notFollowedByHeaderOrEOF() {
-        if(ist.peek() == '@') return false;
-        return !ist.eof();
+        const int c = gzgetc(gzf);
+        if(c == -1) return false; // EOF
+        gzungetc(c, gzf);
+        return c != '@';
     }
     void expectHeaderOfEOF() {
         if(notFollowedByHeaderOrEOF()) {
@@ -265,11 +281,13 @@ public:
         }
     }
     size_t getLineCount() const { return line_count; }
-    bool fail() { return ist.fail(); }
-//    size_t tellg() { return ist.tellg(); }
+    bool fail() { return failed; }
     off_t get_offset() {return off_count; }
     size_t len() { return strlen(b); }
-    void seekg(off_t offset) {ist.clear(); ist.seekg(offset); } // clear eofbit before seeking
+    // gzseek() works on the uncompressed byte offset, which is exactly what
+    // off_count (and therefore the index) stores, so seeking is consistent for
+    // both gzip-compressed and plain files.
+    void seekg(off_t offset) { failed = (gzseek(gzf, offset, SEEK_SET) == -1); }
     void registerHeaderLine() {
         const size_t len_with_gt = len();
         if(len_with_gt == 0u) return;

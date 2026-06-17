@@ -15,6 +15,7 @@ def configure(conf):
     conf.check_python_version((3,6,0))
     conf.check_python_module('Bio')
     conf.check_python_module('click')
+    conf.check_cxx(lib='z', header_name='zlib.h', uselib_store='ZLIB', mandatory=True)
     conf.env.append_unique('CXXFLAGS', ['-O2', '-DVERSION_STRING=' + VERSION])
     conf.env.INCLUDES += '.'
     conf.env.LIB += ['pthread', 'dl']
@@ -22,7 +23,7 @@ def configure(conf):
 def build(bld):
     from waflib import Utils
     bld(features = 'cxx cxxprogram', source = 'src/sieve.cc', target = 'sieve')
-    bld(features = 'cxx c cxxprogram', source = ['src/fatt.cc', 'src/sqlite3.c', 'src/sqdb.cc'], target = 'fatt')
+    bld(features = 'cxx c cxxprogram', source = ['src/fatt.cc', 'src/sqlite3.c', 'src/sqdb.cc'], target = 'fatt', use = 'ZLIB')
     executables = ['convertsequence', 'fixshebang', 'icc-color', 'gcc-color',
                    'mydaemon', 'rep', 'sha_scan', 'sha_scanp', 'gfwhich', 'json2csv', 'csv2html', 'plotr',
                    'ispcr', 'headtail', 'recompressbyxz', 'split_paf', 'reduce_genome_feature', 'cco']

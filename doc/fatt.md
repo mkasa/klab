@@ -3,6 +3,19 @@ fatt
 
 This tool manipulates FASTA/FASTQ files.
 
+Compressed input
+-----------------
+Every command accepts gzip-compressed files in place of plain FASTA/FASTQ files.
+Compression is detected automatically from the file content (not the extension),
+so you may freely mix plain and gzip-compressed files::
+
+    fatt count foo.fastq bar.fastq.gz
+
+Index-based access (see ``index`` below) also works on gzip-compressed files.
+Note, however, that seeking into a compressed file is inherently slower than
+into a plain file, because the data up to the requested sequence has to be
+decompressed.
+
 extract
 --------
 You can extract sequences with the specified names::
