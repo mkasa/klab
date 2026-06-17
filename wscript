@@ -16,7 +16,7 @@ def configure(conf):
     conf.check_python_module('Bio')
     conf.check_python_module('click')
     conf.check_cxx(lib='z', header_name='zlib.h', uselib_store='ZLIB', mandatory=True)
-    conf.env.append_unique('CXXFLAGS', ['-O2', '-DVERSION_STRING=' + VERSION])
+    conf.env.append_unique('CXXFLAGS', ['-O2', '-DVERSION_STRING="' + VERSION + '"'])
     conf.env.INCLUDES += '.'
     conf.env.LIB += ['pthread', 'dl']
 
