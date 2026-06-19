@@ -23,6 +23,9 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <cstdio>
+#include <utility>
 #include <zlib.h>
 #include "sqdb.h"
 //#include <stackdump.h>
@@ -173,6 +176,19 @@ class FileLineBufferWithAutoExpansion
     bool isFASTAMode;
     bool isFASTQMode;
 
+    // --- BGZF support ---------------------------------------------------
+    // A BGZF file is a series of independent gzip blocks (<=64KiB uncompressed
+    // each) carrying a "BC" extra subfield. gzopen() reads such files fine
+    // sequentially, but gzseek() to an uncompressed offset is O(offset). When
+    // the file is BGZF we instead translate an uncompressed offset into a
+    // virtual offset (block-start compressed offset << 16 | offset-in-block)
+    // and seek straight to the containing block, exactly like htslib/tabix.
+    bool isBGZF;                 ///< detected from the gzip header at open()
+    bool blockIndexReady;        ///< has the (caddr,uaddr) block map been built?
+    bool seekUsesVirtualOffset;  ///< if true, seekg()'s argument is a virtual offset
+    typedef pair<unsigned long long, unsigned long long> BlockBoundary; // (caddr, uaddr)
+    vector<BlockBoundary> blockOffsets; ///< block boundaries, ascending by uaddr
+
 public:
     char* b;
 
@@ -193,6 +209,92 @@ private:
         if(ret != 0) return false;
         return S_ISDIR(s.st_mode);
     }
+    // Does the first gzip member carry a BGZF "BC" extra subfield?
+    static bool pathIsBGZF(const char* path) {
+        FILE* fp = fopen(path, "rb");
+        if(!fp) return false;
+        unsigned char h[12];
+        bool result = false;
+        if(fread(h, 1, 12, fp) == 12 && h[0] == 0x1f && h[1] == 0x8b && (h[3] & 0x04)) {
+            const unsigned xlen = h[10] | (h[11] << 8);
+            vector<unsigned char> extra(xlen);
+            if(xlen == 0 || fread(&extra[0], 1, xlen, fp) == xlen) {
+                for(unsigned p = 0; p + 4 <= xlen; ) {
+                    const unsigned slen = extra[p + 2] | (extra[p + 3] << 8);
+                    if(extra[p] == 'B' && extra[p + 1] == 'C') { result = true; break; }
+                    p += 4 + slen;
+                }
+            }
+        }
+        fclose(fp);
+        return result;
+    }
+    static unsigned long long readLE(const unsigned char* p, int nbytes) {
+        unsigned long long v = 0;
+        for(int i = 0; i < nbytes; ++i) v |= (unsigned long long)p[i] << (8 * i);
+        return v;
+    }
+    // Read an htslib/bgzip ".gzi" index: uint64 count (number of blocks minus the
+    // implicit first one), then count pairs of LE uint64 (caddr, uaddr).
+    bool loadGziIndex(const string& gzi_path) {
+        FILE* fp = fopen(gzi_path.c_str(), "rb");
+        if(!fp) return false;
+        unsigned char buf[16];
+        bool ok = false;
+        if(fread(buf, 1, 8, fp) == 8) {
+            const unsigned long long n = readLE(buf, 8);
+            blockOffsets.clear();
+            blockOffsets.push_back(BlockBoundary(0ull, 0ull)); // implicit first block
+            ok = true;
+            for(unsigned long long i = 0; i < n; ++i) {
+                if(fread(buf, 1, 16, fp) != 16) { ok = false; break; }
+                blockOffsets.push_back(BlockBoundary(readLE(buf, 8), readLE(buf + 8, 8)));
+            }
+        }
+        fclose(fp);
+        if(!ok) blockOffsets.clear();
+        return ok;
+    }
+    // Build the (caddr,uaddr) block map by walking gzip-member headers/trailers
+    // only (no decompression): for each block read its size from the BC field and
+    // its uncompressed size from the 4-byte ISIZE trailer.
+    bool buildBlockIndexByScan() {
+        FILE* fp = fopen(fileName.c_str(), "rb");
+        if(!fp) return false;
+        blockOffsets.clear();
+        unsigned long long coff = 0, uoff = 0;
+        bool ok = true;
+        while(true) {
+            unsigned char h[12];
+            if(fseeko(fp, (off_t)coff, SEEK_SET) != 0) { ok = false; break; }
+            const size_t got = fread(h, 1, 12, fp);
+            if(got == 0) break; // clean EOF
+            if(got < 12 || h[0] != 0x1f || h[1] != 0x8b || !(h[3] & 0x04)) { ok = false; break; }
+            const unsigned xlen = h[10] | (h[11] << 8);
+            vector<unsigned char> extra(xlen);
+            if(xlen && fread(&extra[0], 1, xlen, fp) != xlen) { ok = false; break; }
+            unsigned bsize = 0; bool found = false;
+            for(unsigned p = 0; p + 4 <= xlen; ) {
+                const unsigned slen = extra[p + 2] | (extra[p + 3] << 8);
+                if(extra[p] == 'B' && extra[p + 1] == 'C' && p + 6 <= xlen) {
+                    bsize = extra[p + 4] | (extra[p + 5] << 8);
+                    found = true;
+                }
+                p += 4 + slen;
+            }
+            if(!found) { ok = false; break; }
+            const unsigned long long member_size = (unsigned long long)bsize + 1;
+            unsigned char isz[4];
+            if(fseeko(fp, (off_t)(coff + member_size - 4), SEEK_SET) != 0) { ok = false; break; }
+            if(fread(isz, 1, 4, fp) != 4) { ok = false; break; }
+            blockOffsets.push_back(BlockBoundary(coff, uoff));
+            coff += member_size;
+            uoff += readLE(isz, 4);
+        }
+        fclose(fp);
+        if(!ok) blockOffsets.clear();
+        return ok && !blockOffsets.empty();
+    }
 
 public:
     FileLineBufferWithAutoExpansion() {
@@ -203,6 +305,9 @@ public:
         headerID.reserve(INITIAL_BUFFER_SIZE);
         gzf = NULL;
         failed = false;
+        isBGZF = false;
+        blockIndexReady = false;
+        seekUsesVirtualOffset = false;
     }
     ~FileLineBufferWithAutoExpansion() {
         close();
@@ -218,6 +323,10 @@ public:
         line_count = 0;
         off_count = 0;
         fileName = file_name;
+        isBGZF = pathIsBGZF(file_name);
+        blockIndexReady = false;
+        seekUsesVirtualOffset = false;
+        blockOffsets.clear();
         return true;
     }
     void close() {
@@ -284,10 +393,60 @@ public:
     bool fail() { return failed; }
     off_t get_offset() {return off_count; }
     size_t len() { return strlen(b); }
-    // gzseek() works on the uncompressed byte offset, which is exactly what
-    // off_count (and therefore the index) stores, so seeking is consistent for
-    // both gzip-compressed and plain files.
-    void seekg(off_t offset) { failed = (gzseek(gzf, offset, SEEK_SET) == -1); }
+    bool isFileBGZF() const { return isBGZF; }
+
+    // Build the (caddr,uaddr) block map (once), preferring an existing bgzip
+    // ".gzi" sidecar and otherwise scanning the block headers. Returns false if
+    // the file is not BGZF or the map could not be built.
+    bool ensureBlockIndex() {
+        if(!isBGZF) return false;
+        if(blockIndexReady) return !blockOffsets.empty();
+        blockIndexReady = true;
+        if(loadGziIndex(fileName + ".gzi")) return true;
+        return buildBlockIndexByScan();
+    }
+    // Translate an uncompressed offset into a BGZF virtual offset
+    // (caddr << 16 | within-block offset). Requires ensureBlockIndex() to have
+    // succeeded; the caller checks that first.
+    long long uncompressedToVirtualOffset(off_t uncompressed_offset) const {
+        const unsigned long long u = (unsigned long long)uncompressed_offset;
+        // Largest block whose uaddr <= u (blockOffsets is ascending by uaddr).
+        size_t lo = 0, hi = blockOffsets.size(); // find first uaddr > u
+        while(lo < hi) {
+            const size_t mid = (lo + hi) / 2;
+            if(blockOffsets[mid].second <= u) lo = mid + 1; else hi = mid;
+        }
+        const BlockBoundary& blk = blockOffsets[lo - 1];
+        const unsigned long long within = u - blk.second; // < 65536 for valid BGZF
+        return (long long)((blk.first << 16) | within);
+    }
+    // Tell seekg() to interpret its argument as a BGZF virtual offset.
+    void enableVirtualOffsetSeek() { seekUsesVirtualOffset = true; }
+
+    void seekg(off_t offset) {
+        if(!seekUsesVirtualOffset) {
+            // Plain/gzip: gzseek() works on the uncompressed byte offset, which
+            // is exactly what off_count (and the index) stores.
+            failed = (gzseek(gzf, offset, SEEK_SET) == -1);
+            return;
+        }
+        // BGZF fast path: 'offset' is a virtual offset. Re-open the underlying
+        // file at the block's compressed offset (each BGZF block is a complete
+        // gzip member, so gzdopen() decodes it directly), then skip within-block.
+        const unsigned long long vo = (unsigned long long)offset;
+        const unsigned long long caddr = vo >> 16;
+        const unsigned within = (unsigned)(vo & 0xffffu);
+        close();
+        const int fd = ::open(fileName.c_str(), O_RDONLY);
+        if(fd < 0) { failed = true; return; }
+        if(lseek(fd, (off_t)caddr, SEEK_SET) == (off_t)-1) { ::close(fd); failed = true; return; }
+        gzf = gzdopen(fd, "rb");
+        if(gzf == NULL) { ::close(fd); failed = true; return; }
+        gzbuffer(gzf, STREAM_BUFFER_SIZE);
+        failed = false;
+        if(within > 0 && gzseek(gzf, (off_t)within, SEEK_CUR) == -1) { failed = true; return; }
+        off_count = offset; // virtual offset; only used cosmetically after a seek
+    }
     void registerHeaderLine() {
         const size_t len_with_gt = len();
         if(len_with_gt == 0u) return;
@@ -670,10 +829,14 @@ void create_index(const char* fname, bool flag_force)
             cerr << "Cannot open '" << fname << "'" << endl;
             return;
         }
+        // For BGZF input, store BGZF virtual offsets so that 'fatt extract' can
+        // seek straight to the right ~64KiB block instead of decompressing from
+        // the start. Falls back to plain offsets if the block map can't be built.
+        const bool use_voffset = f.isFileBGZF() && f.ensureBlockIndex();
 		long long sequence_count = 0;
         off_t last_pos = f.get_offset();
         if(f.getline()) {
-            #define INSERT_NAME_INTO_TABLE() { stmt.Bind(1, get_read_name_from_header(f.b)); stmt.Bind(2, static_cast<long long>(last_pos)); stmt.Bind(3, sequence_count); stmt.Next(); }
+            #define INSERT_NAME_INTO_TABLE() { stmt.Bind(1, get_read_name_from_header(f.b)); stmt.Bind(2, use_voffset ? f.uncompressedToVirtualOffset(last_pos) : static_cast<long long>(last_pos)); stmt.Bind(3, sequence_count); stmt.Next(); }
             INSERT_NAME_INTO_TABLE();
 			++sequence_count;
             size_t number_of_nucleotides_in_read = 0;
@@ -720,6 +883,12 @@ void create_index(const char* fname, bool flag_force)
     	db.Do("create index seqpos_name_index on seqpos(name);");
     	cerr << "." << flush;
     	db.Do("create index read_index_index on seqpos(readindex);");
+        if(use_voffset) {
+            // Mark that 'pos' holds BGZF virtual offsets, so extract knows to use
+            // the block-level fast seek (and old indexes are not misread).
+            db.Do("create table fattmeta(key text primary key, value text)");
+            db.Do("insert into fattmeta values('bgzf_voffset', '1')");
+        }
     	cerr << endl;
 		dof.doNotDelete();
     } catch(size_t line_num) {
@@ -1269,6 +1438,19 @@ void do_extract(int argc, char** argv)
             }
             try {
                 sqdb::Db db(index_file_name.c_str());
+                if(f.isFileBGZF()) {
+                    bool has_marker = false;
+                    try {
+                        sqdb::Statement m = db.Query("select value from fattmeta where key='bgzf_voffset'");
+                        has_marker = m.Next();
+                    } catch(const sqdb::Exception&) { has_marker = false; }
+                    if(has_marker) {
+                        f.enableVirtualOffsetSeek();
+                    } else {
+                        cerr << "Note: '" << file_name << "' is BGZF but its index lacks fast-seek info; using slow seeks.\n"
+                             << "      Recreate it with 'fatt index --force " << file_name << "' to speed this up.\n";
+                    }
+                }
                 if(param_start == -1) {
                     sqdb::Statement stmt = db.Query("select pos from seqpos where name=?");
                     for(set<string>::const_iterator it = readNamesToTake.begin(); it != readNamesToTake.end(); ++it) {
@@ -2582,6 +2764,12 @@ public:
         const string index_file_name = get_index_file_name(sequence_file_name.c_str());
         try {
             sqdb::Db db(index_file_name.c_str());
+            if(f.isFileBGZF()) {
+                try {
+                    sqdb::Statement m = db.Query("select value from fattmeta where key='bgzf_voffset'");
+                    if(m.Next()) f.enableVirtualOffsetSeek();
+                } catch(const sqdb::Exception&) { /* old index without fast-seek info */ }
+            }
             sqdb::Statement stmt = db.Query("select pos from seqpos where name=?");
             stmt.Bind(1, sequence_name);
             if(stmt.Next()) {

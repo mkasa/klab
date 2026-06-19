@@ -12,9 +12,19 @@ so you may freely mix plain and gzip-compressed files::
     fatt count foo.fastq bar.fastq.gz
 
 Index-based access (see ``index`` below) also works on gzip-compressed files.
-Note, however, that seeking into a compressed file is inherently slower than
-into a plain file, because the data up to the requested sequence has to be
-decompressed.
+Note, however, that seeking into a plain gzip file is inherently slow, because
+the data up to the requested sequence has to be decompressed from the start.
+
+For random access, prefer **BGZF** (the blocked-gzip format produced by
+``bgzip``/htslib, used by samtools/tabix). A BGZF file is still an ordinary gzip
+file, so every command reads it transparently, but it is split into independent
+~64 KiB blocks. When you ``fatt index`` a BGZF file, fatt stores each sequence's
+BGZF *virtual offset*, so ``fatt extract`` jumps straight to the right block and
+decompresses only that block instead of the whole prefix. If a ``bgzip`` ``.gzi``
+index sits next to the file, fatt reads it to locate the blocks; otherwise it
+derives the block boundaries directly from the file. (Indexes created by older
+versions of fatt on a BGZF file still work, but fall back to the slow seek with a
+note suggesting you recreate them with ``fatt index --force``.)
 
 extract
 --------
