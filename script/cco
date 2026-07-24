@@ -14,8 +14,33 @@ sub show_usage()
     exit 1;
 }
 
+# Environment variables that indicate the commit is being driven by an AI
+# coding agent (Claude Code, Codex, ...). When any of these is set (to a
+# non-empty value), cco leaves the commit message untouched so the agent's
+# own message survives. Set CCO_FORCE=1 to override and generate anyway.
+my @AI_AGENT_ENV_VARS = qw(
+    CLAUDECODE
+    CLAUDE_CODE_ENTRYPOINT
+    CODEX_SANDBOX
+    AI_AGENT
+);
+
+sub called_from_ai_agent()
+{
+    return undef if $ENV{CCO_FORCE};
+    for my $var (@AI_AGENT_ENV_VARS) {
+        return $var if defined $ENV{$var} && $ENV{$var} ne '';
+    }
+    return undef;
+}
+
 sub generate_commit_msg()
 {
+    if(my $agent = called_from_ai_agent()) {
+        print STDERR "cco: AI coding agent detected (\$$agent set); leaving commit message unchanged\n";
+        return;
+    }
+
     my $commit_message_file = $ARGV[0];
 
     open my $fh, '>', $commit_message_file or die "Could not open $commit_message_file: $!";
@@ -140,6 +165,8 @@ cco [options] <subcommand>
 
 cco is a script that generates commit messages for git repositories based on the changes in the staging area. It can also set up a prepare-commit-msg hook to automate this process.
 The script can be used to generate commit messages based on the changes in the staging area. It can also set up a prepare-commit-msg hook to automate this process.
+
+When invoked as a prepare-commit-msg hook while running under an AI coding agent (such as Claude Code or Codex), cco does not modify the commit message, so the agent's own commit message is preserved. Detection is based on environment variables the agents set (C<CLAUDECODE>, C<CLAUDE_CODE_ENTRYPOINT>, C<CODEX_SANDBOX>, C<AI_AGENT>). Set C<CCO_FORCE=1> to force cco to generate a message even in that case.
 
 =head1 OPTIONS
 
