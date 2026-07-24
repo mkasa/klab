@@ -27,7 +27,7 @@ pod2usage(-verbose => 2) if($flag_man);
 my $has_any_error = 0;
 while(my $file = shift) {
 	print STDERR "$file " if($flag_debug);
-	my $file_res = `file -b $file`;
+	my $file_res = `file -b -- \Q$file\E`;
 	unless($file_res =~ /executable/ && $file_res =~ /text/ && $file_res =~ /script/) {
 		print STDERR "was not a script.\n" if($flag_debug);
 		next;
@@ -39,7 +39,7 @@ while(my $file = shift) {
 		next;
 	}
 	my $shebang = <$fh>;
-	unless($shebang =~ m|#!(\S+)(.*)|) {
+	unless(defined $shebang && $shebang =~ m|^#!\s*(\S+)(.*?)\r?$|) {
 		print STDERR "It does not seem like scripts. Could not find shebang.\n";
 		$has_any_error = 1;
 		close $fh;
@@ -52,19 +52,41 @@ while(my $file = shift) {
 	my $base_name = $orig_bin;
 	$base_name =~ s|.*/||;
 	print "Base name [$base_name]\n" if($flag_debug);
+	my $args = $rest;
 	if($base_name eq 'env') {
-		unless($rest =~ m|^\s*(\S+)(.*)|) {
+		my $env_rest = $rest;
+		# drop env's split-string option if present; it is re-added later as needed
+		$env_rest =~ s|^(\s+)-S\s*|$1|;
+		unless($env_rest =~ m|^\s+(\S+)(.*)|) {
 			print STDERR "lacks a valid interpreter?\n";
 			close $fh;
 			next;
 		}
 		$base_name = $1;
+		$args = $2;
 	}
 	print "Final base name [$base_name]\n" if($flag_debug);
-	my $abs_path_intpret = `which $base_name`; chomp $abs_path_intpret;
-	print "The absolute path [$abs_path_intpret]\n" if($flag_debug);
+	my $new_shebang;
+	if($flag_env) {
+		# On Linux the kernel passes everything after the interpreter as a single
+		# argument, so 'env' needs -S to split it; the macOS kernel splits it itself.
+		my $split_opt = ($args =~ /\S/ && $^O ne 'darwin') ? ' -S' : '';
+		$new_shebang = "#!/usr/bin/env$split_opt $base_name$args";
+	} else {
+		my $abs_path_intpret = `which \Q$base_name\E`; chomp $abs_path_intpret;
+		print "The absolute path [$abs_path_intpret]\n" if($flag_debug);
+		if($abs_path_intpret eq '') {
+			print STDERR "Could not find '$base_name' in PATH.\n";
+			$has_any_error = 1;
+			close $fh;
+			next;
+		}
+		$new_shebang = "#!$abs_path_intpret$args";
+	}
 
-	if($orig_bin eq $abs_path_intpret) {
+	my $old_shebang = $shebang;
+	$old_shebang =~ s/\r?\n?$//;
+	if($old_shebang eq $new_shebang) {
 		print "no need to modify\n";
 		close $fh;
 		next;
@@ -73,16 +95,17 @@ while(my $file = shift) {
 	if($flag_interactive) {
 		print "filename: $file\n";
 		print "OLD shebang: $shebang";
-		print "NEW shebang: #!$abs_path_intpret\n";
+		print "NEW shebang: $new_shebang\n";
 		my $doit = 0;
 		while(1) {
 			print "Modify it (Y/n)?";
-			my $r = <>;
+			my $r = <STDIN>;
+			last unless(defined $r);
 			if($r =~ m|^y|i) { $doit = 1; last; }
 			if($r =~ m|^n|i) { last; }
 			print "\nPlease use 'y' or 'n':";
 		}
-		next unless($doit);
+		unless($doit) { close $fh; next; }
 	}
 
 	my $tmp_file_name = "$file.tmp";
@@ -93,10 +116,10 @@ while(my $file = shift) {
 		close $fh;
 		next;
 	}
-	print $ofh "#!$abs_path_intpret\n";
+	print $ofh "$new_shebang\n";
 	while(<$fh>) {
 		chomp;
-		chop if(/^r$/);
+		chop if(/\r$/);
 		print $ofh "$_\n";
 	}
 	close $ofh;
@@ -132,6 +155,8 @@ Options:
    -help                brief help message
    -man                 see the manual
    -i, --interactive    modify interactively
+   -e, --env            rewrite to '#!/usr/bin/env <interpreter>' instead of an absolute path
+                        (on non-macOS systems, '-S' is added when the interpreter takes arguments)
 
 =over 8
 
