@@ -47,7 +47,7 @@ List
 |icc-color|general|Color the output of Intel C++.|
 |mydaemon|general|Automatically set ups crontab to ensure your daemon is running. (Works without root)|
 |rep|general|Simple wrapper for different VCS such as svn/git/hg.|see also perldoc|
-|sha_scan|general|Find duplicated files by collecting SHA1 hashes of files in a given directory.|
+|sha_scanp|general|Find duplicated files by collecting SHA-256 hashes of files in a given directory.|
 |rep|general|Repository utilitiy (one command, manage svn/cvs/git/hg at once!)|
 |gfwhere|general|Find inconsistently replicated files in GlusterFS|
 |json2csv|general|Convert JSON into CSV|
