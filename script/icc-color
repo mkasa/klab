@@ -27,5 +27,72 @@ while(<>) {
 	}
 }
 
+__END__
 
+=pod
+
+=head1 NAME
+
+icc-color - colorize the output of the Intel C/C++ compiler (icc/icpc)
+
+=head1 SYNOPSIS
+
+icc-color
+
+    icc  -O2 hello.c -o hello 2>&1 | icc-color
+    icpc -O2 hello.cc -o hello 2>&1 | icc-color
+
+=head1 DESCRIPTION
+
+B<icc-color> reads the diagnostic messages of the Intel C/C++ compiler
+(B<icc> and B<icpc>) from standard input, adds ANSI color escape sequences
+to make the messages easier to scan, and writes the result to standard output.
+
+Because the compiler prints its diagnostics to standard error, you normally
+need to redirect standard error to standard output (B<2E<gt>&1>) before piping
+into B<icc-color>.
+
+The following categories of lines are highlighted:
+
+=over 8
+
+=item B<Remarks>
+
+Lines matching C<remark #NNN:> are shown in blue.
+
+=item B<Warnings>
+
+Lines matching C<: warning:> (optionally with a C<#NNN> number) are shown in green.
+
+=item B<Function context>
+
+Lines matching C<In function> are shown in yellow.
+
+=item B<Undefined references>
+
+For linker C<undefined reference to `symbol'> lines, the message and the
+referenced symbol are shown in red.
+
+=item B<Compiler command lines>
+
+Lines beginning with B<icc> or B<icpc> are shown in cyan.
+
+=item B<Errors>
+
+Lines matching C<: error:> or C<: catastrophic error:> (optionally with a
+C<#NNN> number) are shown in red.
+
+=back
+
+Empty lines are skipped, and all other lines are passed through unchanged.
+
+=head1 SEE ALSO
+
+B<gcc-color> - the equivalent tool for the GNU Compiler Collection.
+
+=head1 AUTHOR
+
+Masahiro Kasahara (masahiro@kasahara.ws)
+
+=cut
 
