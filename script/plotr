@@ -141,18 +141,20 @@ if($param_csv || $param_tsv || $flag_csv_stdin || $flag_tsv_stdin) {
         $function_name = "read_tsv";
         $filename = "\"$param_tsv\"";
     }
-    $filename = 'file("stdin")' if($flag_csv_stdin || $flag_tsv_stdin);
+    $filename = 'file("stdin")' if($flag_csv_stdin || $flag_tsv_stdin
+        || (defined $param_csv && $param_csv eq '-')
+        || (defined $param_tsv && $param_tsv eq '-'));
     print $tmp "a <- $suppress_message_begin$function_name($filename$extra_opts)$suppress_message_end;\n";
 }
 if($flag_interactive_first || $flag_interactive_second) {
     my ($sec, $min, $hour, $mday, $mon, $year, $wday) = localtime();
-    my $temp_file_name = ($ENV{'TMP'} || $ENV{'TMPDIR'} || "/tmp") . "/" . sprintf("%02d-%02d-%02d.r", $year + 1900, $mon, $mday);
+    my $temp_file_name = ($ENV{'TMP'} || $ENV{'TMPDIR'} || "/tmp") . "/" . sprintf("%04d-%02d-%02d.r", $year + 1900, $mon + 1, $mday);
     my $cmdline = $ENV{'EDITOR'};
     unless(defined $cmdline && $cmdline ne '') {
         $cmdline = 'vi';
     }
     $cmdline .= " " . $temp_file_name;
-    if($flag_interactive_first && !defined $rcmd && $rcmd ne '') {
+    if($flag_interactive_first) {
         unless($flag_interactive_second) {
             # if the file already exists, rename it to a backup file name
             if(-e $temp_file_name) {
@@ -168,7 +170,7 @@ if($flag_interactive_first || $flag_interactive_second) {
             }
             # creates a new template
             open my $fh, ">", $temp_file_name or die "ERROR: Cannot open $temp_file_name";
-            print $fh, "# a <- read_csv(\"input.csv\")\n";
+            print $fh "# a <- read_csv(\"input.csv\")\n";
             print $fh join("\n", @ARGV);
             print $fh "\n";
             print $fh "# assign the ggplot to g\n";
@@ -222,8 +224,8 @@ EOS
 ;
 }
 unless($param_image_file) {
-    print $tmp "unlink($param_image_file);\n" if($debug);
-    unlink($param_image_file);
+    # remove the temporary png file generated inside the R script
+    print $tmp "unlink(file_name);\n";
 }
 close $tmp;
 
