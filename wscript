@@ -12,9 +12,7 @@ def configure(conf):
     if conf.options.enable_perl:
         conf.check_perl_version((5,6,0))
         conf.check_perl_ext_devel()
-    conf.check_python_version((3,6,0))
-    conf.check_python_module('Bio')
-    conf.check_python_module('click')
+    conf.check_python_version((3,8,0))
     conf.check_cxx(lib='z', header_name='zlib.h', uselib_store='ZLIB', mandatory=True)
     conf.env.append_unique('CXXFLAGS', ['-O2', '-DVERSION_STRING="' + VERSION + '"'])
     conf.env.INCLUDES += '.'
