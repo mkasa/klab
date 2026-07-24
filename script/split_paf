@@ -8,7 +8,7 @@ import re
 import csv
 
 
-cigar_pattern = re.compile(r"\d+[MXID]")
+cigar_pattern = re.compile(r"\d+[MXID=]")
 class pafData():
 	def __init__(self, qname, qlen, qstart, qend, strand, tname, tlen, tstart, tend, matches, block_len, MQ, cigar):
 		self.qname     = qname
@@ -39,7 +39,7 @@ class pafData():
 			for each_cigar_match in cigar_matches:
 				cigar_size = int(each_cigar_match[:-1])
 				cigar_type = each_cigar_match[-1]
-				if cigar_type in ["M", "X"]:
+				if cigar_type in ["M", "X", "="]:
 					retArr.append(pafData(self.qname, self.qlen, q_current_pos, q_current_pos + cigar_size, self.strand, self.tname, self.tlen, t_current_pos, t_current_pos + cigar_size, self.matches, cigar_size, "none", each_cigar_match))
 					q_current_pos = q_current_pos + cigar_size
 					t_current_pos = t_current_pos + cigar_size
@@ -50,21 +50,25 @@ class pafData():
 			assert self.qend == q_current_pos, f"{self.qend} != {q_current_pos}"
 			assert self.tend == t_current_pos, f"{self.tend} != {t_current_pos}"
 		elif self.strand == "-":
-			q_current_pos = self.qlen - self.qstart
+			# For a minus-strand alignment the CIGAR is written along the target
+			# forward direction, which corresponds to the reverse-complemented
+			# query. In chain-format (revcomp) coordinates the query therefore
+			# advances together with the target, starting at qlen - qend.
+			q_current_pos = self.qlen - self.qend
 			t_current_pos = self.tstart
 			cigar_matches = re.findall(cigar_pattern, self.cigar)
 			for each_cigar_match in cigar_matches:
 				cigar_size = int(each_cigar_match[:-1])
 				cigar_type = each_cigar_match[-1]
-				if cigar_type in ["M", "X"]:
-					retArr.append(pafData(self.qname, self.qlen, q_current_pos - cigar_size, q_current_pos, self.strand, self.tname, self.tlen, t_current_pos, t_current_pos + cigar_size, self.matches, cigar_size, "none", each_cigar_match))
-					q_current_pos = q_current_pos - cigar_size
+				if cigar_type in ["M", "X", "="]:
+					retArr.append(pafData(self.qname, self.qlen, q_current_pos, q_current_pos + cigar_size, self.strand, self.tname, self.tlen, t_current_pos, t_current_pos + cigar_size, self.matches, cigar_size, "none", each_cigar_match))
+					q_current_pos = q_current_pos + cigar_size
 					t_current_pos = t_current_pos + cigar_size
 				elif cigar_type in ["I"]:
-					q_current_pos = q_current_pos - cigar_size
+					q_current_pos = q_current_pos + cigar_size
 				elif cigar_type in ["D"]:
 					t_current_pos = t_current_pos + cigar_size
-			assert self.qlen - self.qend == q_current_pos, f"{self.qend} != {q_current_pos}"
+			assert self.qlen - self.qstart == q_current_pos, f"{self.qlen - self.qstart} != {q_current_pos}"
 			assert self.tend == t_current_pos, f"{self.tend} != {t_current_pos}"
 		return retArr
 
