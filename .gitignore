@@ -27,3 +27,11 @@ Makefile
 GPATH
 GTAGS
 GRTAGS
+tags
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

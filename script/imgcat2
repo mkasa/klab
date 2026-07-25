@@ -87,7 +87,7 @@ function error() {
 }
 
 function show_help() {
-    echo "Usage: imgcat2 [-p] [-W width] [-H height] filename ..." 1>&2
+    echo "Usage: imgcat2 [-p] [-W width] [-H height] [-u url] filename ..." 1>&2
     echo "   or: cat filename | imgcat2" 1>&2
     echo "   or: imgcat2 -u url" 1>&2
     echo "" 1>&2
@@ -102,6 +102,9 @@ function show_help() {
     echo "  N    number of character cells" 1>&2
     echo "  Npx  number of pixels" 1>&2
     echo "  N%   percentage of the terminal width/height" 1>&2
+    echo "" 1>&2
+    echo "Options may be given anywhere on the command line; they all apply" 1>&2
+    echo "to every image. Use -- to end option parsing." 1>&2
 }
 
 function check_dependency() {
@@ -109,6 +112,36 @@ function check_dependency() {
         echo "imgcat: missing dependency: can't find $1" 1>&2
         exit 1
     fi
+}
+
+# validate_size <option name> <value>
+# The value must follow the iTerm2 spec: N, Npx, N% or "auto".
+function validate_size() {
+    case "$2" in
+    auto) return 0 ;;
+    esac
+    if [[ ! $2 =~ ^[0-9]+(px|%)?$ ]]; then
+        error "$1: invalid size '$2' (expected N, Npx, N% or auto)"
+        exit 1
+    fi
+}
+
+# require_value <option name> <number of remaining args>
+function require_value() {
+    if [ "$2" -lt 2 ]; then
+        error "$1 requires a value"
+        exit 1
+    fi
+}
+
+# fetch_url <url>
+# Writes the base64-encoded body to stdout and returns non-zero on any
+# failure (including HTTP errors, thanks to curl -f).
+function fetch_url() {
+    (
+        set -o pipefail
+        curl -fsS -- "$1" | b64_encode
+    )
 }
 
 ## Main
@@ -131,7 +164,11 @@ check_dependency wc
 
 print_width="35%"
 print_height=""
-# Look for command line flags.
+print_filename=""
+
+# Pass 1: parse ALL options first, and collect the targets (files and URLs) so
+# that an option given after a file name still applies to that file.
+targets=()
 while [ $# -gt 0 ]; do
     case "$1" in
     -h | --help)
@@ -139,28 +176,33 @@ while [ $# -gt 0 ]; do
         exit
         ;;
     -W | --width)
-	print_width=$2
-	shift
-	;;
+        require_value "$1" "$#"
+        validate_size "$1" "$2"
+        print_width=$2
+        shift
+        ;;
     -H | --height)
-	print_height=$2
-	shift
-	;;
+        require_value "$1" "$#"
+        validate_size "$1" "$2"
+        print_height=$2
+        shift
+        ;;
     -p | --p | --print)
         print_filename=1
         ;;
     -u | --u | --url)
+        require_value "$1" "$#"
         check_dependency curl
-        encoded_image=$(curl -s "$2" | b64_encode) || (
-            error "No such file or url $2"
-            exit 2
-        )
-        has_stdin=f
-        print_image "$2" 1 "$encoded_image" "$print_filename" "$print_width" "$print_height"
-        set -- "${@:1:1}" "-u" "${@:3}"
-        if [ "$#" -eq 2 ]; then
-            exit
-        fi
+        targets+=("url:$2")
+        shift
+        ;;
+    --)
+        shift
+        while [ $# -gt 0 ]; do
+            targets+=("file:$1")
+            shift
+        done
+        break
         ;;
     -*)
         error "Unknown option flag: $1"
@@ -168,21 +210,38 @@ while [ $# -gt 0 ]; do
         exit 1
         ;;
     *)
-        if [ -r "$1" ]; then
-            has_stdin=f
-            print_image "$1" 1 "$(b64_encode <"$1")" "$print_filename" "$print_width" "$print_height"
-        else
-            error "imgcat: $1: No such file or directory"
-            exit 2
-        fi
+        targets+=("file:$1")
         ;;
     esac
     shift
 done
 
+# Pass 2: render the targets, in the order they were given.
+if [ ${#targets[@]} -gt 0 ]; then
+    has_stdin=f
+    for target in "${targets[@]}"; do
+        kind=${target%%:*}
+        value=${target#*:}
+        if [ "$kind" = url ]; then
+            if ! encoded_image=$(fetch_url "$value"); then
+                error "Could not download '$value'"
+                exit 2
+            fi
+            print_image "$value" 1 "$encoded_image" "$print_filename" "$print_width" "$print_height"
+        else
+            if [ -r "$value" ] && [ ! -d "$value" ]; then
+                print_image "$value" 1 "$(b64_encode <"$value")" "$print_filename" "$print_width" "$print_height"
+            else
+                error "imgcat: $value: No such file or directory"
+                exit 2
+            fi
+        fi
+    done
+fi
+
 # Read and print stdin
 if [ $has_stdin = t ]; then
-    print_image "" 1 "$(cat | b64_encode)" ""
+    print_image "" 1 "$(cat | b64_encode)" "" "$print_width" "$print_height"
 fi
 
 exit 0

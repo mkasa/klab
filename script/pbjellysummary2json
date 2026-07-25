@@ -1,7 +1,16 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 use JSON;
+
+# The section headers of a PBJelly summary, in the order in which they are
+# looked for, together with the JSON key each of them fills.
+my @section_headers = (
+	[ qr/Scaffold Stats/, 'scaffold' ],
+	[ qr/Contig Stats/,   'contig'   ],
+	[ qr/Gap Stats/,      'gap'      ],
+);
 
 sub js_symbol($)
 {
@@ -13,30 +22,43 @@ sub js_symbol($)
 	return $s;
 }
 
-my $mode = 0;
-my $cols = 0;
-while(<>) {
-    chomp;
-    if(/Scaffold Stats/) {
-        print '{"scaffold":'; $mode = 1; $cols = 0;
-        print ' {';
-    } elsif(/Contig Stats/) {
-        print '} ';
-        print ',"contig":'; $mode = 2; $cols = 0;
-        print ' {';
-    } elsif(/Gap Stats/) {
-        print '} ';
-        print ',"gap":'; $mode = 3; $cols = 0;
-        print ' {';
-    } elsif(/=====/) {
-        if($mode == 3) {
-            print '} ';
-            print '}';
-        }
-    } elsif(m|^(.*)?\t(\d+)$|) {
-        print ", " if($cols++);
-        print '"' . js_symbol($1) . '"' . ": $2";
-    }
-}
-print "\n";
+my %result;
+my $current_section; # a reference to the hash of the section being filled
 
+while(<>) {
+	chomp;
+	next if(/^\s*$/);
+	my $is_section_header = 0;
+	for my $header (@section_headers) {
+		my ($pattern, $key) = @{$header};
+		next unless(/$pattern/);
+		$result{$key} = {} unless(exists $result{$key});
+		$current_section = $result{$key};
+		$is_section_header = 1;
+		last;
+	}
+	next if($is_section_header);
+	# Everything that is not a "name<TAB>number" line (the ===== rulers, the
+	# headings, blank lines, ...) carries no data and is simply ignored.
+	next unless(m|^(.*?)\t(\d+)$|);
+	my ($name, $value) = ($1, $2);
+	unless(defined $current_section) {
+		# A value that appears before any section header would be lost
+		# otherwise, so give it a section of its own.
+		$result{unsectioned} = {} unless(exists $result{unsectioned});
+		$current_section = $result{unsectioned};
+	}
+	my $key = js_symbol($name);
+	if(exists $current_section->{$key}) {
+		# Two different metric names can be mangled into the same key; keep
+		# both instead of silently dropping one of them.
+		my $suffix = 2;
+		$suffix++ while(exists $current_section->{$key . '_' . $suffix});
+		warn "pbjellysummary2json: duplicate key '$key' (from '$name'); stored as '${key}_$suffix'\n";
+		$key .= '_' . $suffix;
+	}
+	$current_section->{$key} = $value + 0;
+}
+
+# canonical() keeps the key order stable so that the output is reproducible.
+print JSON->new->canonical(1)->encode(\%result), "\n";

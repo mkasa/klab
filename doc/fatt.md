@@ -61,7 +61,27 @@ This feature might be useful especially for n-fold cross-validation. Alternative
 
     fatt extract --start=200 --num=100 foo.fastq > foo_200_to_300.fastq
 
-Note that --start and --end take 0-origin numbers.
+Note that --start and --end take 0-origin numbers. You may also give --start
+alone (from the x-th sequence to the end of the file) or --end alone (from the
+beginning of the file to the y-th sequence, exclusive).
+
+If an index file (see 'index' below) sits next to the input, fatt uses it
+automatically to jump straight to the requested sequences.
+
+    --index      Create the index (<file>.index) if there is none, and use it.
+    --noindex    Do not use an index even if <file>.index exists.
+    --force      With --index, replace an existing index.
+
+The result does not depend on whether an index is used; the index only makes the
+access faster. An index cannot be used together with --reverse (and therefore
+not with --unique either), because those have to read the whole file anyway.
+
+    fatt extract --index --seq chr1 foo.fastq > chr1.fastq
+    fatt extract --noindex --seq chr1 foo.fastq > chr1.fastq
+
+fatt refuses to use an index whose recorded offset does not point at the
+requested sequence (i.e. a stale index), and it tells you to recreate it with
+'fatt index --force'.
 
 count
 ------
@@ -83,6 +103,12 @@ so differnt sequences with the same name will also be reported.
 
     fatt chksamename duplication.fastq
 
+The duplicated names are written to the standard output, so you can save them:
+
+    fatt chksamename duplication.fastq > dups.txt
+
+Give --read to output only the read names (the file names are omitted).
+
 When you find some duplicated sequences, you probably want to use 'fatt extract --unique'
 to filter out the duplicated sequences.
 
@@ -91,6 +117,11 @@ len
 You can calculate the length of the sequences in given files.
 
     fatt len foo.fasta
+
+Give --name to put the name of each sequence in front of its length
+(i.e. '<name><TAB><length>').
+
+    fatt len --name foo.fasta
 
 stat
 -----
@@ -119,6 +150,14 @@ Index files are SQLite3 database that contains the name, the position, and the r
 of the sequences in each given file. The file name of the index is the original
 FASTA/FASTQ file name plus '.index'. For example, the above example creates foo.fasta.index.
 Therefore, the directory must be writable. It does not overwrite if there is any existing file.
+Give --force to remove an existing index first.
+
+    fatt index --force foo.fasta
+
+Sequence names must be unique, because the name is the primary key of the index.
+If a name occurs twice, fatt tells you which name it was and creates no index
+(use 'fatt chksamename' to list all of them).
+
 This command accesses storage quite randomly, so avoid using remote file systems 
 for performance where possible.
 
@@ -178,6 +217,29 @@ It collects nucleotide characters into a single line. Most Illumina reads are al
 
     fatt unfold foo.fastq > foo_unfolded.fastq
 
+clean
+------
+It replaces every character that is not a nucleotide with a nucleotide, which
+is handy when a downstream tool only understands A/C/G/T.
+
+    fatt clean foo.fasta > foo_clean.fasta
+
+By default, [^ACGTNacgtn] is replaced and N/n is left alone; give --processn to
+replace N/n as well. The replacement character is chosen by exactly one of the
+following options (--random is the default):
+
+    --a         Replace with 'A'
+    --c         Replace with 'C'
+    --g         Replace with 'G'
+    --t         Replace with 'T'
+    --n         Replace with 'N'
+    --random    Replace with A/C/G/T at random
+    --processn  Also replace N/n
+
+    fatt clean --n --processn foo.fasta > foo_all_n.fasta
+
+Quality strings of a FASTQ input are copied through untouched.
+
 composition
 ------------
 It calculates all 1- to 3-mer frequencies in the given files.
@@ -186,6 +248,16 @@ It calculates all 1- to 3-mer frequencies in the given files.
 
 It recognizes 'A' and 'a' as different characters by default. To ignore
 cases, add '--ignorecase'.
+
+The following options are available.
+
+    --ignorecase  Treat 'A' and 'a' as the same character
+    --monomer     Show only the 1-mer statistics
+    --bimer       Show only the 2-mer statistics
+    --trimer      Show only the 3-mer statistics
+    --dapicheck   Show DAPI-staining related statistics instead
+    --countends   Also count the n-mers that run over the ends of the sequences;
+                  such an end is shown as '*'
 
 split
 ------
@@ -198,7 +270,9 @@ Alternatively you can tell the maxinum number of bases for a single
 output file. The following example splits huge.fastq into files of
 equal to or slightly larger than 10 Mbp (except for the last file).
 
-    fatt split --max=10000000000 huge.fastq
+    fatt split --max=10000000 huge.fastq
+
+Note that --max counts BASES, not bytes.
 
 fatt counts all nucleotides by default, but you can tell it to ignore
 N's (ignorecase) when you give --excn option. This might help you when
@@ -225,7 +299,7 @@ method when the number of partitions exceeds 100.
         do something with huge.fastq.$i
     done
 
-Last but not the least, you can use --retfile option to return the
+Last but not the least, you can use --filestat option to return the
 number of partitions by file. The following example might tell you in a
 second.
 
@@ -320,6 +394,23 @@ It duplicates the specified sequence.
 
     dupseq seq1 newseq1
 
+### delete
+It removes the specified sequence from memory.
+
+    delete seq1
+
+### complement
+It constructs the reverse complement of the specified sequence (the first
+argument) and names it as the second argument.
+
+    complement seq1 seq1_rc
+
+Note that the source sequence is REMOVED, just like 'split' and 'join' remove
+their inputs. If you want to keep it, duplicate it first:
+
+    dupseq seq1 seq1_copy
+    complement seq1_copy seq1_rc
+
 ### split
 It splits the specified sequence by the specified position.
 
@@ -363,3 +454,17 @@ You can see the description of a subcommand. For example, if you do not remember
 the options for 'fatt extract', then you would type
 
     fatt help extract
+
+Exit status
+------------
+fatt returns 0 when everything went fine, and a non-zero status when anything
+failed (an unknown command, an input file that could not be opened or that is
+neither FASTA nor FASTQ, a broken or stale index, a requested read name that is
+not in the file, an invalid quality value, and so on). Diagnostics always go to
+the standard error, so a failure never gets mixed into the output.
+
+    fatt extract --seq chr1 foo.fasta > chr1.fasta || echo "extraction failed"
+
+Two subcommands use the exit status for their own purpose: 'fatt split
+--retstat' returns the number of the output files, and 'fatt edit' returns 2
+when the Genome Edit Script fails.

@@ -1,4 +1,5 @@
 use strict;
+use warnings;
 
 =pod
 
@@ -26,8 +27,8 @@ Primer3.pm - Wrapper for Primer3
 		primer_maxsize => 32,
 		primer_optsize => 21,
 		product_range => '75-100',
-		target_start  => 37 # 0-origin, inclusive
-		target_end    => 48 # 0-origin, exclusive
+		target_start  => 37, # 0-origin, inclusive
+		target_end    => 48  # 0-origin, exclusive
     );
     die if($primers->{error});
     for(@{$primers->{primer}){
@@ -54,27 +55,61 @@ B<Primer3.pm> can execute Primer3 and get the results.
 	You can see the number of the designed primer pairs
 	$retval->{numprimerpairs}
 
+	If primer3 cannot be found, or if it fails to run, designprimer()
+	returns a hash whose {error} member describes the problem and whose
+	{numprimerpairs} is 0. Always check {error} before looking at {primer}.
+
 =cut
 
 package Primer3;
 
 use Carp;
-use Env::Path;
 use FileHandle;
 use File::Temp;
+use File::Spec;
+
+# Quote a string so that it survives being interpolated into a /bin/sh
+# command line (a PATH entry containing a space used to break the run).
+sub _shell_quote($)
+{
+	my $s = shift;
+	return "''" unless(defined $s && $s ne '');
+	$s =~ s/'/'\\''/g;
+	return "'" . $s . "'";
+}
+
+# Look for an executable in PATH.
+#
+# NOTE: this used to be done with Env::Path->Whence('primer3*') with a
+#       Whence('primer3_core*') fallback. That was broken either way: if
+#       Whence globs, 'primer3*' already matches 'primer3_core' so the
+#       fallback was unreachable; if it does not glob, neither pattern can
+#       ever match a real file name and the path stayed undef. Scanning PATH
+#       for the exact program names removes the ambiguity.
+sub _which_first(@)
+{
+	my @names = @_;
+	my $pathsep = ($^O =~ /^MSWin/i) ? ';' : ':';
+	my @dirs = split(/\Q$pathsep\E/, defined $ENV{PATH} ? $ENV{PATH} : '');
+	my @suffixes = ($^O =~ /^MSWin/i) ? ('', '.exe', '.bat', '.cmd') : ('');
+	for my $name (@names) {
+		for my $dir (@dirs) {
+			$dir = '.' if($dir eq '');
+			for my $sfx (@suffixes) {
+				my $cand = File::Spec->catfile($dir, $name . $sfx);
+				return $cand if(-f $cand && -x $cand);
+			}
+		}
+	}
+	return undef;
+}
 
 sub new($)
 {
 	my $class = shift;
-	my $pathobj = Env::Path->PATH;
-	my @primer3s = $pathobj->Whence('primer3*');
-	my $primer3path;
-	if(@primer3s) {
-		$primer3path = shift @primer3s;
-	} else {
-		my @primer3cores = $pathobj->Whence('primer3_core*');
-		$primer3path = shift @primer3cores;
-	}
+	# 'primer3_core' is the real executable of modern primer3 releases;
+	# 'primer3' is kept for the very old versions.
+	my $primer3path = _which_first('primer3_core', 'primer3');
 	my $self = {
 		primer3path => $primer3path
 	};
@@ -101,21 +136,42 @@ sub designprimer($$)
 	my $primer3path = $self->{primer3path};
 
     croak "Sequence ID is not defined. " unless(defined $sequenceid);
+    croak "Sequence is not defined. "    unless(defined $sequence);
+    # Boulder-IO is a line oriented format: a newline inside a value would
+    # split the record and silently truncate the sequence.
+    croak "Sequence ID must not contain a newline: '$sequenceid'" if($sequenceid =~ /[\r\n]/);
+    croak "Sequence ID must not be empty. " if($sequenceid eq '');
+    $sequence =~ s/\s+//g;   # whitespace (including newlines) is not part of the sequence
+    croak "Sequence must not be empty. " if($sequence eq '');
 
-	my $tmp = new File::Temp( UNLINK => 0, SUFFIX => '.dat' );
+    unless(defined $primer3path && $primer3path ne '') {
+        return {
+            error => "primer3 is not installed: neither 'primer3_core' nor 'primer3' was found in PATH",
+            numprimerpairs => 0,
+            primer => []
+        };
+    }
+
+	# UNLINK => 1 so that the temporary file is removed even if something
+	# croaks before the end of this sub.
+	my $tmp = new File::Temp( UNLINK => 1, SUFFIX => '.dat' );
 	print $tmp "PRIMER_SEQUENCE_ID=$sequenceid\n";
 	print $tmp "SEQUENCE=$sequence\n";
 
     print $tmp "PRIMER_PICK_ANYWAY=1\n" if $param{pickanyway};
 
-	my $target_start = $param{tstart};
-	my $target_end   = $param{tend};
+	# 'target_start'/'target_end' are the documented names; 'tstart'/'tend'
+	# are kept as aliases for backward compatibility.
+	my $target_start = defined $param{target_start} ? $param{target_start} : $param{tstart};
+	my $target_end   = defined $param{target_end}   ? $param{target_end}   : $param{tend};
 	if(defined $target_end && defined $target_start) {
 		my $length = $target_end - $target_start;
+		croak "Target end ($target_end) must not be smaller than target start ($target_start)" if($length < 0);
 		print $tmp "TARGET=$target_start,$length\n";
-	} else {
-		my $target = $param{target};
-		print $tmp "TARGET=$target\n";
+	} elsif(defined $param{target}) {
+		# Only emit TARGET when a target was actually requested; an empty
+		# 'TARGET=' line makes primer3 reject the whole record.
+		print $tmp "TARGET=$param{target}\n";
 	}
 
 	my $primer_opt = $param{primeroptlength};
@@ -133,7 +189,10 @@ sub designprimer($$)
 #PRIMER_INTERNAL_OLIGO_EXCLUDED_REGION=37,21
 #PRIMER_MIN_SIZE=15
 #PRIMER_MAX_SIZE=21
-	print $tmp "PRIMER_FILE_FLAG=1\n";
+	# PRIMER_FILE_FLAG makes primer3 write <PRIMER_SEQUENCE_ID>.for/.rev/.int
+	# into the current directory, and nothing ever cleans them up. Off unless
+	# the caller explicitly asks for it.
+	print $tmp "PRIMER_FILE_FLAG=1\n" if($param{fileflag});
 	print $tmp "PRIMER_EXPLAIN_FLAG=1\n" if($param{explain});
     print $tmp "PRIMER_PRODUCT_MAX_TM=$param{product_maxtm}\n" if($param{product_maxtm});
     print $tmp "PRIMER_PRODUCT_MIN_TM=$param{product_mintm}\n" if($param{product_mintm});
@@ -159,11 +218,17 @@ sub designprimer($$)
     	return 0 unless(defined $value);
     	return $value + 0;
     }
-	my @elines = `$primer3path < $tmp`;
+	my $commandline = _shell_quote($primer3path) . ' < ' . _shell_quote("$tmp");
+	my @elines = `$commandline`;
+	my $childstatus = $?;
 	# print "file : $tmp\n"; # for debug
 	my $retval;
 	$retval->{error} = "";
 	$retval->{numprimerpairs} = 0;
+	if($childstatus == -1) {
+		$retval->{error} = "failed to execute primer3 ('$primer3path'): $!";
+		return $retval;
+	}
  	for(@elines) {
  		# print;
  		chomp;
@@ -207,7 +272,18 @@ sub designprimer($$)
 			$retval->{primer}->[$index]->{rightgc} = $3;
 		}
 	}
-	unlink $tmp;
+	if($retval->{error} eq '') {
+		if($childstatus != 0) {
+			my $exitcode = $childstatus >> 8;
+			my $signal   = $childstatus & 127;
+			$retval->{error} = $signal
+				? "primer3 ('$primer3path') was killed by signal $signal"
+				: "primer3 ('$primer3path') exited with status $exitcode";
+		} elsif(!@elines) {
+			$retval->{error} = "primer3 ('$primer3path') produced no output";
+		}
+	}
+	# $tmp was created with UNLINK => 1, so it goes away by itself.
 	return $retval;
 }
 

@@ -1,25 +1,68 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 use JSON;
-
-my $dummy = <>; # skip header
 
 my $quaststats = [];
 my $current_alignment_frags = [];
 my $current_misassembly_frags = [];
 
-my $expect_align_stat = 1;
+# The columns of an alignment row are
+#     S1  E1  S2  E2  Reference  Contig  IDY  Ambiguous  Best_group
+# A misassembly row is a single free-form text field, and a contig row starts
+# with the literal "CONTIG". The rows do NOT strictly alternate: QUAST emits
+# several alignment rows in a row for an ambiguously placed contig, so the type
+# of each line has to be recognized instead of being assumed.
+sub looks_like_an_alignment_row
+{
+    my ($f) = @_;
+    return 0 if(@{$f} < 8);
+    return 0 unless(defined $f->[0] && $f->[0] =~ /^-?\d+$/);
+    return 0 unless(defined $f->[1] && $f->[1] =~ /^-?\d+$/);
+    return 1;
+}
+
+sub as_integer
+{
+    my ($value, $column) = @_;
+    unless(defined $value && $value =~ /^-?\d+$/) {
+        die "$ARGV line $.: column $column is not an integer (got '" . (defined $value ? $value : '') . "')\n";
+    }
+    return $value + 0;
+}
+
+sub as_number
+{
+    my ($value, $column) = @_;
+    unless(defined $value && $value =~ /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/) {
+        die "$ARGV line $.: column $column is not a number (got '" . (defined $value ? $value : '') . "')\n";
+    }
+    return $value + 0.0;
+}
+
+# QUAST writes Python booleans, i.e. the strings "True" and "False". Note that
+# the string "False" is true in Perl, so the value has to be compared as text.
+sub as_boolean
+{
+    my ($value, $column) = @_;
+    $value = '' unless(defined $value);
+    return \1 if($value eq 'True'  || $value eq 'true'  || $value eq '1');
+    return \0 if($value eq 'False' || $value eq 'false' || $value eq '0' || $value eq '');
+    warn "$ARGV line $.: column $column is not a boolean (got '$value'); assuming false\n";
+    return \0;
+}
 
 while(<>){
+    next if($. == 1); # skip the header line of every input file
     chomp;
+    next if(/^\s*$/);
     my @f = split(/\t/);
-    if($f[0] eq "CONTIG") {
-        $expect_align_stat = 1;
-        my ($contig_dummy, $contig_name, $contig_length, $contig_stat) = @f;
+    if(defined $f[0] && $f[0] eq "CONTIG") {
+        my (undef, $contig_name, $contig_length, $contig_stat) = @f;
         push(@{$quaststats}, {
             name => $contig_name,
-            length => $contig_length + 0,
+            length => as_integer($contig_length, 'contig length'),
             stat => $contig_stat,
             alignments => $current_alignment_frags,
             misassembly_frags => $current_misassembly_frags
@@ -28,24 +71,23 @@ while(<>){
         $current_misassembly_frags = [];
         next;
     }
-    if($expect_align_stat) {
+    if(looks_like_an_alignment_row(\@f)) {
         # S1      E1      S2      E2      Reference       Contig  IDY     Ambiguous       Best_group
         my $alignment_frag = {};
-        $alignment_frag->{ref_start_pos} = int($f[0]);
-        $alignment_frag->{ref_end_pos} = int($f[1]);
-        $alignment_frag->{con_start_pos} = int($f[2]);
-        $alignment_frag->{con_end_pos} = int($f[3]);
+        $alignment_frag->{ref_start_pos} = as_integer($f[0], 'S1');
+        $alignment_frag->{ref_end_pos} = as_integer($f[1], 'E1');
+        $alignment_frag->{con_start_pos} = as_integer($f[2], 'S2');
+        $alignment_frag->{con_end_pos} = as_integer($f[3], 'E2');
         $alignment_frag->{reference} = $f[4];
         $alignment_frag->{contig} = $f[5];
-        $alignment_frag->{identity} = $f[6] + 0.0;
-        $alignment_frag->{is_ambiguous} = $f[7] ? \1 : \0;
-        $alignment_frag->{best_group} = $f[7] ? \1 : \0;
+        $alignment_frag->{identity} = as_number($f[6], 'IDY');
+        $alignment_frag->{is_ambiguous} = as_boolean($f[7], 'Ambiguous');
+        $alignment_frag->{best_group} = as_boolean($f[8], 'Best_group');
         push(@{$current_alignment_frags}, $alignment_frag);
-        $expect_align_stat = 0;
     } else {
         my $misassembly_frag = {};
-        my $mfrag = $f[0];
-        $misassembly_frag->{text} = $f[0];
+        my $mfrag = defined $f[0] ? $f[0] : '';
+        $misassembly_frag->{text} = $mfrag;
         if($mfrag =~ /^fake/) {
             $misassembly_frag->{type} = "fake";
         } elsif($mfrag =~ /^indel: indel \(<= 5bp\)/) {
@@ -72,8 +114,9 @@ while(<>){
             $misassembly_frag->{type} = "syntax_error";
         }
         push(@{$current_misassembly_frags}, $misassembly_frag);
-        $expect_align_stat = 1;
     }
+} continue {
+    close ARGV if(eof); # reset $. so that the header of the next file is skipped too
 }
 
 print encode_json($quaststats);

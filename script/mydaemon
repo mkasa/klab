@@ -5,19 +5,23 @@
 #
 
 use strict;
+use warnings;
 use Pod::Usage;
 use Getopt::Long;
-use File::Temp qw/ :mktemp /;
-use Proc::PID::File;
+use File::Temp qw(tempfile);
+use File::Path qw(make_path);
 use Cwd;
 
-my $param_mydaemon_dir = "~/.mydaemon";
+# Perl's file tests do not expand '~', so expand it ourselves.
+my $home_dir = $ENV{'HOME'};
+$home_dir = (getpwuid($<))[7] unless(defined $home_dir && $home_dir ne '');
+$home_dir = '.' unless(defined $home_dir && $home_dir ne '');
+my $param_mydaemon_dir = "$home_dir/.mydaemon";
 my $flag_debug   = 0;
 my $flag_man     = 0;
 my $flag_help    = 0;
 my $flag_crontab = 0;
 my $flag_init    = 0;
-my $param_repository_spec_file = "repositories";
 
 GetOptions("debug"   => \$flag_debug,
            "help"    => \$flag_help,
@@ -29,47 +33,132 @@ GetOptions("debug"   => \$flag_debug,
 pod2usage(1) if($flag_help);
 pod2usage(-verbose => 2) if($flag_man);
 
+sub debug_print {
+    print STDERR "[debug] @_" if($flag_debug);
+}
+
+# Quote a string for /bin/sh. Returns the string as is when it needs no quoting.
+sub shell_quote {
+    my ($s) = @_;
+    return "''" unless(defined $s && $s ne '');
+    return $s if($s =~ m|^[A-Za-z0-9_.,:=+/-]+$|);
+    $s =~ s|'|'\\''|g;
+    return "'$s'";
+}
+
+# Escape a command line for the command field of a crontab entry.
+# An unescaped '%' is turned into a newline by cron, and everything after the
+# first one is fed to the job as its standard input.
+sub crontab_escape {
+    my ($s) = @_;
+    $s =~ s|%|\\%|g;
+    return $s;
+}
+
+# Run a command with both stdout and stderr sent to /dev/null, without going
+# through a shell (so that paths containing spaces are handled correctly).
+sub system_quiet {
+    my @cmd = @_;
+    my $pid = fork();
+    unless(defined $pid) {
+        print STDERR "Could not fork: $!\n";
+        return -1;
+    }
+    unless($pid) {
+        open(STDOUT, ">", "/dev/null");
+        open(STDERR, ">&", \*STDOUT);
+        exec { $cmd[0] } @cmd;
+        exit 127;
+    }
+    waitpid($pid, 0);
+    return $?;
+}
+
+# Load Proc::PID::File lazily: it is a non-core CPAN module, and only the
+# --crontab path actually needs it. Requiring it at compile time would make
+# even --help unusable on a machine that does not have it.
+sub abort_if_already_running {
+    my ($lock_dir) = @_;
+    unless(eval { require Proc::PID::File; 1 }) {
+        print STDERR "mydaemon needs the Proc::PID::File module to make sure that\n";
+        print STDERR "two periodic runs never overlap, but it could not be loaded:\n";
+        print STDERR "  $@";
+        print STDERR "Please install it (e.g. 'cpanm Proc::PID::File').\n";
+        exit 3;
+    }
+    if(Proc::PID::File->running(dir => $lock_dir)) {
+        print STDERR "Already running!\n";
+        exit 0;
+    }
+}
+
 if($flag_init) {
-    my $file_name = mktemp("/tmp/tmpfileXXXXX");
-    my $r = `crontab -l > $file_name`;
-    open my $fh, "<", $file_name or die;
-    my @lines = <$fh>;
+    my @lines = `crontab -l 2>/dev/null`;
+    # 'crontab -l' fails when the user simply has no crontab yet; that is fine.
+    @lines = () if($?);
     if(scalar(grep {/mydaemon/i} @lines) > 0) {
 	print STDERR "It seems that mydaemon is already registered on crontab.\n";
 	print STDERR "Abort for safety, so please manually edit the crontab by\n\n";
-	print STDERR "  \$ crontab -l\n\n";
+	print STDERR "  \$ crontab -e\n\n";
 	exit 1;
     }
-    close $fh;
-    open my $ofh, ">>", $file_name or die;
-    print $ofh "MAILTO=\"\"\n";
-    print $ofh "0,5,10,15,20,25,30,35,40,45,50,55\t"; # min
-    print $ofh "*\t"; # hour
-    print $ofh "*\t"; # day of month
-    print $ofh "*\t"; # month
-    print $ofh "*\t"; # day of week
-    print $ofh "/usr/bin/env PERL5LIB=" . $ENV{'PERL5LIB'} . " " if(exists $ENV{'PERL5LIB'});
-    print $ofh "$^X " . Cwd::abs_path($0) . " -crontab\n"; # command
-    close $ofh;
-    my $r2 = `crontab $file_name`;
-    if($?) {
+    my ($fh, $file_name) = tempfile("mydaemon.XXXXXXXX", TMPDIR => 1);
+    debug_print("using temporary file '$file_name'\n");
+    push @lines, "\n" if(@lines && $lines[-1] !~ m|\n\z|);
+    print $fh @lines;
+    print $fh "MAILTO=\"\"\n";
+    print $fh "0,5,10,15,20,25,30,35,40,45,50,55\t"; # min
+    print $fh "*\t"; # hour
+    print $fh "*\t"; # day of month
+    print $fh "*\t"; # month
+    print $fh "*\t"; # day of week
+    my @command;
+    if(exists $ENV{'PERL5LIB'}) {
+        push @command, "/usr/bin/env", "PERL5LIB=" . $ENV{'PERL5LIB'};
+    }
+    my $my_path = Cwd::abs_path($0);
+    unless(defined $my_path) {
+        print STDERR "Could not determine the absolute path of '$0'.\n";
+        exit 2;
+    }
+    push @command, $^X, $my_path, "-crontab";
+    print $fh crontab_escape(join(' ', map { shell_quote($_) } @command)) . "\n"; # command
+    unless(close $fh) {
+	print STDERR "Could not write the new crontab into '$file_name': $!\n";
+	unlink $file_name;
+	exit 2;
+    }
+    if(system('crontab', $file_name)) {
 	print STDERR "Failed to register mydaemon to crontab.\n";
 	print STDERR "Look into $file_name, and test 'crontab $file_name'\n";
 	print STDERR "to see what is happening.\n";
 	exit 2;
     }
-    unless(-x $param_mydaemon_dir) {
+    unlink $file_name;
+    unless(-d $param_mydaemon_dir) {
 	print STDERR "Creating directory '$param_mydaemon_dir'\n";
-	my $r3 = `mkdir -p $param_mydaemon_dir`;
-	print STDERR "$r3\n";
+	make_path($param_mydaemon_dir);
+	unless(-d $param_mydaemon_dir) {
+	    print STDERR "Could not create '$param_mydaemon_dir': $!\n";
+	    exit 2;
+	}
     }
     print STDERR "Registered.\n";
     exit 0;
 }
 
 if($flag_crontab) {
-    my @subdirs = <$param_mydaemon_dir/*>;
+    # Make sure two periodic runs never overlap. The lock lives in the user's
+    # own directory rather than in the world-writable /var/tmp.
+    unless(-d $param_mydaemon_dir) {
+	print STDERR "'$param_mydaemon_dir' does not exist. Run 'mydaemon -init' first.\n";
+	exit 1;
+    }
+    abort_if_already_running($param_mydaemon_dir);
+    my @subdirs = glob("\Q$param_mydaemon_dir\E/*");
+    debug_print("found " . scalar(@subdirs) . " entries in '$param_mydaemon_dir'\n");
     for my $subdir (@subdirs) {
+	next unless(-d $subdir);
 	print STDERR "Checking '$subdir' ... ";
 	my $check_script = "$subdir/check";
 	my $run_script   = "$subdir/run";
@@ -81,11 +170,11 @@ if($flag_crontab) {
 	    print STDERR "$run_script was not found. Skip.\n";
 	    next;
 	}
-	my $rr = system "$check_script 2>&1 > /dev/null";
+	my $rr = system_quiet($check_script);
 	if($rr >> 8) {
 	    print STDERR "not running. ";
-	    my $rr2 = system "$run_script";
-	    if($?) {
+	    my $rr2 = system { $run_script } $run_script;
+	    if($rr2) {
 		print STDERR "Failed.\n";
 	    } else {
 		print STDERR "Succeeded.\n";
@@ -97,10 +186,7 @@ if($flag_crontab) {
     exit 0;
 }
 
-if(Proc::PID::File->running(dir => "/var/tmp/")) {
-    print STDERR "Already running!\n";
-    exit 0;
-}
+pod2usage(-verbose => 1, -exitval => 1);
 
 
 =pod
@@ -111,11 +197,15 @@ mydaemon - manage daemon-like processes without root
 
 =head1 SYNOPSIS
 
-mydaemon [options] 
+mydaemon [options]
 
 Options:
+
    -help            brief help message
    -man             full documentation
+   -init            register mydaemon on the user's crontab
+   -crontab         run the periodic check (used by the crontab entry)
+   -debug           print extra diagnostics
 
 =head1 OPTIONS
 
@@ -137,6 +227,15 @@ Initializes the crontab of the user to periodically run B<mydaemon>.
 
 This option is given when B<mydaemon> is run from the crontab.
 Users will not need this option except for debugging.
+This is the only mode that starts daemons, and it refuses to start when
+another B<mydaemon -crontab> is still running, so that two consecutive
+five-minute ticks can never overlap.
+It needs the L<Proc::PID::File> module; the module is loaded only by this
+mode, so the other options work without it.
+
+=item B<-debug>
+
+Print extra diagnostics.
 
 =back
 
@@ -157,6 +256,16 @@ Suppose if you created '~/.mydaemon/test'.
 There must be two files, 'check' and 'run', under that directory.
 The former file, 'check', checks if the daemon is running, and returns non-zero if not.
 The latter file is run when the daemon is not running.
+
+B<'run' must put the daemon into the background and return immediately.>
+B<mydaemon> waits for 'run' to finish, so a 'run' that stays in the foreground
+would block the periodic check forever (and the overlap guard would then make
+every following tick do nothing).
+
+Both 'check' and 'run' are executed directly (not through a shell), so they
+must be executable and must start with a proper shebang line.
+The output of 'check' is discarded so that it does not leak into the mail cron
+sends; the output of 'run' is left alone.
 
 =cut
 

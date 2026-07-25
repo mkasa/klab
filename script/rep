@@ -4,6 +4,7 @@
 # @author Masahiro Kasahara (masahiro@kasahara.ws)
 #
 use strict;
+use warnings;
 
 use Pod::Usage;
 use Getopt::Long;
@@ -19,11 +20,11 @@ GetOptions("debug"      => \$flag_debug,
            "help"       => \$flag_help,
            "man"        => \$flag_man,
            "noparallel" => \$flag_noparallel
-    );
+    ) or pod2usage(-exitval => 2, -verbose => 0, -input => \*DATA);
 
 my $command = shift;
 
-if($flag_help || $command =~ /^help$/i) {
+if($flag_help || (defined $command && $command =~ /^help$/i)) {
     my $is_in_synopsis = 0;
     while(<DATA>) {
         if($is_in_synopsis) {
@@ -38,9 +39,9 @@ if($flag_help || $command =~ /^help$/i) {
             }
         }
     }
-    exit 2;
+    exit 0; # an explicit help request is not an error
 }
-pod2usage(-verbose => 2) if($flag_man  || $command =~ /^man$/i);
+pod2usage(-verbose => 2, -exitval => 0, -input => \*DATA) if($flag_man || (defined $command && $command =~ /^man$/i));
 
 unless(defined $command) {
     print STDERR "Usage: rep <command> [options]\n";
@@ -59,13 +60,9 @@ if($command eq 'stat' || $command eq 'status') {
 if($command eq 'statall' || $command eq 'statusall') {
     cmd_statusall(); exit 0;
 }
-if($command eq 'outgoing') { print STDERR "Sorry, not implemented yet.\n"; exit 1; }
+if($command eq 'outgoing') { cmd_outgoing(); exit 0; }
 if($command eq 'outgoingall' || $command eq 'ogall') {
     cmd_outgoingall(); exit 0;
-}
-if($command eq 'statusall_sub') {
-    my $subarg = shift;
-    cmd_statusall_sub($subarg); exit 0;
 }
 if($command eq 'outgoingall_child') {
     my $dir = shift;
@@ -83,11 +80,40 @@ exit 1;
 sub cl($)
 {
     my $s = shift;
-    if(-t STDOUT && $ENV{'TERM'} ne 'dumb') {
+    my $term = defined $ENV{'TERM'} ? $ENV{'TERM'} : '';
+    if(-t STDOUT && $term ne 'dumb') {
         return color($s);
     } else {
         return "";
     }
+}
+
+# Quote a single string so that a POSIX shell passes it through verbatim.
+sub sq($)
+{
+    my $s = shift;
+    $s = '' unless(defined $s);
+    $s =~ s/'/'\\''/g;
+    return "'$s'";
+}
+
+# Run a command given as an argv list (no shell is involved) and return its
+# output as a list of chomped lines. $? is set as usual. LC_ALL/LANG are forced
+# to C so that we never have to parse localized prose.
+sub capture
+{
+    my @cmd = @_;
+    local $ENV{'LC_ALL'} = 'C';
+    local $ENV{'LANG'}   = 'C';
+    my $ph;
+    unless(open($ph, "-|", @cmd)) {
+        $? = -1;
+        return ();
+    }
+    my @out = <$ph>;
+    close $ph;
+    chomp @out;
+    return @out;
 }
 
 sub dosh($)
@@ -105,24 +131,44 @@ sub dosh($)
 	return 0;
 }
 
+# Tells the repository type of $dir itself (the ancestors of $dir are NOT
+# looked at; see get_repo_type_ancestor() for that).
 sub get_repo_type($)
 {
     my $dir = shift;
-    chop while($dir =~ m|/$|);
+    $dir = '.' unless(defined $dir && $dir ne '');
+    $dir =~ s|/+$|| while($dir =~ m|.+/$|); # keep a bare '/' as is
     return "git" if(-e $dir . "/.git");
     return "cvs" if(-e $dir . "/CVSROOT");
     return "svn" if(-e $dir . "/.svn");
     return "rcs" if(-e $dir . "/RCS");
+    return "hg"  if(-e $dir . "/.hg");
+    return undef;
+}
+
+# Same as get_repo_type(), but walks up towards the root so that it also works
+# when we stand in a *subdirectory* of a working copy. The path is made
+# absolute first: otherwise stripping the last component of a relative name
+# such as '.' or 'foo' fails immediately and the walk never takes a step.
+sub get_repo_type_ancestor($)
+{
+    my $dir = shift;
+    $dir = '.' unless(defined $dir && $dir ne '');
+    my $abs = Cwd::abs_path($dir);
+    return get_repo_type($dir) unless(defined $abs);
     while(1) {
-        return "hg" if(-e $dir . "/.hg");
-        unless($dir =~ s|/[^/]*$||) { last }
+        my $type = get_repo_type($abs);
+        return $type if(defined $type);
+        last if($abs eq '/' || $abs !~ m|/|);
+        $abs =~ s|/[^/]*$||;
+        $abs = '/' if($abs eq '');
     }
     return undef;
 }
 
-sub cmd_which()
+sub cmd_which
 {
-    my $type = get_repo_type(".");
+    my $type = get_repo_type_ancestor(".");
     unless(defined $type) {
         print "unknown\t.\n";
     } else {
@@ -130,7 +176,7 @@ sub cmd_which()
     }
 }
 
-sub cmd_list()
+sub cmd_list
 {
     my @dirnames = <*>;
     for my $dirname (@dirnames) {
@@ -143,11 +189,19 @@ sub cmd_list()
     }
 }
 
+sub report_vcs_error($)
+{
+    my $what = shift;
+    print STDERR cl('red') . "ERROR: '$what' failed in '" . Cwd::getcwd() . "'." . cl('reset') . "\n";
+    return;
+}
+
 sub pull($)
 {
     my $type = shift;
     if($type eq 'git') {
-        my @s = `git remote`; die "Couldn't 'git remote'" if($?);
+        my @s = capture("git", "remote");
+        if($?) { report_vcs_error("git remote"); return; }
         if(@s > 0) {
             dosh("git pull");
         } else {
@@ -160,10 +214,14 @@ sub pull($)
     } elsif($type eq 'rcs') {
         print "Nothing to do\n";
     } elsif($type eq 'hg') {
-        my @s = `grep default .hg/hgrc`;
-        if($? == 0) {
+        # 'hg paths' works from any subdirectory of the working copy, unlike
+        # reading ./.hg/hgrc directly.
+        my @s = capture("hg", "paths");
+        if(!$? && grep { m|^default\s*=| } @s) {
             my $rs = return_status_silently($type);
-            if(0 < $rs) {
+            unless(defined $rs) {
+                print "Could not determine the status, so nothing was pulled.\n";
+            } elsif(0 < $rs) {
                 print "You have modifiled files.\n";
             } else {
                 dosh("hg pull -u");
@@ -196,25 +254,30 @@ sub status($)
     }
 }
 
+# Returns 0 when the working copy is clean, 1 when it has local modifications,
+# and undef when we cannot tell (unsupported VCS, or the VCS command failed).
+# It never dies, so that a sweep over many repositories is not aborted by a
+# single broken one.
 sub return_status_silently($)
 {
     my $type = shift;
     if($type eq 'git') {
-        my @s = `git status`;
-        if($?) { die; }
-        return $s[-1] !~ m|working tree clean|;
-    } elsif($type eq 'cvs') {
-        print "Not implemented.\n";
+        # --porcelain is a stable, machine readable format; the old test
+        # matched the English prose of 'git status', which changed wording
+        # between git versions and is translated in non-English locales.
+        my @s = capture("git", "status", "--porcelain");
+        if($?) { report_vcs_error("git status --porcelain"); return undef; }
+        return (0 < @s) ? 1 : 0;
     } elsif($type eq 'svn') {
-        my @s = `svn status`;
-        if($?) { die; }
-        return @s != 0;
-    } elsif($type eq 'rcs') {
-        print "Not implemented.\n";
+        my @s = capture("svn", "status");
+        if($?) { report_vcs_error("svn status"); return undef; }
+        return (0 < @s) ? 1 : 0;
     } elsif($type eq 'hg') {
-        my @s = `hg status`;
-        if($?) { die; }
-        return @s != 0;
+        my @s = capture("hg", "status");
+        if($?) { report_vcs_error("hg status"); return undef; }
+        return (0 < @s) ? 1 : 0;
+    } elsif($type eq 'cvs' || $type eq 'rcs') {
+        return undef; # not supported
     } else {
         print STDERR "ERROR: Internal error (status).\n";
         exit 3;
@@ -223,7 +286,7 @@ sub return_status_silently($)
 
 sub get_repo_type_of_current_dir()
 {
-    my $type = get_repo_type(".");
+    my $type = get_repo_type_ancestor(".");
     unless(defined $type) {
         print STDERR cl('red') . "ERROR: Repository type is not known.\n";
         print STDERR             "       Maybe just the current directory is not a repository?" . cl('reset') . "\n";
@@ -234,31 +297,44 @@ sub get_repo_type_of_current_dir()
 
 sub is_gnu_parallel_available()
 {
-    my $parallel_path = `which parallel`;
-    chomp $parallel_path;
-    if(-x $parallel_path) {
-        return $parallel_path;
-    }
+    # We invoke 'sem' (and 'sem --wait') below, so that is what has to exist.
+    # Probing for 'parallel' is wrong: Debian/Ubuntu's moreutils ships a
+    # 'parallel' that comes without 'sem' at all.
+    my ($sem_path) = capture("which", "sem");
+    return undef if($?);
+    return undef unless(defined $sem_path && $sem_path ne '');
+    return $sem_path if(-x $sem_path);
     return undef;
 }
 
+# Each argument must be a complete, already shell-quoted command line: 'sem'
+# joins whatever it is given with blanks and hands the result to a shell.
 sub gnu_parallel
 {
-    my $cmd = "sem -j+2 ";
-    for(@_) {
-        print STDERR "\% $cmd $_\n" if(0 < $flag_debug);
-        system "$cmd $_";
+    my $ok = 1;
+    for my $shellcmd (@_) {
+        print STDERR "\% sem -j+2 $shellcmd\n" if(0 < $flag_debug);
+        my $r = system("sem", "-j+2", $shellcmd);
+        if($r != 0) {
+            print STDERR cl('red') . "ERROR: could not run 'sem' (rc=$r). Is GNU parallel installed?" . cl('reset') . "\n";
+            $ok = 0;
+        }
     }
-    `sem --wait`;
+    my $r = system("sem", "--wait");
+    if($r != 0) {
+        print STDERR cl('red') . "ERROR: 'sem --wait' failed (rc=$r)." . cl('reset') . "\n";
+        $ok = 0;
+    }
+    return $ok;
 }
 
-sub cmd_pull()
+sub cmd_pull
 {
     my $type = get_repo_type_of_current_dir();
     pull($type);
 }
 
-sub cmd_status()
+sub cmd_status
 {
     my $type = get_repo_type_of_current_dir();
     status($type);
@@ -286,14 +362,18 @@ sub cmd_pullall_sub($$)
     }
 }
 
-sub cmd_pullall_child($)
+sub cmd_pullall_child
 {
     my $dirname = shift;
+    unless(defined $dirname) {
+        print STDERR "ERROR: pullall_child requires a directory name.\n";
+        exit 1;
+    }
     my $base_dir = Cwd::getcwd();
     cmd_pullall_sub($dirname, $base_dir);
 }
 
-sub cmd_pullall()
+sub cmd_pullall
 {
     my @dirnames = <*>;
     my $base_dir = Cwd::getcwd();
@@ -307,7 +387,7 @@ sub cmd_pullall()
         for my $dirname (@dirnames) {
             my $type = get_repo_type($dirname);
             if(defined $type) {
-                push(@parallel_commands, "$0 pullall_child $dirname");
+                push(@parallel_commands, sq($0) . " pullall_child " . sq($dirname));
             } else {
                 print "unknown\t$dirname\n";
             }
@@ -323,7 +403,9 @@ sub cmd_statusall_sub($)
     if(defined $type) {
         if(chdir $dirname) {
             my $ret_status = return_status_silently($type);
-            if($ret_status == 0) {
+            unless(defined $ret_status) {
+                print cl('yellow') . "?" . cl('reset') . "\t$type\t$dirname\n";
+            } elsif($ret_status == 0) {
                 print " \t$type\t$dirname\n";
             } else {
                 print cl('green') . "M" . cl('reset') . "\t$type\t$dirname\n";
@@ -336,38 +418,73 @@ sub cmd_statusall_sub($)
     }
 }
 
-sub cmd_statusall()
+sub cmd_statusall
 {
     my @dirnames = <*>;
     my $base_dir = Cwd::getcwd();
-    my $is_gnu_parallel_available = is_gnu_parallel_available();
-    unless(0 && $is_gnu_parallel_available && !$flag_noparallel) {
-        for my $dirname (@dirnames) {
-            cmd_statusall_sub($dirname);
-            unless(chdir $base_dir) {
-                print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
-                print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
-                exit 3;
-            }
+    for my $dirname (@dirnames) {
+        cmd_statusall_sub($dirname);
+        unless(chdir $base_dir) {
+            print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
+            print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
+            exit 3;
         }
-    } else {
-        my @parallel_commands;
-        for my $dirname (@dirnames) {
-            push(@parallel_commands, "$0 statusall_sub $dirname");
-        }
-        gnu_parallel(@parallel_commands);
     }
 }
 
 sub git_get_current_branch
 {
-    my @lines = `git branch`;
-    for(@lines) {
-        if(/^\*\s(.*)$/) {
-            return $1;
-        }
+    # 'git branch' output has to be parsed and, in a detached HEAD or during a
+    # rebase, yields things like '(HEAD detached at 1a2b3c4)'.
+    # symbolic-ref gives the plain branch name, or fails quietly if there is
+    # none, which is exactly what we want.
+    my ($branch) = capture("git", "symbolic-ref", "--quiet", "--short", "HEAD");
+    return undef if($?);
+    return undef unless(defined $branch && $branch ne '');
+    return $branch;
+}
+
+# Returns the one-character mark that describes the outgoing state of the
+# repository in the current directory.
+sub outgoing_mark($)
+{
+    my $type = shift;
+    my $ret_status = return_status_silently($type);
+    unless(defined $ret_status) {
+        return cl('red') . "U" . cl('reset');   # unsupported / could not tell
     }
-    return undef;
+    if($ret_status != 0) {
+        return cl('green') . "M" . cl('reset'); # locally modified
+    }
+    if($type eq 'hg') {
+        capture("hg", "outgoing");
+        return (($? >> 8) == 0) ? cl('green') . "O" . cl('reset') : " ";
+    } elsif($type eq 'git') {
+        capture("git", "fetch");
+        my $current_branch = git_get_current_branch();
+        return cl('red') . "X" . cl('reset') unless(defined $current_branch);
+        my ($remoterep) = capture("git", "config", "branch.$current_branch.remote");
+        $remoterep = '' unless(defined $remoterep);
+        return cl('red') . "X" . cl('reset') if($remoterep eq '');
+        my ($remotebra) = capture("git", "config", "branch.$current_branch.merge");
+        $remotebra = '' unless(defined $remotebra);
+        $remotebra =~ s|^[^/]*/[^/]*/||;
+        return cl('red') . "X" . cl('reset') if($remotebra eq '');
+        my @result = capture("git", "log", "$remoterep/$remotebra..");
+        # 'git log <range>' prints nothing at all when the range is empty.
+        return (0 < @result) ? cl('green') . "O" . cl('reset') : " ";
+    } elsif($type eq 'svn') {
+        my @s = capture("svn", "status", "-u");
+        return cl('red') . "X" . cl('reset') if($?);
+        return (1 < scalar(@s)) ? cl('green') . "O" . cl('reset') : " ";
+    }
+    return cl('red') . "U" . cl('reset');
+}
+
+sub cmd_outgoing
+{
+    my $type = get_repo_type_of_current_dir();
+    print outgoing_mark($type) . "\t$type\t.\n";
 }
 
 sub cmd_outgoingall_sub
@@ -376,52 +493,7 @@ sub cmd_outgoingall_sub
     my $type = get_repo_type($dirname);
     if(defined $type) {
         if(chdir $dirname) {
-            my $ret_status = return_status_silently($type);
-            if($ret_status == 0) {
-                if($type eq 'hg') {
-                    my @s = `hg outgoing`;
-                    if(($? >> 8) == 0) {
-                        print cl('green') . "O" . cl('reset');
-                    } else {
-                        print " ";
-                    }
-                } elsif ($type eq 'git') {
-                    my @s = `git fetch`;
-                    my $current_branch = git_get_current_branch();
-                    unless(defined $current_branch) {
-                        print cl('red') . "X" . cl('reset');
-                    } else {
-                        my $remoterep = `git config branch.$current_branch.remote`; chomp $remoterep;
-                        if((!defined $remoterep) || ($remoterep eq '')) {
-                            print cl('red') . "X" . cl('reset');
-                        } else {
-                            my $remotebra = `git config branch.$current_branch.merge`; chomp $remotebra;
-                            $remotebra =~ s|^[^/]*/[^/]*/||;
-                            my @result = `git log $remoterep/$remotebra.. | cat`;
-                            if(1 < @result) { # outputs just one line if nothing is outgoing
-                                print cl('green') . "O" . cl('reset');
-                            } else {
-                                print " ";
-                            }
-                        }
-                    }
-                } elsif ($type eq 'svn') {
-                    my @s = `svn status -u`;
-                    if($?) {
-                        print cl('red') . "X" . cl('reset');
-                    } else {
-                        if(scalar(@s) > 1) {
-                            print cl('green') . "O" . cl('reset');
-                        } else {
-                            print " ";
-                        }
-                    }
-                } else {
-                    print cl('red') . "U" . cl('reset');
-                }
-            } else {
-                print cl('green') . "M" . cl('reset');
-            }
+            print outgoing_mark($type);
             print "\t$type\t$dirname\n";
             unless(chdir $base_dir) {
                 print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
@@ -439,6 +511,10 @@ sub cmd_outgoingall_sub
 sub cmd_outgoingall_child
 {
     my $dirname = shift;
+    unless(defined $dirname) {
+        print STDERR "ERROR: outgoingall_child requires a directory name.\n";
+        exit 1;
+    }
     my $base_dir = Cwd::getcwd();
     cmd_outgoingall_sub($dirname, $base_dir);
 }
@@ -457,7 +533,7 @@ sub cmd_outgoingall
         for my $dirname (@dirnames) {
             my $type = get_repo_type($dirname);
             if(defined $type) {
-                push(@parallel_commands, "$0 outgoingall_child $dirname");
+                push(@parallel_commands, sq($0) . " outgoingall_child " . sq($dirname));
             } else {
                 print "unknown\t$dirname\n";
             }
@@ -466,23 +542,26 @@ sub cmd_outgoingall
     }
 }
 
-sub show_origin()
+sub show_origin
 {
-    my $type = get_repo_type(".");
+    my $type = shift;
+    $type = get_repo_type(".") unless(defined $type);
+    unless(defined $type) {
+        print "not supported\n";
+        return;
+    }
     if($type eq 'git') {
-        my @s = `git remote -v | grep '(fetch)'`;
+        my @s = grep { m|\(fetch\)| } capture("git", "remote", "-v");
         if(@s == 0) {
             print "local\n";
         } else {
-            my $t = $s[0]; chomp $t;
+            my $t = $s[0];
             $t =~ s|^\S+\s+||;
             $t =~ s|\s+\(fetch\)$||;
             print "$t\n";
         }
     } elsif($type eq 'hg') {
-        my @s = `cat .hg/hgrc`;
-        for(@s) {
-            chomp;
+        for(capture("hg", "paths")) {
             if(/^\s*default\s*=\s*(\S.*)$/) {
                 print "$1\n"; return;
             }
@@ -493,14 +572,14 @@ sub show_origin()
     }
 }
 
-sub cmd_origin()
+sub cmd_origin
 {
-    my $type =  my $type = get_repo_type_of_current_dir();
+    my $type = get_repo_type_of_current_dir();
     print ".\t" . cl('green') . $type . cl('reset') . "\t";
-    show_origin();
+    show_origin($type);
 }
 
-sub cmd_originall()
+sub cmd_originall
 {
     my @dirnames = <*>;
     my $base_dir = Cwd::getcwd();
@@ -514,7 +593,7 @@ sub cmd_originall()
         if(defined $type) {
             if(chdir $dirname) {
                 print cl('green') . "$type" . cl('reset') . "\t";
-                show_origin();
+                show_origin($type);
                 unless(chdir $base_dir) {
                     print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
                     print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
@@ -529,27 +608,30 @@ sub cmd_originall()
     }
 }
 
-sub cmd_ignore($)
+sub cmd_ignore
 {
     my $subarg = shift;
-    my $type =  my $type = get_repo_type_of_current_dir();
+    $subarg = '' unless(defined $subarg);
+    my $type = get_repo_type_of_current_dir();
     if($type eq 'git') {
         if($subarg eq 'c') {
             if(-e '.gitignore') {
                 print STDERR "It seems you already have .gitignore. Aborts for safety.\n";
             } else {
-                open my $fh, ">", ".gitignore" or die;
+                open my $fh, ">", ".gitignore" or die "Could not create .gitignore: $!";
                 print $fh <<'EOF';
 # Ignore backup files
 *~
-# Ignore dot files\n";
+# Ignore dot files
 .*
+# ... but not .gitignore itself, so that 'git add .gitignore' works.
+!.gitignore
 EOF
                 close $fh;
             }
         } else {
             print <<'EOF';
-# place this as \$REPOSITORY/.gitignore
+# place this as $REPOSITORY/.gitignore
 # lines starting with '#' are comments.
 #
 # Ignore backup files
@@ -557,6 +639,10 @@ EOF
 
 # Ignore dot files
 .*
+#
+# Do not ignore .gitignore itself although .* is ignored because of the above
+# line. Without this, 'git add .gitignore' refuses to add the file.
+!.gitignore
 #
 # Do not ignore .htaccess although .* is ignored because of the above line.
 !.htaccess
@@ -572,7 +658,7 @@ EOF
             if(-e '.hgignore') {
                 print STDERR "It seems you already have .hgignore. Aborts for safety.\n";
             } else {
-                open my $fh, ">", ".hgignore" or die;
+                open my $fh, ">", ".hgignore" or die "Could not create .hgignore: $!";
                 print $fh <<'EOF';
 syntax: glob
 #
@@ -584,7 +670,7 @@ EOF
             if(-e '.hgignore') {
                 print STDERR "It seems you already have .hgignore. Aborts for safety.\n";
             } else {
-                open my $fh, ">", ".hgignore" or die;
+                open my $fh, ">", ".hgignore" or die "Could not create .hgignore: $!";
                 print $fh <<'EOF';
 syntax: regexp
 #
@@ -594,7 +680,7 @@ EOF
             }
         } else {
             print <<'EOF';
-# place this as \$REPOSITORY/.hgignore
+# place this as $REPOSITORY/.hgignore
 # you can either select glob or regexp styles
 #
 # here is glob style
@@ -613,6 +699,8 @@ syntax: regexp
 # Do not forget to do 'hg add .hgignore' when you store it in the repository.
 EOF
         }
+    } else {
+        print STDERR "Sorry, 'rep ignore' does not support '$type' repositories.\n";
     }
 }
 

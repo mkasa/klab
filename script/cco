@@ -3,15 +3,121 @@
 use strict;
 use warnings;
 use Cwd;
+use File::Basename;
+use File::Path qw(make_path);
+use Getopt::Long;
+use Pod::Usage;
+
+our $VERSION = '1.01';
+
+my $debug = $ENV{CCO_DEBUG} ? 1 : 0;
+
+sub debug_print(@)
+{
+    return unless $debug;
+    print STDERR "[cco] ", @_, "\n";
+}
 
 sub show_usage()
 {
-    print "\nUsage: $0 <subcommand>\n\n";
+    print "\nUsage: $0 [options] <subcommand>\n\n";
     print "Subcommands:\n";
     print "  hook: Set up a prepare-commit-msg hook\n";
     print "  unhook: Remove a prepare-commit-msg hook\n";
+    print "\nOptions:\n";
+    print "  --debug: Print additional information to stderr\n";
+    print "  --help: Show the manual and exit\n";
+    print "  --version: Show the version and exit\n";
     print "\n";
     exit 1;
+}
+
+# Runs a git command and returns its output (chomped). Returns undef on failure.
+sub git_output(@)
+{
+    my @cmd = @_;
+    my $out = `git @cmd 2>/dev/null`;
+    return undef if $? != 0;
+    return undef unless defined $out;
+    chomp $out;
+    return $out;
+}
+
+# Returns the list of staged changes as hash refs:
+#   { file, oldfile, status, srcmode, dstmode }
+# `--raw -z` is used instead of parsing the textual diff because it never
+# quotes/escapes paths (so non-ASCII names and names containing " b/" are
+# handled correctly) and because it reports the file modes, which is the
+# only reliable way to tell a submodule (mode 160000) from a regular file.
+sub staged_changes()
+{
+    my $raw = `git diff --cached --raw -z`;
+    return () unless defined $raw && $raw ne '';
+    my @fields = split /\0/, $raw, -1;
+    pop @fields while @fields && $fields[-1] eq '';
+    my @changes;
+    my $i = 0;
+    while($i < @fields) {
+        my $meta = $fields[$i++];
+        next unless $meta =~ /^:/;
+        # :<srcmode> <dstmode> <srcsha> <dstsha> <status>
+        my @cols = split /\s+/, $meta;
+        next unless @cols >= 5;
+        my $srcmode = $cols[0]; $srcmode =~ s/^://;
+        my $dstmode = $cols[1];
+        my $status = $cols[4];
+        last unless $i < @fields;
+        my $path = $fields[$i++];
+        my $newpath = undef;
+        if($status =~ /^[RC]/ && $i < @fields) {
+            $newpath = $fields[$i++];
+        }
+        push @changes, {
+            file    => (defined $newpath ? $newpath : $path),
+            oldfile => $path,
+            status  => $status,
+            srcmode => $srcmode,
+            dstmode => $dstmode,
+        };
+    }
+    return @changes;
+}
+
+# Guesses a conventional commit type for a modified file from its path.
+sub guess_type_for_modified($)
+{
+    my ($file) = @_;
+    return 'docs' if $file =~ m{(?:^|/)(?:README|CHANGELOG|LICENSE|COPYING)}i;
+    return 'docs' if $file =~ m{\.(?:md|rst|pod|adoc)$}i;
+    return 'docs' if $file =~ m{(?:^|/)docs?/}i;
+    return 'test' if $file =~ m{(?:^|/)tests?/}i;
+    return 'test' if $file =~ m{(?:^|/)t/};
+    return 'test' if $file =~ m{(?:^|/)test_[^/]*$};
+    return 'test' if $file =~ m{_test\.[^/.]+$};
+    return 'test' if $file =~ m{\.(?:test|spec)\.[^/.]+$};
+    return 'ci'   if $file =~ m{(?:^|/)\.github/workflows/};
+    return 'ci'   if $file =~ m{(?:^|/)\.(?:travis\.yml|gitlab-ci\.yml|circleci)};
+    return 'build' if $file =~ m{(?:^|/)(?:Makefile|CMakeLists\.txt|wscript|configure\.ac|Dockerfile|package\.json|pyproject\.toml|setup\.py|Cargo\.toml|go\.mod)$};
+    return 'build' if $file =~ m{\.(?:mk|cmake)$};
+    return 'chore';
+}
+
+# Returns (type, msg) for one staged change. Never returns undef.
+sub classify_change($)
+{
+    my ($c) = @_;
+    my $file = $c->{file};
+    my $status = $c->{status};
+    if($c->{srcmode} eq '160000' || $c->{dstmode} eq '160000') {
+        return ('chore', 'bump up');
+    }
+    return ('feat', "added $file")                            if $status =~ /^A/;
+    return ('chore', "removed $file")                         if $status =~ /^D/;
+    return ('chore', "renamed $c->{oldfile} to $file")        if $status =~ /^R/;
+    return ('chore', "copied $c->{oldfile} to $file")         if $status =~ /^C/;
+    return ('chore', "changed the file type of $file")        if $status =~ /^T/;
+    # Anything else (M, and the unmerged/unknown states) is an ordinary edit.
+    return (guess_type_for_modified($file), "updated $file");
 }
 
 sub generate_commit_msg()
@@ -26,54 +132,65 @@ sub generate_commit_msg()
     # `git commit` (empty source) is auto-filled. Set CCO_FORCE=1 to generate a
     # message regardless of the source.
     if(!$ENV{CCO_FORCE} && defined $commit_source && $commit_source ne '') {
+        debug_print "commit source is '$commit_source'; leaving the message untouched";
+        return;
+    }
+    unless(defined $commit_message_file && $commit_message_file ne '') {
+        debug_print "no commit message file was given; nothing to do";
         return;
     }
 
-    open my $fh, '>', $commit_message_file or die "Could not open $commit_message_file: $!";
-    my @diff_output = `git diff --cached`;
-    my @diffs;
-    my $current_obj = undef;
-    for(@diff_output) {
-        chomp;
-        if(m|^diff --git a/(.*?) b/(.*)$|) {
-            if($current_obj) {
-                push @diffs, $current_obj;
-            }
-            $current_obj = {file => $2, msg => undef, type => undef};
-            next;
-        }
-        if(/^[+-]Subproject commit /) {
-            $current_obj->{msg} = "bump up";
-            $current_obj->{type} = "chore";
-            next;
-        }
-        if(/^new file mode/) {
-            $current_obj->{msg} = "added " . $current_obj->{file};
-            $current_obj->{type} = "feat";
-            next;
-        }
+    my @lines;
+    for my $change (staged_changes()) {
+        my ($type, $msg) = classify_change($change);
+        debug_print "$change->{status} $change->{file} ($change->{srcmode} -> $change->{dstmode}) => $type: $msg";
+        push @lines, "$type($change->{file}): $msg";
     }
-    if($current_obj) {
-        push @diffs, $current_obj;
+    unless(@lines) {
+        debug_print "no staged change was found; leaving the message untouched";
+        return;
     }
 
-    for(@diffs) {
-        print $fh "$_->{type}($_->{file}): $_->{msg}\n";
+    # git has already populated the file with the "# Please enter the commit
+    # message..." helper block (and, under `git commit -v`, the verbose diff),
+    # so prepend the generated message instead of truncating the file.
+    my $existing = '';
+    if(open my $in, '<', $commit_message_file) {
+        local $/ = undef;
+        $existing = <$in>;
+        $existing = '' unless defined $existing;
+        close $in;
     }
+    open my $fh, '>', $commit_message_file or die "Could not open $commit_message_file: $!";
+    print $fh join("\n", @lines), "\n";
+    print $fh $existing;
     close $fh;
 }
 
 sub ensure_in_git_repo()
 {
-    my $git_dir = '.git';
-    if(!-d $git_dir) {
+    # `-d '.git'` is false in a linked worktree or a submodule, where .git is a
+    # regular file, so ask git itself.
+    my $git_dir = git_output('rev-parse', '--git-dir');
+    if(!defined $git_dir || $git_dir eq '') {
+        $? = 0;  # so that die() reports its usual exit status, not git's
         die "Not in a git repository\n";
     }
+    debug_print "git dir: $git_dir";
+}
+
+# Returns the directory in which git looks for hooks (honors core.hooksPath).
+sub hooks_dir()
+{
+    my $hook_dir = git_output('rev-parse', '--git-path', 'hooks');
+    $hook_dir = '.git/hooks' if !defined $hook_dir || $hook_dir eq '';
+    debug_print "hooks dir: $hook_dir";
+    return $hook_dir;
 }
 
 sub set_hook()
 {
-    my $hook_dir = '.git/hooks';
+    my $hook_dir = hooks_dir();
     my $hook_file = 'prepare-commit-msg';
     my $hook_path = "$hook_dir/$hook_file";
     my $script_path = $0;
@@ -85,7 +202,13 @@ sub set_hook()
         return;
     }
     if(-l $hook_path) {
+        # A symlink that -e does not see is a dangling symlink; symlink() would
+        # fail with EEXIST, so remove it first.
         print STDERR "WARNING: $hook_path is a symlink, but the target does not exist. Try to overwrite it.\n";
+        unlink($hook_path) or die "Could not remove the dangling symlink $hook_path: $!";
+    }
+    unless(-d $hook_dir) {
+        make_path($hook_dir) or die "Could not create the hook directory $hook_dir: $!";
     }
 
     # Create a symlink
@@ -95,7 +218,7 @@ sub set_hook()
 
 sub unset_hook()
 {
-    my $hook_dir = '.git/hooks';
+    my $hook_dir = hooks_dir();
     my $hook_file = 'prepare-commit-msg';
     my $hook_path = "$hook_dir/$hook_file";
 
@@ -108,19 +231,27 @@ sub unset_hook()
     print "hook removed: $hook_path\n";
 }
 
-use File::Basename;
 my $base_name = basename($0);
 if($base_name eq "prepare-commit-msg") {
     generate_commit_msg();
     exit 0;
 }
 
-use Getopt::Long;
-
-my $debug = 0;
+my $show_help = 0;
+my $show_version = 0;
 GetOptions(
-    'debug' => \$debug
-);
+    'debug' => \$debug,
+    'help|h' => \$show_help,
+    'version|V' => \$show_version,
+) or show_usage();
+
+if($show_version) {
+    print "cco version $VERSION\n";
+    exit 0;
+}
+if($show_help) {
+    pod2usage(-verbose => 2, -exitval => 0);
+}
 
 my $subcmd = shift || '';
 if($subcmd eq 'hook') {
@@ -153,17 +284,40 @@ The script can be used to generate commit messages based on the changes in the s
 
 When invoked as a prepare-commit-msg hook, cco only generates a message for a bare interactive C<git commit>. If the commit already has a message supplied another way (C<git commit -m>/C<-F>, a merge, a squash, an amend, or a configured template), cco leaves it untouched. Because AI coding agents such as Claude Code and Codex always commit with C<-m>, their commit messages are preserved automatically. Set C<CCO_FORCE=1> to make cco generate a message regardless of the commit source.
 
+The generated message is B<prepended> to the commit message file, so the comment block git puts there (and the verbose diff of C<git commit -v>) is preserved.
+
+For each staged change, one conventional-commit line of the form
+C<< type(path): message >> is emitted:
+
+=over 4
+
+=item * an added file gives C<feat(path): added path>
+
+=item * a deleted file gives C<chore(path): removed path>
+
+=item * a renamed or copied file gives C<chore(newpath): renamed oldpath to newpath>
+
+=item * a submodule (git mode 160000) gives C<chore(path): bump up>
+
+=item * an ordinary modification gives C<< type(path): updated path >>, where the type
+is guessed from the path: C<docs> for documentation, C<test> for tests, C<ci> for CI
+configuration, C<build> for build files, and C<chore> otherwise
+
+=back
+
 =head1 OPTIONS
 
 =over 8
 
 =item B<--debug>
 
-Enable debug mode. This will print additional information to the console.
+Enable debug mode. This will print additional information to stderr.
+Setting the environment variable C<CCO_DEBUG=1> does the same, which is
+useful when cco runs as a hook (where it takes no options).
 
 =item B<--help>
 
-Print a brief help message and exits.
+Print this manual and exits.
 
 =item B<--version>
 
@@ -177,11 +331,11 @@ Print the version number and exits.
 
 =item B<hook>
 
-Set up a prepare-commit-msg hook for a git repo; the current directory is assumed to be the root of the repository. This will create a symlink to the script in the .git/hooks directory.
+Set up a prepare-commit-msg hook for a git repo. This will create a symlink to the script in the hook directory git actually uses, which is normally F<.git/hooks> but follows C<core.hooksPath> and works in a linked worktree or a submodule as well.
 
 =item B<unhook>
 
-Remove the prepare-commit-msg hook from a git repo; the current directory is assumed to be the root of the repository. This will remove the symlink from the .git/hooks directory.
+Remove the prepare-commit-msg hook from a git repo. This will remove the symlink from the hook directory git actually uses.
 
 =back
 
@@ -208,6 +362,3 @@ Masahiro Kasahara
 This script is released under the MIT License.
 
 =cut
-
-
-

@@ -1,15 +1,27 @@
-#!/usr/bin/env python
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.8"
+# dependencies = []
+# ///
 """
-jsoncsv: a standalone utility to convert JSON objects into CSV
+json2csv: a standalone utility to convert JSON objects into CSV
 
-usage: cat example.json | jsoncsv [options...]
+usage: cat example.json | json2csv [options...]
 
 options:
-    -t  output in TSV (instead of CSV)
-    -h  output in HTML (instead of CSV)
-    -n  supress a header
-    -v  show the version and exit
-    -c c1,c2,c3,... specify the order of the columns in output
+    -t, --tsv        output in TSV (instead of CSV)
+    -l, --html       output in HTML (instead of CSV)
+    -n, --noheader   suppress a header
+    -v, --version    show the version and exit
+    -c, --columns c1,c2,c3,...
+                     specify the order of the columns in output
+    -z, --notfound MESSAGE
+                     print MESSAGE and exit successfully when the input is empty
+    -a, --allowempty
+                     exit successfully (printing nothing) when the input is empty
+    -h, --help       show the help message and exit
+
+(note that -h is the help flag; the HTML output flag is -l/--html)
 
 This utility converts JSON objects into CSV format (using jq).
 However, as you know, JSON format is more flexible then CSV, which means that JSON objects cannot be directly converted into CSV lines.
@@ -25,13 +37,17 @@ In this example, each line contains exactly one JSON hash. This would be convert
 If you wish to suppress the header, please add --noheader or -n.
 
 This utility heavily depends on jq, so you must have jq installed on your system.
+(jq is only needed when -c/--columns is not given, because that is the only
+case in which the column names have to be discovered from the input.)
 
 """
 
 import sys
 import csv
 import json
+import html
 import argparse
+import subprocess
 
 
 version_string = "1.3.0"
@@ -46,15 +62,29 @@ class TSVWriter:
         print("\t".join(cols))
 
 
+class CSVWriter:
+    def __init__(self, out):
+        # the default 'excel' dialect terminates lines with CRLF; we want LF
+        self.writer = csv.writer(out, lineterminator='\n')
+
+    def writeheadrow(self, cols):
+        self.writerow(cols)
+
+    def writerow(self, cols):
+        self.writer.writerow(cols)
+
+
 class HTMLWriter:
     def writeheadrow(self, cols):
         sys.stdout.write("<tr>")
-        for i in cols: sys.stdout.write("<th>" + str(i) + "</th>")
+        for i in cols:
+            sys.stdout.write("<th>" + html.escape(str(i)) + "</th>")
         sys.stdout.write("</tr>\n")
 
     def writerow(self, cols):
         sys.stdout.write("<tr>")
-        for i in cols: sys.stdout.write("<td>" + str(i) + "</td>")
+        for i in cols:
+            sys.stdout.write("<td>" + html.escape(str(i)) + "</td>")
         sys.stdout.write("</tr>\n")
 
 
@@ -70,19 +100,58 @@ def convert_json_to_anotherformat(jsonobj, array_of_keys, writer, line_no):
     csv_array = []
     try:
         for key in array_of_keys:
-            if not key in jsonobj:
+            if key not in jsonobj:
                 print("ERROR: does not contain a key '%s' at line %d" % (key, line_no), file=sys.stderr)
                 sys.exit(2)
             value = jsonobj[key]
             csv_array.append(value)
-    except Exception as e:
+    except (TypeError, AttributeError) as e:
         print("ERROR: ", e, "at line %d" % line_no, file=sys.stderr)
         sys.exit(2)
     try:
         writer.writerow(csv_array)
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print("ERROR: Output error at line %d" % line_no, ": ", e, file=sys.stderr)
         sys.exit(2)
+
+
+def get_keys_with_jq(first_line):
+    """ ask jq for the list of keys of the (JSON object) first_line.
+        returns a list of column names.
+    """
+    try:
+        p = subprocess.Popen(["jq", "-c", "keys"],
+                             stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE,
+                             close_fds=True,
+                             universal_newlines=True)
+    except OSError as e:
+        print("ERROR: jq did not run (%s). Probably you do not have jq installed properly?" % e, file=sys.stderr)
+        print("       Please type jq [enter] to check if jq can be executed from command line.", file=sys.stderr)
+        print("       If it does not help, please ask your system administrator.", file=sys.stderr)
+        sys.exit(1)
+    processed, _ = p.communicate(first_line + "\n")
+    processed = processed.strip()
+    if p.returncode != 0:
+        print("ERROR: jq exited with status %d." % p.returncode, file=sys.stderr)
+        sys.exit(1)
+    if len(processed) < 2:
+        print("ERROR: jq error. The output of jq contains less than two characters.", file=sys.stderr)
+        sys.exit(1)
+    if processed[0] != '[' or processed[-1] != ']':
+        print("ERROR: jq error. The output of jq does not contain an array of keys.", file=sys.stderr)
+        sys.exit(1)
+    # jq emits a JSON array, so decode it as JSON. (Parsing it as CSV would
+    # mangle JSON string escapes and split key names that contain a comma.)
+    try:
+        array_of_keys = json.loads(processed)
+    except ValueError as e:
+        print("ERROR: could not parse the output of jq (keys) as JSON:", e, file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(array_of_keys, list):
+        print("ERROR: jq error. The output of jq does not contain an array of keys.", file=sys.stderr)
+        sys.exit(1)
+    return array_of_keys
 
 
 def main():
@@ -117,27 +186,7 @@ def main():
     if args.columns is not None:
         array_of_keys = args.columns.split(",")
     else:
-        try:
-            p = subprocess.Popen(["jq", "-c", "keys"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, close_fds=True)
-        except:
-            print("ERROR: jq did not run. Probably you do not have jq installed properly?", file=sys.stderr)
-            print("       Please type jq [enter] to check if jq can be executed from command line.", file=sys.stderr)
-            print("       If it does not help, please ask your system administrator.", file=sys.stderr)
-            sys.exit(1)
-        print(first_line, file=p.stdin)
-        p.stdin.close()
-        processed = p.stdout.readline().strip()
-        if len(processed) < 2:
-            print("ERROR: jq error. The output of jq contains less than two characters.", file=sys.stderr)
-            sys.exit(1)
-        if processed[0] != '[' or processed[-1] != ']':
-            print("ERROR: jq error. The output of jq does not contain an array of keys.", file=sys.stderr)
-            sys.exit(1)
-        try:
-            array_of_keys = list(csv.reader([processed[1:-1]]))[0]
-        except:
-            print("ERROR: csv module (of Python) could not parse the output of jq (keys)", file=sys.stderr)
-            sys.exit(1)
+        array_of_keys = get_keys_with_jq(first_line)
 
     # Output the header (if needed)
     if args.html:
@@ -146,14 +195,11 @@ def main():
     elif args.tsv:
         writer = TSVWriter()
     else:
-        writer = csv.writer(sys.stdout)
+        writer = CSVWriter(sys.stdout)
     if not args.noheader:
         try:
-            if args.html:
-                writer.writeheadrow(array_of_keys)
-            else:
-                writer.writerow(array_of_keys)
-        except Exception as e:
+            writer.writeheadrow(array_of_keys)
+        except (OSError, ValueError) as e:
             print("ERROR: Output error (header) :", e, file=sys.stderr)
             sys.exit(1)
     # Output the CSV lines
@@ -165,7 +211,7 @@ def main():
             line_number += 1
             json_object = json.loads(line.strip())
             convert_json_to_anotherformat(json_object, array_of_keys, writer, line_number)
-    except Exception as e:
+    except ValueError as e:
         print("ERROR: JSON parsing error at line %d : " % line_number, e, file=sys.stderr)
         sys.exit(1)
     # Output the footer (if needed)

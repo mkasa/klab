@@ -1,53 +1,97 @@
-#!/usr/bin/env python
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.8"
+# dependencies = []
+# ///
 """
 csv2html: a standalone utility to convert CSV into HTML
 
 usage: cat example.csv | csv2html [options...] [column names and attributes]
 
 options:
-    -v  show the version and exit
-    -n  no header (i.e, the first line of CSV is not a header)
+    -v, --version     show the version and exit
+    -n, --noheader    no header (i.e, the first line of CSV is not a header)
+    -t, --notabletag  do not output the surrounding <table> tag
 
-This utility converts an input file of CSV format into an HTML.]
+This utility converts an input file of CSV format into an HTML.
 Here is an example.
 
 (echo 'a,b,Salary,Performance'; echo 'John,Doe,12345,32.123456') | csv2html "First name/l" "Last name/l" /,r "/%.2"
 <table>
-<tr><th>First name</th><th>Last name</th><th>Salary</th><th>Performance</th></tr>
-<tr><td style="align: left">John</td><td style="align: left">Doe</td><td style="align: right">12,345</td><td>32.12%</td></tr>
+<tr><th style="border-bottom: 1px solid black">First name</th><th style="border-bottom: 1px solid black">Last name</th><th style="border-bottom: 1px solid black">Salary</th><th style="border-bottom: 1px solid black">Performance</th></tr>
+<tr><td style="text-align: left">John</td><td style="text-align: left">Doe</td><td style="text-align: right">12,345</td><td>32.12%</td></tr>
 </table>
 
 A column attribute contains both the column name and its attribute, which are separated by '/'.
 If you do not need one of them, you can just omit it.
 The left side of '/' is the column name, while the right side is the attribute.
+If the column name is empty or a single period ('.'), the name in the header line of the
+input CSV is used as it is.
 If the attribute string contains '%', '%' is added to the column.
 If the attribute string contains ',', then figures are separated by ',' at every 3 digits.
 You can also specify 'printf-like' formatting string for floating numbers.
 '.3' means three digits after the decimal point, while '05' means padding zeroes to 5 digits.
 If you do want to specify an attribute for the header line, you can give it after '|' (still you need '/' before '|' in this case).
+Header cells always carry a 'border-bottom: 1px solid black' style in addition to whatever
+you specify.
+Cell contents are HTML-escaped, and a cell that cannot be formatted as a number is emitted
+as it is.
 
 """
 
 import sys
 import csv
+import html
 import argparse
 
 
-version_string = "1.00"
+version_string = "1.01"
+
+
+def default_attributes():
+    """ a fresh attribute dictionary; never share one between columns """
+    return {'align': None, 'sepc': False, 'ratio': False, 'fmtr': "", 'header': False}
+
+
+def add_thousands_separators(s):
+    """ Insert ',' every three digits in the integer part of s.
+        A leading sign is kept out of the digit grouping, and a string that is
+        not a plain number is returned untouched. """
+    sign = ''
+    body = s
+    if body[:1] in ('-', '+'):
+        sign, body = body[0], body[1:]
+    dot = body.find(".")
+    if dot == -1:
+        int_part, rest = body, ''
+    else:
+        int_part, rest = body[:dot], body[dot:]
+    if not int_part.isdigit():
+        return s
+    groups = []
+    i = len(int_part)
+    while i > 3:
+        groups.append(int_part[i - 3:i])
+        i -= 3
+    groups.append(int_part[:i])
+    groups.reverse()
+    return sign + ",".join(groups) + rest
 
 
 class HTMLWriter:
+    def __init__(self):
+        self.row_open = False
+
     def styles_to_style_str(self, styles):
         if len(styles) <= 0:
             return ""
         else:
-            return " style=\"" + ("; ".join(styles)) + "\""
+            return " style=\"" + html.escape("; ".join(styles), quote=True) + "\""
 
     def to_html_tag(self, tag_name, s, attrs):
-        # print "s = ", s, ", attrs = ", attrs
         styles = []
-        if attrs['align'] != None:
-            styles.append('align: ' + attrs['align'])
+        if attrs['align'] is not None:
+            styles.append('text-align: ' + attrs['align'])
         if attrs['header']:
             styles.append('border-bottom: 1px solid black')
         retval = "<" + tag_name + self.styles_to_style_str(styles) + ">"
@@ -55,49 +99,57 @@ class HTMLWriter:
             format_str = attrs['fmtr']
             if format_str.find(".") == -1:
                 format_str += ".0"
-            s = ("%" + format_str + "f") % float(s)
+            try:
+                s = ("%" + format_str + "f") % float(s)
+            except (ValueError, TypeError):
+                # Not a number (or a broken format string). Emit the cell as it is
+                # rather than aborting in the middle of the table.
+                pass
         if attrs['sepc']:
-            if s.find(".") == -1:
-                l = len(s)
-                rest = ''
-            else:
-                l = s.find(".")
-                rest = s[l:]
-            p = ''
-            offset = (3 - (l % 3)) % 3
-            i = 0
-            while i < l:
-                if i != 0 and (i + offset) % 3 == 0:
-                    p += ','
-                p += s[i]
-                i += 1
-            retval += p + rest
+            content = add_thousands_separators(s)
         else:
-            retval += s
+            content = s
+        retval += html.escape(content)
         if attrs['ratio']:
             retval += '%'
         retval += "</" + tag_name + ">"
         return retval
 
-    def writeheadrow(self, cols, attrs, col_names):
+    def start_row(self):
         sys.stdout.write("<tr>")
-        for i, a, name in zip(cols, attrs, col_names):
-            # print "i = ", i, ", a = ", a, ", name = ", name
+        self.row_open = True
+
+    def end_row(self):
+        sys.stdout.write("</tr>\n")
+        self.row_open = False
+
+    def writeheadrow(self, cols, attrs, col_names):
+        self.start_row()
+        for idx, i in enumerate(cols):
+            a = attrs[idx] if idx < len(attrs) else default_attributes()
+            name = col_names[idx] if idx < len(col_names) else None
             s = str(i) if name is None else name
             a['header'] = True
             sys.stdout.write(self.to_html_tag("th", s, a))
-        sys.stdout.write("</tr>\n")
+        self.end_row()
 
     def writerow(self, cols, attrs):
-        sys.stdout.write("<tr>")
-        for i, a in zip(cols, attrs):
+        self.start_row()
+        for idx, i in enumerate(cols):
+            a = attrs[idx] if idx < len(attrs) else default_attributes()
             a['header'] = False
             sys.stdout.write(self.to_html_tag("td", str(i), a))
-        sys.stdout.write("</tr>\n")
+        self.end_row()
 
 
 def w(a):
     sys.stdout.write(a)
+
+
+def warn_if_ragged(line_no, num_cells, num_cols):
+    if num_cells != num_cols:
+        print("WARNING: line %d has %d cell(s) while %d column(s) are expected" % (line_no, num_cells, num_cols),
+              file=sys.stderr)
 
 
 def parse_attributes(cfs, col_num):
@@ -107,8 +159,9 @@ def parse_attributes(cfs, col_num):
     dattr = []
 
     def parse_attr_str(s):
-        d = {'align': None, 'sepc': False, 'ratio': False, 'fmtr': ""}
-        if len(s) < 1: return d
+        d = default_attributes()
+        if len(s) < 1:
+            return d
         i = 0
         while i < len(s):
             c = s[i]
@@ -129,65 +182,62 @@ def parse_attributes(cfs, col_num):
                 d['ratio'] = True
             i += 1
         return d
-    null_attributes = parse_attr_str("")
     for v in cfs:
         ri = v.rfind("/")
         if ri == -1:
-            if v == ".":
-                cnames.append(None)
-            else:
-                cnames.append(v)
-            hattr.append(null_attributes)
-            dattr.append(null_attributes)
+            col_name = v
+            attr_str = None
         else:
-            if 0 <= ri - 1:
-                col_name = v[0: ri - 1]
-            else:
-                col_name = None
-            if col_name == "":
-                cnames.append(None)
-            else:
-                cnames.append(col_name)
+            col_name = v[0:ri]
             attr_str = v[ri + 1:]
+        if col_name == "" or col_name == ".":
+            cnames.append(None)
+        else:
+            cnames.append(col_name)
+        if attr_str is None:
+            hattr.append(default_attributes())
+            dattr.append(default_attributes())
+        else:
             pi = attr_str.rfind("|")
             if pi == -1:
-                hattr.append(null_attributes)
+                hattr.append(default_attributes())
                 dattr.append(parse_attr_str(attr_str))
             else:
-                if 0 <= pi - 1:
-                    dattr.append(parse_attr_str(attr_str[0: pi - 1]))
-                else:
-                    dattr.append(null_attributes)
+                dattr.append(parse_attr_str(attr_str[0:pi]))
                 hattr.append(parse_attr_str(attr_str[pi + 1:]))
     while len(cnames) < col_num:
         cnames.append(None)
-        hattr.append(null_attributes)
-        dattr.append(null_attributes)
+        hattr.append(default_attributes())
+        dattr.append(default_attributes())
     return cnames, hattr, dattr
 
 
 def main():
     # Parse arguments
-    parser = argparse.ArgumentParser(description='Convert JSON (one JSON object, one line) into CSV')
+    parser = argparse.ArgumentParser(description='Convert CSV (comma separated values) into an HTML table',
+                                     epilog=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('colfmt', nargs='*', action='store', help="Column formats")
     parser.add_argument('-n', '--noheader', action='store_true', help="Suppress a header")
     parser.add_argument('-t', '--notabletag', action='store_true', help="Suppress a table tag")
-    parser.add_argument('-v', '--version',  action='store_true', help="Show version string")
+    parser.add_argument('-v', '--version', action='store_true', help="Show version string")
     args = parser.parse_args()
 
     if args.version:
         print("csv2html version %s" % version_string)
         sys.exit(0)
     (column_names, header_attrs, data_attrs) = (None, None, None)
-    # Get keys in the first line (using jq)
-    if not args.notabletag: w("<table>\n")
+    if not args.notabletag:
+        w("<table>\n")
     writer = HTMLWriter()
     line_count = 0
+    exit_code = 0
+    reader = None
     try:
-        line_count += 1
         reader = csv.reader(sys.stdin)
         is_first_line = True
         for line in reader:
+            line_count += 1
             if is_first_line:
                 is_first_line = False
                 try:
@@ -196,13 +246,26 @@ def main():
                     print("ERROR: attribute parsing failed: ", e, file=sys.stderr)
                     sys.exit(2)
                 if not args.noheader:
+                    warn_if_ragged(line_count, len(line), len(header_attrs))
                     writer.writeheadrow(line, header_attrs, column_names)
                     continue
+            warn_if_ragged(line_count, len(line), len(data_attrs))
             writer.writerow(line, data_attrs)
     except Exception as e:
-        print("ERROR: ", e, " at line %d" % line_count, file=sys.stderr)
-        sys.exit(3)
-    if not args.notabletag: w("</table>\n")
+        # reader.line_num is the physical input line, which is what the user sees;
+        # line_count (the number of records handled so far) is the fallback.
+        error_line = getattr(reader, 'line_num', None) or line_count
+        print("ERROR: ", e, " at line %d" % error_line, file=sys.stderr)
+        exit_code = 3
+    finally:
+        # Close whatever is still open so that the output stays parseable HTML
+        # even when we bail out in the middle of the table.
+        if writer.row_open:
+            w("</tr>\n")
+        if not args.notabletag:
+            w("</table>\n")
+    if exit_code != 0:
+        sys.exit(exit_code)
 
 
 if __name__ == '__main__':

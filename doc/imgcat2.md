@@ -25,6 +25,28 @@ You can also pipe an image into it from stdin.
 
     curl -s https://example.com/foo.png | imgcat2
 
+Piped input is displayed exactly like a file argument, so the 35% default
+width and any `-W`/`-H` you give apply to it too.
+
+    cat foo.png | imgcat2 -W 80%
+
+option order
+-------------
+Options are parsed before anything is displayed, so they may appear anywhere
+on the command line and they always apply to every image. These are all
+equivalent:
+
+    imgcat2 -W 50% a.png b.png
+    imgcat2 a.png -W 50% b.png
+    imgcat2 a.png b.png -W 50%
+
+Use `--` to stop option parsing if a file name starts with `-`.
+
+    imgcat2 -- -weird-name.png
+
+`-W` and `-H` require a value that follows the iTerm2 spec (see below);
+anything else is rejected with an error.
+
 print
 ------
 Give --print (or -p) to print the file name before the image.
@@ -62,6 +84,15 @@ Give --url (or -u) to download an image from a URL and display it directly.
 This requires curl.
 
     imgcat2 -u https://example.com/foo.png
+
+`-u` may be given more than once, and URLs can be freely mixed with local
+file names; everything is displayed in the order you gave it.
+
+    imgcat2 -u https://example.com/a.png -u https://example.com/b.png local.png
+
+If the download fails -- including an HTTP error such as 404 or 500 --
+imgcat2 prints an error and exits with status 2 instead of displaying an
+empty image.
 
 help
 -----

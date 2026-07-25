@@ -34,30 +34,79 @@ GetOptions('help'             => \$neededhelp,
 
 if($inputfile eq '') {
     $inputfile = shift;
+    $inputfile = '' unless(defined $inputfile);
 }
 
-if($neededhelp || ($inputfile eq '' && !$genbank_gi && !$genbank_acc && !$ genbank_id && !$genbank_id) || (@idstrings > 0 && $inputfile ne '') ) {
+sub usage
+{
     print STDERR "To convert sequence file\n";
     print STDERR "   usage: convertsequence.pl --inputfilename <inputfilename> [--inputformat <inputformat>]";
     print STDERR " [--outputfilename <outputfilename>] [--outputformat <outputformat>]\n";
     print STDERR "To get a sequence(s) from genbank\n";
     print STDERR "   usage: convertsequence [--id|--accession|--gi|--massive] --query <query string1> [--query <query string2> ...]";
     print STDERR " [--outputfilename <outputfilename>] [--outputformat <outputformat>]\n";
+}
+
+my $num_genbank_modes = $genbank_id + $genbank_acc + $genbank_gi + $genbank_query;
+
+if($neededhelp) {
+    usage();
+    exit 0;
+}
+if(@idstrings > 0 && $inputfile ne '') {
+    print STDERR "ERROR: --query cannot be combined with an input file.\n";
+    usage();
+    exit 1;
+}
+if(@idstrings == 0 && $inputfile eq '') {
+    usage();
+    exit 1;
+}
+if($num_genbank_modes > 1) {
+    print STDERR "ERROR: only one of --id, --accession, --gi and --massive may be given.\n";
+    usage();
+    exit 1;
+}
+if($num_genbank_modes > 0 && @idstrings == 0) {
+    print STDERR "ERROR: --id, --accession, --gi and --massive require at least one --query.\n";
+    usage();
     exit 1;
 }
 
 my $inseq;
 
 if(@idstrings) {
-    my $genbank = new Bio::DB::GenBank();
-    $inseq   =  $genbank->get_Stream_by_id([@idstrings]);
+    my $genbank = Bio::DB::GenBank->new();
+    if($genbank_query) {
+	# --massive: treat the query strings as an Entrez query rather than as
+	# a list of identifiers, so that a single query may return many
+	# sequences.
+	require Bio::DB::Query::GenBank;
+	my $query_string = join(' OR ', @idstrings);
+	my $query = Bio::DB::Query::GenBank->new('-db'    => 'nucleotide',
+						 '-query' => $query_string);
+	$inseq = $genbank->get_Stream_by_query($query);
+    } elsif($genbank_acc) {
+	$inseq = $genbank->get_Stream_by_acc([@idstrings]);
+    } elsif($genbank_gi) {
+	$inseq = $genbank->get_Stream_by_gi([@idstrings]);
+    } else {
+	# --id, and the default when no lookup type was given.
+	$inseq = $genbank->get_Stream_by_id([@idstrings]);
+    }
 } else {
     $inseq   = Bio::SeqIO->new('-file'   => "<$inputfile",
 				  '-format' => $inputformat );
 }
 
-my $seq_out = Bio::SeqIO->new('-file'   => ">$outputfile",
-                              '-format' => $outputformat);
+my $seq_out;
+if($outputfile eq '') {
+    $seq_out = Bio::SeqIO->new('-fh'     => \*STDOUT,
+                               '-format' => $outputformat);
+} else {
+    $seq_out = Bio::SeqIO->new('-file'   => ">$outputfile",
+                               '-format' => $outputformat);
+}
 
 my $numprocessedsequences = 0;
 
@@ -81,7 +130,7 @@ To convert a sequence into a file of another format,
 B<convertsequence> --inputfile E<lt>input fileE<gt> --inputformat E<lt>format of input fileE<gt> --outputfile E<lt>output fileE<gt> --outputformat E<lt>format of output fileE<gt>
 
 To get a sequence(s) from genbank,
- 
+
 B<convertsequence> [--id|--accession|--gi|--massive] --query E<lt>query string1E<gt> [--query E<lt>query string2E<gt> ...] [--outputfilename E<lt>outputfilenameE<gt>] [--outputformat E<lt>outputformatE<gt>]
 
 =head1 DESCRIPTION
@@ -91,7 +140,60 @@ or to get a sequence(s) from GenBank remotely.
 
 =head1 OPTIONS
 
-No options available.
+=over 8
+
+=item B<--inputfilename> E<lt>fileE<gt>
+
+The sequence file to read. If it is not given, the first non-option argument is
+used instead. Mutually exclusive with B<--query>.
+
+=item B<--inputformat> E<lt>formatE<gt>
+
+The format of the input file, as understood by L<Bio::SeqIO>. The default is
+C<fasta>.
+
+=item B<--outputfilename> E<lt>fileE<gt>
+
+The file to write. If it is not given, the sequences are written to the
+standard output.
+
+=item B<--outputformat> E<lt>formatE<gt>
+
+The format of the output, as understood by L<Bio::SeqIO>. The default is
+C<fasta>.
+
+=item B<--query> E<lt>stringE<gt>
+
+A query to send to GenBank. The option may be repeated to give several queries
+at once. Mutually exclusive with an input file.
+
+=item B<--id>
+
+Interpret every B<--query> as a sequence identifier (this is also what happens
+when none of B<--id>, B<--accession>, B<--gi> and B<--massive> is given).
+
+=item B<--accession>
+
+Interpret every B<--query> as an accession number.
+
+=item B<--gi>
+
+Interpret every B<--query> as a GI number.
+
+=item B<--massive>
+
+Interpret the B<--query> strings as an Entrez query (several queries are joined
+with C<OR>) instead of as identifiers, so that a single query may retrieve many
+sequences at once. The query is issued against the C<nucleotide> database.
+
+=item B<--help>
+
+Show a short usage message and exit.
+
+=back
+
+At most one of B<--id>, B<--accession>, B<--gi> and B<--massive> may be given,
+and all of them require at least one B<--query>.
 
 =head1 EXAMPLES
 

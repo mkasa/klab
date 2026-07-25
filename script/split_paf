@@ -2,74 +2,184 @@
 
 import sys
 import argparse
-import pprint
-pp = pprint.PrettyPrinter(indent=2)
 import re
 import csv
 
 
-cigar_pattern = re.compile(r"\d+[MXID=]")
+# The 12 mandatory PAF columns; everything after them is a SAM-style tag.
+NUM_FIXED_COLUMNS = 12
+
+cigar_pattern = re.compile(r"(\d+)([MIDNSHPX=])")
+cigar_full_pattern = re.compile(r"(?:\d+[MIDNSHPX=])+\Z")
+sam_tag_pattern = re.compile(r"\A[A-Za-z][A-Za-z0-9]:[AifZHB]:")
+
+
+class PafFormatError(Exception):
+	"""Raised when the input is not a PAF file we can make sense of."""
+	pass
+
+
 class pafData():
-	def __init__(self, qname, qlen, qstart, qend, strand, tname, tlen, tstart, tend, matches, block_len, MQ, cigar):
-		self.qname     = qname
-		self.qlen      = int(qlen)
-		self.qstart    = int(qstart)
-		self.qend      = int(qend)
-		self.strand    = strand
-		self.tname     = tname
-		self.tlen      = int(tlen)
-		self.tstart    = int(tstart)
-		self.tend      = int(tend)
-		self.matches   = int(matches)
+	def __init__(self, qname, qlen, qstart, qend, strand, tname, tlen, tstart, tend, matches, block_len, MQ, cigar, tags=None, bare_cigar=False):
+		self.qname = qname
+		self.qlen = int(qlen)
+		self.qstart = int(qstart)
+		self.qend = int(qend)
+		self.strand = strand
+		self.tname = tname
+		self.tlen = int(tlen)
+		self.tstart = int(tstart)
+		self.tend = int(tend)
+		self.matches = int(matches)
 		self.block_len = int(block_len)
-		self.MQ        = MQ
-		self.cigar     = cigar
+		self.MQ = int(MQ)
+		self.cigar = cigar
+		# Tags other than the CIGAR are carried over verbatim. They describe the
+		# parent alignment, not the individual blocks, so they are only kept so
+		# that no information present in the input is silently thrown away.
+		self.tags = list(tags) if tags is not None else []
+		# True when the CIGAR was given as a bare 13th column instead of a
+		# cg:Z: tag; the output then keeps the very same layout.
+		self.bare_cigar = bare_cigar
+
+	@classmethod
+	def from_fields(cls, fields):
+		"""Build a pafData out of one (tab split) PAF line."""
+		if len(fields) < NUM_FIXED_COLUMNS + 1:
+			raise PafFormatError("expected at least %d columns, but got %d" % (NUM_FIXED_COLUMNS + 1, len(fields)))
+		cigar = None
+		bare_cigar = False
+		tags = []
+		for field in fields[NUM_FIXED_COLUMNS:]:
+			if cigar is None and field.startswith("cg:Z:"):
+				cigar = field[len("cg:Z:"):]
+			elif cigar is None and not sam_tag_pattern.match(field) and cigar_full_pattern.match(field):
+				# A hand-trimmed PAF whose 13th column is a plain CIGAR string.
+				cigar = field
+				bare_cigar = True
+			else:
+				tags.append(field)
+		if cigar is None:
+			raise PafFormatError("no CIGAR found (neither a cg:Z: tag nor a bare CIGAR column)")
+		if int(fields[11]) < 0 or 255 < int(fields[11]):
+			raise PafFormatError("mapping quality '%s' is out of the 0-255 range" % fields[11])
+		return cls(*fields[:NUM_FIXED_COLUMNS], cigar=cigar, tags=tags, bare_cigar=bare_cigar)
+
+	def cigar_column(self):
+		if self.bare_cigar:
+			return self.cigar
+		return "cg:Z:" + self.cigar
+
 	def __str__(self):
-		return f"{self.qname}\t{self.qlen}\t{self.qstart}\t{self.qend}\t{self.strand}\t{self.tname}\t{self.tlen}\t{self.tstart}\t{self.tend}\t{self.matches}\t{self.block_len}\t{self.MQ}\t{self.cigar}"
-	def cut_alignment_at_large_indel(self):
-		#開始座標の確認。strand == "+"かどうかで。
-		#cigarの読み込み。正規表現で分けて、matchesか何かでループする。
-		#q/tの座標をいじりながら別個のpafDataに分けていく
-		#strand="-"の場合、revcompとみなす。chain formatの用法に準拠
+		columns = [
+			self.qname, str(self.qlen), str(self.qstart), str(self.qend), self.strand,
+			self.tname, str(self.tlen), str(self.tstart), str(self.tend),
+			str(self.matches), str(self.block_len), str(self.MQ),
+		]
+		columns.extend(self.tags)
+		columns.append(self.cigar_column())
+		return "\t".join(columns)
+
+	def parse_cigar(self):
+		"""Split the CIGAR into (size, operation) pairs, rejecting what we cannot map."""
+		if not cigar_full_pattern.match(self.cigar):
+			raise PafFormatError("malformed CIGAR '%s'" % self.cigar)
+		ops = [(int(size), op) for size, op in cigar_pattern.findall(self.cigar)]
+		for size, op in ops:
+			if op in ("S", "H", "P"):
+				raise PafFormatError("CIGAR operation '%s' (clipping/padding) has no meaning in a PAF alignment" % op)
+		return ops
+
+	def match_distributor(self, ops):
+		"""Return a function that hands out this alignment's matches to M operations.
+
+		'=' operations are matches by definition and 'X' operations are
+		mismatches by definition, but a plain 'M' says nothing about which of
+		its columns actually match. The matches that the parent alignment
+		reports and that are not explained by '=' operations are therefore
+		spread over the 'M' operations in proportion to their size, so that the
+		blocks together report exactly as many matches as the parent did and no
+		block ever reports more matches than it has aligned bases.
+		"""
+		total_eq = sum(size for size, op in ops if op == "=")
+		total_m = sum(size for size, op in ops if op == "M")
+		remaining = min(max(self.matches - total_eq, 0), total_m)
+		state = {"consumed": 0, "assigned": 0}
+
+		def take(m_size):
+			if total_m == 0 or m_size == 0:
+				return 0
+			state["consumed"] += m_size
+			target = (remaining * state["consumed"] + total_m // 2) // total_m
+			value = min(max(target - state["assigned"], 0), m_size)
+			state["assigned"] += value
+			return value
+		return take
+
+	def cut_alignment_at_large_indel(self, min_indel=1):
+		"""Split this alignment into blocks at every indel of at least min_indel bp.
+
+		The query coordinates of the emitted blocks are always forward strand
+		coordinates, as PAF requires, also for '-' alignments. Internally the
+		query is walked in the direction the CIGAR is written in, i.e. along the
+		reverse complement for a '-' alignment, and the resulting interval is
+		flipped back to the forward strand when the block is emitted.
+		"""
+		if self.strand not in ("+", "-"):
+			raise PafFormatError("unknown strand '%s' (expected '+' or '-')" % self.strand)
+		ops = self.parse_cigar()
+		take_matches = self.match_distributor(ops)
+		q_current_pos = self.qstart if self.strand == "+" else self.qlen - self.qend
+		t_current_pos = self.tstart
+		blocks = []
+		current = None
+		for cigar_size, cigar_type in ops:
+			if cigar_type in ("M", "X", "="):
+				if current is None:
+					current = {
+						"q_start": q_current_pos, "t_start": t_current_pos,
+						"ops": [], "matches": 0, "columns": 0,
+					}
+				if cigar_type == "M":
+					current["matches"] += take_matches(cigar_size)
+				elif cigar_type == "=":
+					current["matches"] += cigar_size
+				current["ops"].append("%d%s" % (cigar_size, cigar_type))
+				current["columns"] += cigar_size
+				q_current_pos += cigar_size
+				t_current_pos += cigar_size
+			else:  # I, D or N
+				if min_indel <= cigar_size:
+					if current is not None:
+						blocks.append((current, q_current_pos, t_current_pos))
+						current = None
+				elif current is not None:
+					current["ops"].append("%d%s" % (cigar_size, cigar_type))
+					current["columns"] += cigar_size
+				if cigar_type == "I":
+					q_current_pos += cigar_size
+				else:
+					t_current_pos += cigar_size
+		if current is not None:
+			blocks.append((current, q_current_pos, t_current_pos))
+
+		expected_q = self.qend if self.strand == "+" else self.qlen - self.qstart
+		if q_current_pos != expected_q:
+			raise PafFormatError("the CIGAR walks the query up to %d, but the alignment ends at %d" % (q_current_pos, expected_q))
+		if t_current_pos != self.tend:
+			raise PafFormatError("the CIGAR walks the target up to %d, but the alignment ends at %d" % (t_current_pos, self.tend))
+
 		retArr = []
-		if self.strand == "+":
-			q_current_pos = self.qstart
-			t_current_pos = self.tstart
-			cigar_matches = re.findall(cigar_pattern, self.cigar)
-			for each_cigar_match in cigar_matches:
-				cigar_size = int(each_cigar_match[:-1])
-				cigar_type = each_cigar_match[-1]
-				if cigar_type in ["M", "X", "="]:
-					retArr.append(pafData(self.qname, self.qlen, q_current_pos, q_current_pos + cigar_size, self.strand, self.tname, self.tlen, t_current_pos, t_current_pos + cigar_size, self.matches, cigar_size, "none", each_cigar_match))
-					q_current_pos = q_current_pos + cigar_size
-					t_current_pos = t_current_pos + cigar_size
-				elif cigar_type in ["I"]:
-					q_current_pos = q_current_pos + cigar_size
-				elif cigar_type in ["D"]:
-					t_current_pos = t_current_pos + cigar_size
-			assert self.qend == q_current_pos, f"{self.qend} != {q_current_pos}"
-			assert self.tend == t_current_pos, f"{self.tend} != {t_current_pos}"
-		elif self.strand == "-":
-			# For a minus-strand alignment the CIGAR is written along the target
-			# forward direction, which corresponds to the reverse-complemented
-			# query. In chain-format (revcomp) coordinates the query therefore
-			# advances together with the target, starting at qlen - qend.
-			q_current_pos = self.qlen - self.qend
-			t_current_pos = self.tstart
-			cigar_matches = re.findall(cigar_pattern, self.cigar)
-			for each_cigar_match in cigar_matches:
-				cigar_size = int(each_cigar_match[:-1])
-				cigar_type = each_cigar_match[-1]
-				if cigar_type in ["M", "X", "="]:
-					retArr.append(pafData(self.qname, self.qlen, q_current_pos, q_current_pos + cigar_size, self.strand, self.tname, self.tlen, t_current_pos, t_current_pos + cigar_size, self.matches, cigar_size, "none", each_cigar_match))
-					q_current_pos = q_current_pos + cigar_size
-					t_current_pos = t_current_pos + cigar_size
-				elif cigar_type in ["I"]:
-					q_current_pos = q_current_pos + cigar_size
-				elif cigar_type in ["D"]:
-					t_current_pos = t_current_pos + cigar_size
-			assert self.qlen - self.qstart == q_current_pos, f"{self.qlen - self.qstart} != {q_current_pos}"
-			assert self.tend == t_current_pos, f"{self.tend} != {t_current_pos}"
+		for block, q_block_end, t_block_end in blocks:
+			if self.strand == "+":
+				q_start, q_end = block["q_start"], q_block_end
+			else:
+				q_start, q_end = self.qlen - q_block_end, self.qlen - block["q_start"]
+			retArr.append(pafData(
+				self.qname, self.qlen, q_start, q_end, self.strand,
+				self.tname, self.tlen, block["t_start"], t_block_end,
+				block["matches"], block["columns"], self.MQ, "".join(block["ops"]),
+				tags=self.tags, bare_cigar=self.bare_cigar))
 		return retArr
 
 
@@ -78,22 +188,52 @@ def paf_reader(paf_file_name):
 	with open(paf_file_name, 'r') as f:
 		reader = csv.reader(f, delimiter='\t')
 		for line in reader:
-			retArr.append(pafData(*line))
+			if not line or all(field.strip() == "" for field in line):
+				continue  # blank lines, including a trailing one
+			try:
+				retArr.append(pafData.from_fields(line))
+			except (PafFormatError, ValueError) as e:
+				raise PafFormatError("%s line %d: %s" % (paf_file_name, reader.line_num, e))
 	return retArr
+
 
 def main():
 	parser = argparse.ArgumentParser(description='split paf file at INDEL')
 	parser.add_argument("PAFfilename", metavar='PAF', type=str, help='PAF file')
 	parser.add_argument("-o", metavar='FileName', type=str, help='output file name')
-	args          = parser.parse_args()
-	paf_file_name = args.PAFfilename
-	out_file_name = sys.stdout
+	parser.add_argument(
+		"--min-indel", metavar='N', type=int, default=1,
+		help='split only at insertions/deletions of N bp or more (default: 1, i.e. at every indel)')
+	args = parser.parse_args()
+	if args.min_indel < 1:
+		parser.error("--min-indel must be 1 or larger")
+	try:
+		paf_data = paf_reader(args.PAFfilename)
+	except PafFormatError as e:
+		print("ERROR: %s" % e, file=sys.stderr)
+		return 1
+	except OSError as e:
+		print("ERROR: %s" % e, file=sys.stderr)
+		return 1
+	out_file = sys.stdout
 	if args.o is not None:
-		out_file_name = open(args.o, "w")
-	paf_data = paf_reader(paf_file_name)
-	for each_paf in paf_data:
-		each_alignment_block = each_paf.cut_alignment_at_large_indel()
-		for i in each_alignment_block:
-			print(i, file = out_file_name)
+		try:
+			out_file = open(args.o, "w")
+		except OSError as e:
+			print("ERROR: %s" % e, file=sys.stderr)
+			return 1
+	try:
+		for each_paf in paf_data:
+			for each_alignment_block in each_paf.cut_alignment_at_large_indel(args.min_indel):
+				print(each_alignment_block, file=out_file)
+	except PafFormatError as e:
+		print("ERROR: %s" % e, file=sys.stderr)
+		return 1
+	finally:
+		if out_file is not sys.stdout:
+			out_file.close()
+	return 0
+
+
 if __name__ == '__main__':
-	main()
+	sys.exit(main())

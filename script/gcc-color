@@ -1,43 +1,160 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
+use Getopt::Long;
 
-while(<>){
+my $flag_simplify_stl = 0;
+my $flag_help         = 0;
+
+GetOptions('simplify-stl' => \$flag_simplify_stl,
+           'help'         => \$flag_help) or exit 1;
+
+if($flag_help) {
+    print "usage: <compiler command> 2>&1 | gcc-color [--simplify-stl]\n";
+    print "\n";
+    print "  --simplify-stl   shorten STLport type names in the output\n";
+    print "                   (stlp_std:: is dropped, ::iterator becomes ::iter\n";
+    print "                    and ::const_iterator becomes ::c_iter)\n";
+    print "  --help           show this help\n";
+    exit 0;
+}
+
+my %color = (
+    reset   => "\x1b[0m",
+    red     => "\x1b[31m",
+    green   => "\x1b[32m",
+    yellow  => "\x1b[33m",
+    blue    => "\x1b[34m",
+    magenta => "\x1b[35m",
+    cyan    => "\x1b[36m",
+    white   => "\x1b[37m",
+);
+
+sub color($)
+{
+    my $name = shift;
+    return exists $color{$name} ? $color{$name} : $color{reset};
+}
+
+sub print_in_color($$)
+{
+    my ($name, $line) = @_;
+    print color($name), $line, color('reset'), "\n";
+}
+
+# GCC 4.9 and later, and clang, print "file:line:column: kind:"; older GCC
+# prints "file:line: kind:". The file name itself may well contain a colon,
+# so the part before the line number is matched non-greedily instead of being
+# required to be colon-free.
+my $location   = qr/^.*?:\d+:(?:\d+:)?/;
+my $error_kind = qr/(?:fatal\s+)?error/;
+
+while(<>) {
     chomp;
-    s/\bstlp_std\:\://g;
-    s/\:\:iterator/\:\:iter/g;
-    s/\:\:const_iterator/\:\:c_iter/g;
-    if(/^g(\+\+|cc)/) {
-        print color(1), "$_", color(7), "\n";
-    } elsif(/^[^:]+\:(\d+)\: warning\:/) {
-        print color(3), "$_", color(7), "\n";
-    } elsif(/^[^:]+\:(\d+)\: error\:/) {
-        print color(2), "$_", color(7), "\n";
+    if($flag_simplify_stl) {
+        s/\bstlp_std\:\://g;
+        s/\:\:iterator/\:\:iter/g;
+        s/\:\:const_iterator/\:\:c_iter/g;
+    }
+    if(/^(?:g\+\+|gcc|c\+\+|cc|clang\+\+|clang)\s/) {
+        print_in_color('blue', $_);
+    } elsif(/$location\s*$error_kind\s*:/ || /^[^\s]*:\s*$error_kind\s*:/) {
+        print_in_color('red', $_);
+    } elsif(/$location\s*warning\s*:/ || /^[^\s]*:\s*warning\s*:/) {
+        print_in_color('magenta', $_);
+    } elsif(/$location\s*note\s*:/ || /^[^\s]*:\s*note\s*:/) {
+        print_in_color('cyan', $_);
+    } elsif(/In function/) {
+        print_in_color('yellow', $_);
     } else {
         print "$_\n";
     }
 }
 
-sub color($) {
-    my $cnum = shift;
-    my $rv = "\x1b[";
-    if($cnum == 0 || $cnum == 8) {
-        $rv .= "30";
-    } elsif($cnum == 1 || $cnum == 9) {
-        $rv .= "34";
-    } elsif($cnum == 2 || $cnum == 10) {
-        $rv .= "32";
-    } elsif($cnum == 3 || $cnum == 11) {
-        $rv .= "36";
-    } elsif($cnum == 4 || $cnum == 12) {
-        $rv .= "31";
-    } elsif($cnum == 5 || $cnum == 13) {
-        $rv .= "35";
-    } elsif($cnum == 6 || $cnum == 14) {
-        $rv .= "33";
-    } elsif($cnum == 7 || $cnum == 15) {
-        $rv .= "37";
-    }
-    $rv .= "m";
-    return $rv;
-} 
+__END__
+
+=pod
+
+=head1 NAME
+
+gcc-color - colorize the output of the GNU Compiler Collection (and clang)
+
+=head1 SYNOPSIS
+
+gcc-color [--simplify-stl]
+
+    gcc  -O2 hello.c  -o hello 2>&1 | gcc-color
+    g++  -O2 hello.cc -o hello 2>&1 | gcc-color
+    make 2>&1 | gcc-color
+
+=head1 DESCRIPTION
+
+B<gcc-color> reads compiler diagnostics from standard input, adds ANSI color
+escape sequences to make them easier to scan, and writes the result to
+standard output.
+
+Because compilers print their diagnostics to standard error, you normally need
+to redirect standard error to standard output (B<2E<gt>&1>) before piping into
+B<gcc-color>.
+
+Both the modern C<file:line:column: kind:> form used by GCC 4.9 and later and
+by clang, and the older C<file:line: kind:> form, are recognized. File names
+containing a colon are handled.
+
+The following categories of lines are highlighted:
+
+=over 8
+
+=item B<Compiler command lines>
+
+Lines beginning with B<gcc>, B<g++>, B<cc>, B<c++>, B<clang> or B<clang++>
+followed by whitespace are shown in blue.
+
+=item B<Errors>
+
+Lines matching C<: error:> or C<: fatal error:> are shown in red.
+
+=item B<Warnings>
+
+Lines matching C<: warning:> are shown in magenta.
+
+=item B<Notes>
+
+Lines matching C<: note:> are shown in cyan.
+
+=item B<Function context>
+
+Lines matching C<In function> are shown in yellow.
+
+=back
+
+All other lines, including the echoed source text of a diagnostic, are passed
+through unchanged.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--simplify-stl>
+
+Shorten STLport type names so that long template diagnostics stay readable:
+C<stlp_std::> is removed, C<::iterator> is replaced by C<::iter> and
+C<::const_iterator> by C<::c_iter>. This rewriting is applied to every line,
+including the echoed source text, which is why it is off by default.
+
+=item B<--help>
+
+Show a short usage message and exit.
+
+=back
+
+=head1 SEE ALSO
+
+B<icc-color> - the equivalent tool for the Intel C/C++ compiler.
+
+=head1 AUTHOR
+
+Masahiro Kasahara (masahiro@kasahara.ws)
+
+=cut

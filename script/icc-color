@@ -6,24 +6,26 @@ use strict;
 use Term::ANSIColor;
 
 while(<>) {
-	chomp;
+	# Remember whether the line really ended with a newline, so that a last
+	# line without one does not silently gain one.
+	my $eol = chomp() ? "\n" : "";
 	if(/remark \#\d+:/) {
-		print color('blue') . $_ . color('reset') . "\n";
+		print color('blue') . $_ . color('reset') . $eol;
 	} elsif(/: warning(\s+\#\d+)?:/) {
-		print color('green') . $_ . color('reset') . "\n";
-	} elsif(/In function/) {
-		print color('yellow') . $_ . color('reset') . "\n";
-	} elsif(/undefined reference/) {
-		s|undefined reference to \`(.*?)'|color('red') . 'undefined reference to ' . $1 . color('reset')|e;
-		print $_ . "\n";
-	} elsif(/^(icpc|icc)\s+/) {
-		print color('cyan') . $_ . color('reset') . "\n";
+		print color('green') . $_ . color('reset') . $eol;
 	} elsif(/:( catastrophic)? error(\s+\#\d+)?:/) {
-		print color('red') . $_ . color('reset') . "\n";
+		print color('red') . $_ . color('reset') . $eol;
+	} elsif(/In function/) {
+		print color('yellow') . $_ . color('reset') . $eol;
+	} elsif(/undefined reference/) {
+		s|undefined reference to \`(.*?)'|color('red') . 'undefined reference to ' . $1 . color('reset')|ge;
+		print $_ . $eol;
+	} elsif(/^(icpc|icc)\s+/) {
+		print color('cyan') . $_ . color('reset') . $eol;
 	} elsif(/^$/) {
 		# skip
 	} else {
-		print $_ . "\n";
+		print $_ . $eol;
 	}
 }
 
@@ -52,7 +54,9 @@ Because the compiler prints its diagnostics to standard error, you normally
 need to redirect standard error to standard output (B<2E<gt>&1>) before piping
 into B<icc-color>.
 
-The following categories of lines are highlighted:
+The following categories of lines are highlighted. A line belongs to the first
+category it matches, so a line that mentions both an error and a function
+context is shown as an error.
 
 =over 8
 
@@ -70,8 +74,8 @@ Lines matching C<In function> are shown in yellow.
 
 =item B<Undefined references>
 
-For linker C<undefined reference to `symbol'> lines, the message and the
-referenced symbol are shown in red.
+For linker C<undefined reference to `symbol'> lines, every occurrence of the
+message and of the referenced symbol is shown in red.
 
 =item B<Compiler command lines>
 

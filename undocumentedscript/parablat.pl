@@ -1,15 +1,16 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 
 use FindBin;
 use lib $FindBin::Bin;
 use Getopt::Long;
 use Pod::Usage;
 use File::Temp qw(tempfile tempdir);
-use ParallelExec;
 use File::Copy;
-use TGEW;
+use File::Spec;
+use FileHandle;
 
 my $flag_man        = 0;
 my $flag_help       = 0;
@@ -19,6 +20,7 @@ my $debug           = 0;
 my $num_cpus        = 8;
 
 GetOptions( 'help|?'     => \$flag_help,
+	        'man'        => \$flag_man,
 	        'debug'      => \$debug,
 	        'numcpus=i'  => \$num_cpus,
 	        'forcesplit' => \$flag_forcesplit,
@@ -28,9 +30,46 @@ pod2usage(1) if $flag_help;
 pod2usage(-verbose => 2) if $flag_man;
 $flag_forcesplit = 1 if($flag_force);
 
+# TGEW.pm provides the Sun Grid Engine support. It is not distributed with
+# this repository, so it is loaded lazily: without it we simply run in the
+# local (SMP) mode.
+my $tgew_is_available = eval { require TGEW; 1 } ? 1 : 0;
+if(!$tgew_is_available) {
+    print STDERR "TGEW.pm is not available; assuming a non-SGE (SMP) environment.\n" if($debug);
+    if($ENV{SGE_ROOT} || $ENV{SGE_CELL}) {
+        print STDERR "WARNING: SGE_ROOT/SGE_CELL is set, so this looks like a Sun Grid Engine\n";
+        print STDERR "         environment, but TGEW.pm could not be loaded:\n";
+        print STDERR "         $@";
+        print STDERR "         Jobs will be run locally instead of being submitted to the grid.\n";
+    }
+}
+sub tgewIsInstalled {
+    return 0 unless($tgew_is_available);
+    return TGEW::is_installed();
+}
+
+# ParallelExec.pm currently pulls in TGEW.pm unconditionally, so loading it may
+# fail on a plain checkout. Load it lazily so that we can say what went wrong.
+unless(eval { require ParallelExec; 1 }) {
+    my $loaderror = $@;
+    print STDERR "ERROR: cannot load ParallelExec.pm\n";
+    print STDERR "       $loaderror";
+    print STDERR "       (ParallelExec.pm itself requires TGEW.pm, which is not part of this repository.)\n"
+        unless($tgew_is_available);
+    exit 1;
+}
+
+# Quote a string so that it can safely be used as a single shell word.
+sub shellquote {
+    my $s = shift;
+    $s = '' unless(defined $s);
+    $s =~ s/'/'\\''/g;
+    return "'$s'";
+}
+
 my $outputFormatType = 'psl';
 
-if(TGEW::is_installed()) {
+if(tgewIsInstalled()) {
 	if($num_cpus > 288) {
 	    print STDERR "You specified -numcpus=$num_cpus option, but the number of CPUs cannot exceed 288 due to a technical limitation.\n";
 	    exit 1;
@@ -47,9 +86,12 @@ my $blatoptions = '';
 my ($blatsubjectfile, $blatqueryfile, $blatoutputfile);
 {
     my @blatargs;
-    while(my $arg = shift) {
+    # NOTE: 'while(my $arg = shift)' would stop at a false argument such as a
+    #       file literally named '0'.
+    while(@ARGV) {
+	    my $arg = shift @ARGV;
 	    if($arg =~ /^-/) {
-	        $blatoptions .= " $arg";
+	        $blatoptions .= ' ' . shellquote($arg);
 	        if($arg =~ /^-out=([\w\d]+)/) {
 	            $outputFormatType = $1;
 	        }
@@ -74,8 +116,10 @@ my ($blatsubjectfile, $blatqueryfile, $blatoutputfile);
 }
 
 # check blat
-my $blatpath = `which blat`; chomp $blatpath;
-unless(-x $blatpath) {
+my $blatpath = `which blat`;
+$blatpath = '' unless(defined $blatpath);
+chomp $blatpath;
+unless($blatpath ne '' && -x $blatpath) {
     print STDERR "Could not locate the path of blat\n";
     print STDERR "Make sure that blat is properly installed on your system and it is placed on PATH\n";
     exit 1;
@@ -85,18 +129,34 @@ unless(-x $blatpath) {
     }
 }
 
+# splitfasta.pl lives next to this script; fall back to PATH if it does not.
+# Both the UNIX and the Windows branch below must invoke it the same way.
+my @splitfastacmd;
+{
+    my $sibling = File::Spec->catfile($FindBin::Bin, 'splitfasta.pl');
+    @splitfastacmd = (-e $sibling) ? ($^X, $sibling) : ('splitfasta.pl');
+}
+
 # split query
 my @splitqueryfiles;
 my $haveToDeleteSplitFiles = 0;
+my $splitworkdir = undef; # private temporary directory, removed on success
 {
     my $symlink_exists = eval { symlink("",""); 1 };
     if($symlink_exists) { # UNIX-like OS
-	    my $splitqueryfilenamebase = 'parablatqueryXXXXX';
-	    my (undef, $splitqueryfilename) = tempfile($splitqueryfilenamebase, OPEN => 0);
-	    symlink $blatqueryfile, $splitqueryfilename or die "Could not simlink to temporary";
-	    my $cmdline = "splitfasta.pl --equalbase $splitqueryfilename $num_cpus";
-	    print STDERR "  %$cmdline\n";
-	    if(system $cmdline) {
+	    # tempfile(OPEN => 0) only reserves a *name* (a race), and with no
+	    # directory in the template both the name and every chunk would be
+	    # created in the current working directory. Use a private
+	    # directory under the system temporary directory instead.
+	    $splitworkdir = tempdir('parablatXXXXXX', TMPDIR => 1, CLEANUP => 0);
+	    my $splitqueryfilename = File::Spec->catfile($splitworkdir, 'query');
+	    # the symlink lives in another directory, so it needs an absolute target
+	    my $absolutequeryfile = File::Spec->rel2abs($blatqueryfile);
+	    symlink $absolutequeryfile, $splitqueryfilename
+	        or die "Could not symlink '$absolutequeryfile' to '$splitqueryfilename': $!";
+	    my @cmdline = (@splitfastacmd, '--equalbase', $splitqueryfilename, $num_cpus);
+	    print STDERR "  % ", join(' ', map { shellquote($_) } @cmdline), "\n";
+	    if(system(@cmdline)) {
 	        die "Could not execute splitfasta.pl";
 	    }
 	    unlink $splitqueryfilename; #remove symbolic link
@@ -106,6 +166,11 @@ my $haveToDeleteSplitFiles = 0;
 	        if(-e $splitpartfastafilename) {
 	            push(@splitqueryfiles, $splitpartfastafilename);
 	        } else {
+	            if($_ == 0) {
+	                print STDERR "ERROR: splitfasta.pl did not produce any split query file.\n";
+	                print STDERR "       Check that '$blatqueryfile' is a non-empty FASTA file.\n";
+	                exit 1;
+	            }
 	            # for small FASTA
 	            print STDERR "The given FASTA file has small number of reads.\n";
 	            print STDERR "You gave $num_cpus CPUs, but the number of blocks is $_\n";
@@ -125,9 +190,9 @@ my $haveToDeleteSplitFiles = 0;
 	    } else {
 	        $haveToDeleteSplitFiles = 1;
 	    }
-	    my $cmdline = "perl splitfasta.pl --equalbase $blatqueryfile $num_cpus";
-	    print STDERR "  %$cmdline\n";
-	    if(system $cmdline) {
+	    my @cmdline = (@splitfastacmd, '--equalbase', $blatqueryfile, $num_cpus);
+	    print STDERR "  % ", join(' ', map { shellquote($_) } @cmdline), "\n";
+	    if(system(@cmdline)) {
 	        die "Could not execute splitfasta.pl";
 	    }
 	    for(0..$num_cpus-1) {
@@ -139,6 +204,14 @@ my $haveToDeleteSplitFiles = 0;
 	    pop(@splitqueryfiles);
 	    print STDERR "Decreased the number of parallelism\n";
 	    $num_cpus--;
+    }
+    # With no chunk at all the combine step below would run 'cat' with no
+    # operand, which reads standard input and hangs forever.
+    if(@splitqueryfiles == 0) {
+        print STDERR "ERROR: no split query file was produced from '$blatqueryfile'.\n";
+        print STDERR "       Nothing to do; aborting.\n";
+        rmdir $splitworkdir if(defined $splitworkdir);
+        exit 1;
     }
 }
 
@@ -154,7 +227,15 @@ EXECUTEBLATINPARALLEL: {
 	        print STDERR "Try -force option if you want to overwrite them\n";
 	        exit 1;
 	    }
-	    push(@commandlines, "$blatpath $blatsubjectfile $splitqueryfiles[$_] \$(O)$outputfile $blatoptions");
+	    # ParallelExec writes these strings into a shell script / makefile,
+	    # so every word has to be quoted. '$(O)' is a marker that
+	    # ParallelExec strips, so it must stay outside the quotes.
+	    push(@commandlines,
+	         shellquote($blatpath) . ' ' .
+	         shellquote($blatsubjectfile) . ' ' .
+	         shellquote($splitqueryfiles[$_]) . ' ' .
+	         "\$(O)" . shellquote($outputfile) .
+	         $blatoptions);
     }
     if($debug) {
 	    print "Command lines : \n";
@@ -176,14 +257,16 @@ EXECUTEBLATINPARALLEL: {
 }
 
 # clean divided query
+# When a job failed the chunk files are kept so that the run can be inspected
+# and/or restarted; deleting them would throw away the partial results.
 if($haveToDeleteSplitFiles) {
-    unless($debug) {
+    unless($debug || $errorHasOccured) {
 	    for(@splitqueryfiles) {
 	        print STDERR "  rm $_\n";
 	        unlink $_;
 	    }
     } else {
-	    print STDERR "  Debugging mode. Do not delete temporary files shown below. \n";
+	    print STDERR "  Do not delete temporary files shown below. \n";
 	    for(@splitqueryfiles) {
 	        print STDERR "    $_\n";
 	    }
@@ -193,42 +276,72 @@ if($haveToDeleteSplitFiles) {
 # put the results together
 unless($errorHasOccured) {
     my @splitresultfiles = map {"$_.out"} @splitqueryfiles;
-    if($outputFormatType eq 'blast8' || $outputFormatType eq 'blast9' || $outputFormatType eq 'maf' || $outputFormatType eq 'wublast' || $outputFormatType eq 'sim4') {
+    if($outputFormatType eq 'blast8' || $outputFormatType eq 'blast9' || $outputFormatType eq 'wublast' || $outputFormatType eq 'sim4') {
         print STDERR "Combining strategy : $outputFormatType\n";
 	    # just concatinating all
-	    my $cmdline = "cat " . join(' ',  @splitresultfiles) . " > $blatoutputfile";
+	    my $cmdline = "cat " . join(' ', map { shellquote($_) } @splitresultfiles)
+	                . " > " . shellquote($blatoutputfile);
 	    print STDERR "Put all things together\n";
 	    print STDERR "% $cmdline\n";
-	    system $cmdline;
-	    if($?) {
-	        print STDERR "Error while executing cat command\n";
+	    if(system($cmdline)) {
+	        $errorHasOccured = "Error while executing cat command";
+	    }
+    } elsif($outputFormatType eq 'maf') {
+        print STDERR "Combining strategy : maf\n";
+	    # A plain 'cat' would repeat the '##maf version=' header once per
+	    # chunk in the middle of the file, which most MAF parsers reject.
+	    my $firstone = $splitresultfiles[0];
+	    unless(copy($firstone, $blatoutputfile)) {
+	        $errorHasOccured = "Could not copy '$firstone' to '$blatoutputfile': $!";
+	    } else {
+	        for(1..@splitresultfiles-1) {
+	            appendMafWithoutHeader($splitresultfiles[$_], $blatoutputfile);
+	        }
 	    }
     } elsif($outputFormatType eq 'blast') {
 		print STDERR "Combining strategy : blast\n";
 	    my $firstone = $splitresultfiles[0];
-	    copy($firstone, $blatoutputfile);
-	    for(1..@splitresultfiles-1) {
-	        appendFileWithHeaderSkip(sub { /^Reference/ }, $splitresultfiles[$_], $blatoutputfile);
+	    unless(copy($firstone, $blatoutputfile)) {
+	        $errorHasOccured = "Could not copy '$firstone' to '$blatoutputfile': $!";
+	    } else {
+	        for(1..@splitresultfiles-1) {
+	            appendFileWithHeaderSkip(sub { /^Reference/ }, $splitresultfiles[$_], $blatoutputfile);
+	        }
 	    }
     } elsif($outputFormatType eq 'psl' || $outputFormatType eq 'pslx') {
 		print STDERR "Combining strategy : psl/pslx\n";
 	    my $firstone = $splitresultfiles[0];
-	    copy($firstone, $blatoutputfile);
-	    for(1..@splitresultfiles-1) {
-	        appendFileWithHeaderSkip(sub { /^---------/ }, $splitresultfiles[$_], $blatoutputfile);
+	    unless(copy($firstone, $blatoutputfile)) {
+	        $errorHasOccured = "Could not copy '$firstone' to '$blatoutputfile': $!";
+	    } else {
+	        for(1..@splitresultfiles-1) {
+	            appendFileWithHeaderSkip(sub { /^---------/ }, $splitresultfiles[$_], $blatoutputfile);
+	        }
 	    }
     } elsif($outputFormatType eq 'axt') {
 		print STDERR "Combining strategy : axt\n";
-		my $f = { nextid => 0 };
-	    for(0..@splitresultfiles-1) {
-	    	appendAxt($f, $splitresultfiles[$_], $blatoutputfile);
-	    }
+		# appendAxt() opens the destination with '>>', so it has to be
+		# truncated first; otherwise re-running would double the output.
+		my $truncated = 0;
+		if(open(my $truncatefh, '>', $blatoutputfile)) {
+		    close($truncatefh);
+		    $truncated = 1;
+		}
+		unless($truncated) {
+		    $errorHasOccured = "Could not create '$blatoutputfile': $!";
+		} else {
+		    my $f = { currentid => 0 };
+		    for(0..@splitresultfiles-1) {
+	    	    appendAxt($f, $splitresultfiles[$_], $blatoutputfile);
+		    }
+		}
     } else {
         print STDERR "Unknown output type '$outputFormatType'\n";
+        $errorHasOccured = "Unknown output type '$outputFormatType'";
     }
 }
 
-sub appendAxt($$$)
+sub appendAxt
 {
 	my $idobj          = shift;
 	my $axtfile        = shift;
@@ -242,49 +355,68 @@ sub appendAxt($$$)
 			exit 1;
 		}
 		while(<$fh>) {
+			next if(/^\s*$/); # blank line between two blocks
 			if(/^(\d+)\s+(.*)$/) {
-				my $idnum = $1;
 				my $rest  = $2;
 				my $newid = $idobj->{currentid}++;
-				print $outfh "$newid $rest\n";
 				my $s1 = <$fh>;
-				print $outfh $s1;
 				my $s2 = <$fh>;
+				unless(defined $s1 && defined $s2) {
+					print STDERR "WARNING: truncated axt block at the end of '$axtfile'\n";
+					last;
+				}
+				my $blank = <$fh>; # the (optional) separating blank line
+				print $outfh "$newid $rest\n";
+				print $outfh $s1;
 				print $outfh $s2;
-				my $blank = <$fh>;
 				print $outfh "\n";
 			} else {
-				print STDERR "WARNING: illegal header\n";
-				print STDERR;
+				print STDERR "WARNING: illegal header in '$axtfile'\n";
+				print STDERR $_;
 			}
 		}
 		$fh->close();
 		$outfh->close();
+	} else {
+		print STDERR "ERROR: could not open $axtfile\n";
+		$outfh->close() if($outfh);
+		exit 1;
 	}
 }
 
 # clean devided results
 {
-    unless($debug) {
+    unless($debug || $errorHasOccured) {
 	    for(@splitqueryfiles) {
 	        my $outputfile = "$_.out";
 	        print STDERR "  rm $outputfile\n";
 	        unlink $outputfile;
 	    }
+	    rmdir $splitworkdir if(defined $splitworkdir);
     } else {
-	    print STDERR "  Debugging mode. Do not delete temporary files shown below. \n";
+	    print STDERR "  Do not delete temporary files shown below. \n";
 	    for(@splitqueryfiles) {
 	        print STDERR "    $_.out\n";
 	    }
     }
 }
 
-sub appendFileWithHeaderSkip($$$) {
+if($errorHasOccured) {
+    print STDERR "ERROR: $errorHasOccured\n";
+    print STDERR "ERROR: parablat.pl did not complete successfully.\n";
+    print STDERR "       The per-chunk files listed above were kept for inspection.\n";
+    exit 1;
+}
+
+sub appendFileWithHeaderSkip {
     my $isheader_function = shift;
     my $sourcefile = shift;
     my $destfile   = shift;
-    open APPENDFILE, "< $sourcefile" or return;
-    unless(open APPENDEDFILE, ">> $destfile") {
+    open(APPENDFILE, '<', $sourcefile) or do {
+	    print STDERR "Cannot read '$sourcefile'\n";
+	    return;
+    };
+    unless(open(APPENDEDFILE, '>>', $destfile)) {
 	    print STDERR "Cannot append to '$destfile'\n";
 	    close APPENDFILE;
 	    return;
@@ -297,6 +429,34 @@ sub appendFileWithHeaderSkip($$$) {
     }
     close APPENDEDFILE;
     close APPENDFILE;
+    return 0;
+}
+
+# Append a MAF file, dropping its leading '##maf'/'#' header block so that the
+# combined file has exactly one header.
+sub appendMafWithoutHeader {
+    my $sourcefile = shift;
+    my $destfile   = shift;
+    open(my $in, '<', $sourcefile) or do {
+	    print STDERR "Cannot read '$sourcefile'\n";
+	    return;
+    };
+    my $out;
+    unless(open($out, '>>', $destfile)) {
+	    print STDERR "Cannot append to '$destfile'\n";
+	    close $in;
+	    return;
+    }
+    my $isinheader = 1;
+    while(<$in>) {
+	    if($isinheader) {
+	        next if(/^#/ || /^\s*$/);
+	        $isinheader = 0;
+	    }
+	    print $out $_;
+    }
+    close $out;
+    close $in;
     return 0;
 }
 

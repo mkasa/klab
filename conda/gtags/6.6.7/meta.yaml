@@ -6,6 +6,22 @@ package:
 
 source:
   url: https://ftp.gnu.org/pub/gnu/global/global-{{ version }}.tar.gz
+  # TODO sha256: <checksum of the tarball above - needs to be filled in>
+
+build:
+  number: 0
+
+requirements:
+  build:
+    - {{ compiler('c') }}
+    - make
+    - python >=3.6
+    - libiconv
+    - ncurses
+  run:
+    - libiconv
+    - ncurses
 
 about:
   home: https://www.gnu.org/
+  license: GPL-3.0-or-later

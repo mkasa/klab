@@ -1,14 +1,75 @@
 use strict;
+use warnings;
 
-use File::Temp qw(tempfile tempdir);
+# NOTE: this file intentionally does NOT declare a 'package'; parallelExecute()
+#       and friends are defined directly in the caller's namespace (main::).
+#       Adding a package here would break every existing caller.
+#
+# NOTE: TGEW.pm (Sun Grid Engine wrapper) is loaded lazily, only when we are
+#       about to decide whether the SGE backend can be used. It used to be a
+#       hard 'use TGEW;', which made this module impossible to compile - and
+#       therefore the SMP backend impossible to use - on any machine without
+#       TGEW installed.
+
+use File::Temp;
+use File::Spec;
 use FileHandle;
-use TGEW;
+
+# Quote a string for /bin/sh.
+sub _shell_quote($)
+{
+    my $s = shift;
+    return "''" unless(defined $s && $s ne '');
+    $s =~ s/'/'\\''/g;
+    return "'" . $s . "'";
+}
+
+# Escape a shell command line so that it can be put in a makefile recipe.
+# '$' is make's variable sigil, so it has to be doubled or make eats it.
+sub _make_escape($)
+{
+    my $s = shift;
+    return '' unless(defined $s);
+    $s =~ s/\$/\$\$/g;
+    return $s;
+}
+
+# Number of concurrent jobs to run in the SMP backend.
+sub _cpu_count()
+{
+    if(defined $ENV{PARALLELEXEC_MAXJOBS} && $ENV{PARALLELEXEC_MAXJOBS} =~ /^\d+$/ && $ENV{PARALLELEXEC_MAXJOBS} > 0) {
+        return $ENV{PARALLELEXEC_MAXJOBS} + 0;
+    }
+    my $n;
+    if($^O =~ /^darwin/i || $^O =~ /bsd/i) {
+        $n = `sysctl -n hw.ncpu 2>/dev/null`;
+    } elsif(-r '/proc/cpuinfo') {
+        my $count = 0;
+        if(open(my $cfh, '<', '/proc/cpuinfo')) {
+            while(<$cfh>) { $count++ if(/^processor\s*:/); }
+            close $cfh;
+        }
+        $n = $count;
+    } else {
+        $n = `getconf _NPROCESSORS_ONLN 2>/dev/null`;
+    }
+    $n = '' unless(defined $n);
+    chomp $n;
+    return ($n =~ /^\d+$/ && $n > 0) ? $n + 0 : 1;
+}
+
+sub _is_sge_available()
+{
+    return 0 unless(eval { require TGEW; 1 });
+    my $r = eval { TGEW::is_installed() };
+    return $r ? 1 : 0;
+}
 
 sub parallelExecute(@) {
-	if(TGEW::is_installed()) {
-		parallelExecute_SGE(@_);
+	if(_is_sge_available()) {
+		return parallelExecute_SGE(@_);
 	} else {
-		parallelExecute_SMP(@_);
+		return parallelExecute_SMP(@_);
 	}
 }
 
@@ -19,81 +80,115 @@ sub parallelExecute_SGE(@)
 {
     my @commands = @_;
     my %rethash = ();
+    $rethash{error} = 1;
 
-    my $makefiletemplate = 'tempXXXXX';
-    my (undef, $makefile) = tempfile($makefiletemplate, OPEN => 0);
+    # All the temporary files live in a private (mode 0700) directory that is
+    # removed when $tmpdirobj goes out of scope. The previous code passed a
+    # RELATIVE template to tempfile(..., OPEN => 0), which neither created nor
+    # locked the file and dropped temp*/temps* droppings into the caller's cwd.
+    my $tmpdirobj = File::Temp->newdir();
+    my $tmpdir    = "$tmpdirobj";
 
-    my $stdouttemplate = 'tempsXXXXX';
+    my $makefile = File::Spec->catfile($tmpdir, 'parallelexec.mk');
     my @stdoutfile;
-
-    for(@commands) {
-	    my (undef, $sofile) = tempfile($stdouttemplate, OPEN => 0);
-	    push(@stdoutfile, $sofile);
+    my @stderrfile;
+    my @statusfile;
+    for(my $i = 0; $i < @commands; $i++) {
+	    push(@stdoutfile, File::Spec->catfile($tmpdir, "out.$i"));
+	    push(@stderrfile, File::Spec->catfile($tmpdir, "err.$i"));
+	    push(@statusfile, File::Spec->catfile($tmpdir, "status.$i"));
     }
 
     {
 	    my $fh = new FileHandle "> $makefile";
-	    $rethash{error} = 1;
-	    return unless(defined $fh);
+	    unless(defined $fh) {
+		    print STDERR "Cannot create a temporary makefile '$makefile': $!\n";
+		    return %rethash;
+	    }
 	    print $fh "all : ";
 	    print $fh join(' ', @stdoutfile);
 	    print $fh "\n\n";
 	    for(my $i = 0; $i < @commands; $i++) {
+	        # removeIOTags() must run BEFORE the '$' escaping, otherwise the
+	        # $(I)/$(O) tags would turn into shell command substitutions.
+	        my $cmd = _make_escape(removeIOTags($commands[$i]));
 	        print $fh "$stdoutfile[$i] :\n";
-	        print $fh "\t$commands[$i] > $stdoutfile[$i]\n\n";
+	        # '-' so that make keeps going and every per-command exit status
+	        # really gets recorded in its own status file.
+	        print $fh "\t-$cmd > $stdoutfile[$i] 2> $stderrfile[$i]; echo \$\$? > $statusfile[$i]\n\n";
 	    }
 	    $fh->close();
     }
 
-    my $tgepath = `which tge_make`; chomp $tgepath;
-    my $commandline = "$tgepath -f $makefile -tgelock";
-    if(0) {
-	    print STDERR "\% $commandline\n";
-	} else {
-		system "$commandline -n";
-	}
+    my $tgepath = `which tge_make`;
+    $tgepath = '' unless(defined $tgepath);
+    chomp $tgepath;
+    unless($tgepath ne '' && -x $tgepath) {
+	    print STDERR "This function requires 'tge_make', which is not found on system.\n";
+	    print STDERR "Please check if TGE is properly installed and on PATH.\n";
+	    return %rethash;
+    }
+    my $commandline = _shell_quote($tgepath) . ' -f ' . _shell_quote($makefile) . ' -tgelock';
     $rethash{shellstdout} = `$commandline`;
     $rethash{shellerrorlevel} = $?;
 
     # print STDERR "ERRORLEVEL = $rethash{shellerrorlevel}\n";
 
     SETRETVAL: {
-	    if($?) {
-			print STDERR "ERROR CODE: $?\n";
+	    if($rethash{shellerrorlevel}) {
+			print STDERR "ERROR CODE: $rethash{shellerrorlevel}\n";
 			last;
 		}
 	    my @errorlevels;
-	    for(@commands) { push(@errorlevels, $rethash{shellerrorlevel}); } # tenuki
+	    for(my $i = 0; $i < @commands; $i++) {
+	        push(@errorlevels, _read_status($statusfile[$i]));
+	    }
 	    $rethash{errorlevels} = \@errorlevels;
 
-	    my @outs;
-	    for(my $i = 0; $i < @commands; $i++) {
-	        my $pfd2 = new FileHandle "< $stdoutfile[$i]";
-	        # print STDERR "OP:$stdoutfile[$i]\n";
-	        unless(defined $pfd2) {
-				push(@outs, []);
-			} else {
-	            print STDERR "FLOP:$stdoutfile[$i]\n";
-	        	my @outputstrings = <$pfd2>;
-	        	push(@outs, \@outputstrings);
-	        	$pfd2->close();
-			}
-	    }
-	    $rethash{stdouts} = \@outs;
+	    $rethash{stdouts} = _read_all_files(\@stdoutfile);
+	    $rethash{stderrs} = _read_all_files(\@stderrfile);
 
 	    $rethash{error} = 0;
         # print STDERR "NOERR\n";
     }
-    unlink $makefile;
-    for(my $i = 0; $i < @commands; $i++) {
-	    unlink $stdoutfile[$i];
-    }
     return %rethash;
+}
+
+# Read a per-command exit status file. A killed command may leave the file
+# empty; report that as a failure rather than as undef (which numeric
+# comparisons would silently treat as success).
+sub _read_status($)
+{
+    my $statusfile = shift;
+    open(my $fh, '<', $statusfile) or return -1;
+    my $line = <$fh>;
+    close $fh;
+    return -1 unless(defined $line);
+    chomp $line;
+    return -1 unless($line =~ /^-?\d+$/);
+    return $line + 0;
+}
+
+sub _read_all_files($)
+{
+    my $filesref = shift;
+    my @outs;
+    for my $f (@$filesref) {
+        if(open(my $fh, '<', $f)) {
+            my @lines = <$fh>;
+            close $fh;
+            push(@outs, \@lines);
+        } else {
+            push(@outs, []);
+        }
+    }
+    return \@outs;
 }
 
 sub removeIOTags($)
 {
 	my $cmdstr = shift;
+	return '' unless(defined $cmdstr);
 	$cmdstr =~ s/\$\([IO]\)//gi;
 	return $cmdstr;
 }
@@ -101,74 +196,78 @@ sub removeIOTags($)
 # parallel execution of given commands (for SMP/zsh environment)
 # returns hash.
 # $ret = parallelExecute_SMP(('command1', 'command2', 'command3'));
+#
+# At most _cpu_count() commands run at the same time; set the environment
+# variable PARALLELEXEC_MAXJOBS to override.
 sub parallelExecute_SMP(@)
 {
     my @commands = @_;
     my %rethash = ();
+    $rethash{error} = 1;
 
-    my $zshtemplate = 'tempXXXXX';
-    my (undef, $zshfile) = tempfile($zshtemplate, OPEN => 0);
-
-    my $zshpath = `which zsh`; chomp $zshpath;
-    unless(-x $zshpath) {
+    my $zshpath = `which zsh`;
+    $zshpath = '' unless(defined $zshpath);
+    chomp $zshpath;
+    unless($zshpath ne '' && -x $zshpath) {
 	    print STDERR "This script requires 'zsh', which is not found on system.\n";
 	    print STDERR "Please check if zsh is properly installed.\n";
 	    print STDERR "zsh must be on PATH environmental variable.\n";
 	    exit 1;
     }
 
-    my $stdouttemplate = 'tempsXXXXX';
+    # See the comment in parallelExecute_SGE() about the temporary directory.
+    my $tmpdirobj = File::Temp->newdir();
+    my $tmpdir    = "$tmpdirobj";
+
+    my $zshfile = File::Spec->catfile($tmpdir, 'parallelexec.zsh');
     my @stdoutfile;
-    my $statustemplate = 'tempeXXXXX';
+    my @stderrfile;
     my @statusfile;
-
-    for(@commands) {
-	    my (undef, $sofile) = tempfile($stdouttemplate, OPEN => 0);
-	    push(@stdoutfile, $sofile);
-	    my (undef, $stfile) = tempfile($statustemplate, OPEN => 0);
-	    push(@statusfile, $stfile);
-    }
-
-    open PARALLELEXEFH, ">$zshfile";
-    print PARALLELEXEFH "#!$zshpath\n";
     for(my $i = 0; $i < @commands; $i++) {
-	    my $cmd  = removeIOTags($commands[$i]);
-	    my $sout = $stdoutfile[$i];
-	    my $stat = $statusfile[$i];
-	    print PARALLELEXEFH "($cmd; print \$? > $stat) > $sout &\n";
+	    push(@stdoutfile, File::Spec->catfile($tmpdir, "out.$i"));
+	    push(@stderrfile, File::Spec->catfile($tmpdir, "err.$i"));
+	    push(@statusfile, File::Spec->catfile($tmpdir, "status.$i"));
     }
-    print PARALLELEXEFH "wait\n";
-    close PARALLELEXEFH;
 
-    $rethash{error} = 1;
-    $rethash{shellstdout} = `zsh $zshfile`;
+    my $maxjobs = _cpu_count();
+    {
+        open(my $wfh, '>', $zshfile) or do {
+            print STDERR "Cannot create a temporary script '$zshfile': $!\n";
+            return %rethash;
+        };
+        print $wfh "#!$zshpath\n";
+        for(my $i = 0; $i < @commands; $i++) {
+	        my $cmd  = removeIOTags($commands[$i]);
+	        my $sout = $stdoutfile[$i];
+	        my $serr = $stderrfile[$i];
+	        my $stat = $statusfile[$i];
+	        print $wfh "($cmd; print \$? > $stat) > $sout 2> $serr &\n";
+	        # Cap the number of simultaneous jobs; without this,
+	        # parallelExecute(@thousand_commands) forked 1000 processes at once.
+	        print $wfh "wait\n" if(($i + 1) % $maxjobs == 0 && $i + 1 < @commands);
+        }
+        print $wfh "wait\n";
+        unless(close $wfh) {
+            print STDERR "Cannot write a temporary script '$zshfile': $!\n";
+            return %rethash;
+        }
+    }
+
+    my $commandline = _shell_quote($zshpath) . ' ' . _shell_quote($zshfile);
+    $rethash{shellstdout} = `$commandline`;
     $rethash{shellerrorlevel} = $?;
     SETRETVAL: {
-	last if($?);
+	last if($rethash{shellerrorlevel});
 	my @errorlevels;
 	for(my $i = 0; $i < @commands; $i++) {
-	    open PARALLELEXEFH2, "<$statusfile[$i]" or last SETRETVAL;
-	    my $line = <PARALLELEXEFH2>; chomp $line;
-	    push(@errorlevels, $line);
-	    close PARALLELEXEFH2;
+	    push(@errorlevels, _read_status($statusfile[$i]));
 	}
 	$rethash{errorlevels} = \@errorlevels;
 
-	my @outs;
-	for(my $i = 0; $i < @commands; $i++) {
-	    open PARALLELEXEFH2, "<$stdoutfile[$i]" or last SETRETVAL;
-	    my @outputstrings = <PARALLELEXEFH2>;
-	    push(@outs, \@outputstrings);
-	    close PARALLELEXEFH2;
-	}
-	$rethash{stdouts} = \@outs;
+	$rethash{stdouts} = _read_all_files(\@stdoutfile);
+	$rethash{stderrs} = _read_all_files(\@stderrfile);
 
 	$rethash{error} = 0;
-    }
-    unlink $zshfile;
-    for(my $i = 0; $i < @commands; $i++) {
-	    unlink $stdoutfile[$i];
-	    unlink $statusfile[$i];
     }
     return %rethash;
 }
