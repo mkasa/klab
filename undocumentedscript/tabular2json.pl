@@ -4,7 +4,7 @@
 
 use strict;
 use warnings;
-use JSON;
+use JSON::PP;
 
 # Whether the current input file is a real TSV. Decided from its header line:
 # a TSV must be split on /\t/ with a -1 limit, otherwise empty cells collapse

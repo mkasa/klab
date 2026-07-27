@@ -2,7 +2,7 @@
 
 use strict;
 use warnings;
-use JSON;
+use JSON::PP;
 
 my $quaststats = [];
 my $current_alignment_frags = [];

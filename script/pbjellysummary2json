@@ -2,7 +2,7 @@
 
 use strict;
 use warnings;
-use JSON;
+use JSON::PP;
 
 # The section headers of a PBJelly summary, in the order in which they are
 # looked for, together with the JSON key each of them fills.
@@ -61,4 +61,4 @@ while(<>) {
 }
 
 # canonical() keeps the key order stable so that the output is reproducible.
-print JSON->new->canonical(1)->encode(\%result), "\n";
+print JSON::PP->new->canonical(1)->encode(\%result), "\n";

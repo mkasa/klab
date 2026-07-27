@@ -4,7 +4,7 @@
 
 use strict;
 use warnings;
-use JSON;
+use JSON::PP;
 
 sub split_header
 {
