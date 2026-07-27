@@ -44,6 +44,28 @@ $ ./configure --enable-perl
 
 You may need to be root for installing the Perl libraries.
 
+Dependencies
+------------
+The Python scripts are self-contained: each one starts with
+`#!/usr/bin/env -S uv run --script` and carries PEP 723 inline metadata, so
+[uv](https://docs.astral.sh/uv/) fetches what they need on first run and you
+have nothing to install.
+
+The Perl scripts do have external dependencies. There are two ways to get them:
+
+* `cpanfile` lists the non-core CPAN modules. Use it with
+  [Carton](https://metacpan.org/dist/Carton) (`carton install`, then
+  `carton exec -- ./script/...`) or with
+  [cpm](https://metacpan.org/dist/App-cpm) (`cpm install -L local`).
+* `environment.yml` is a conda/mamba environment (`conda env create -f
+  environment.yml`). This is usually the better choice, because in addition to
+  the Perl modules it also provides the **external binaries** the scripts shell
+  out to -- BLAST, blat, primer3, seqkit, jq, R, xz -- and a compiler toolchain
+  for building `fatt` and `sieve`. Carton and cpm cannot install those.
+
+Both files say in comments which script needs each entry, and which few
+dependencies cannot be satisfied from either source.
+
 List
 ----
 

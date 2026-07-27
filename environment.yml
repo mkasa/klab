@@ -1,0 +1,219 @@
+# environment.yml -- conda/mamba environment for building and running klab.
+#
+#     conda env create -f environment.yml     # or: mamba env create -f environment.yml
+#     conda activate klab
+#     ./waf configure && ./waf build && ./waf install
+#
+# This is the more practical of the two dependency files in this repository.
+# The cpanfile can only supply CPAN modules; this file supplies those AND the
+# external binaries the scripts shell out to (BLAST, blat, primer3, seqkit, jq,
+# R, xz, ...), which Carton and cpm cannot do.
+#
+# The Python scripts in script/ are NOT covered here and do not need to be: they
+# are self-contained via `#!/usr/bin/env -S uv run --script` plus PEP 723 inline
+# metadata, and uv fetches their dependencies on first run.  The `python` entry
+# below is only for waf, which is a Python program.
+#
+# Versions are floors, not pins -- nothing is constrained more tightly than the
+# scripts actually require.
+#
+# PLATFORM NOTE: bioconda's `blast`, `blast-legacy` and `blat` have no
+# osx-arm64 builds (linux-64 / osx-64 only, verified against the anaconda.org
+# API).  On Apple Silicon, create the environment with
+# `CONDA_SUBDIR=osx-64 conda env create -f environment.yml` to get x86_64 builds
+# under Rosetta, or drop those three entries if you do not need the BLAST/blat
+# scripts.
+
+name: klab
+
+channels:
+  # conda-forge before bioconda is the ordering bioconda itself requires.
+  - conda-forge
+  - bioconda
+
+dependencies:
+
+  # ---------------------------------------------------------------------------
+  # Build toolchain -- for waf building src/sieve.cc and src/fatt.cc
+  # ---------------------------------------------------------------------------
+  - c-compiler                # src/sqlite3.c (the SQLite amalgamation, built as C)
+  - cxx-compiler              # src/sieve.cc, src/fatt.cc, src/sqdb.cc
+  - zlib                      # wscript: conf.check_cxx(lib='z', header_name='zlib.h'); fatt links it
+  - python >=3.8              # waf itself; wscript does conf.check_python_version((3,8,0))
+
+  # ---------------------------------------------------------------------------
+  # Perl interpreter and modules
+  # ---------------------------------------------------------------------------
+  - perl >=5.32               # 5.32.1 is the newest conda-forge perl with osx-arm64 builds
+
+  # BioPerl.  Supplies Bio::Seq and Bio::SeqIO.
+  #   needed by: script/convertsequence, script/ispcr,
+  #              undocumentedscript/blastm8alignments2alignmentsummary.pl,
+  #              undocumentedscript/blastreport2dotplot.pl
+  # bioconda's perl-bioperl is a metapackage; 1.7.8 is noarch.
+  - perl-bioperl >=1.7.8
+
+  # Bio::Perl (the procedural facade).  Split out of BioPerl in the 1.7 series,
+  # so perl-bioperl does NOT pull it in -- it is absent from perl-bioperl's
+  # dependency list and from the perl-bioperl-core payload.
+  #   needed by: undocumentedscript/blastreport2dotplot.pl (only)
+  - perl-bio-procedural >=1.7.4
+
+  # XML::Parser
+  #   needed by: undocumentedscript/xmlex.pl (only)
+  - perl-xml-parser >=2.44
+
+  # PostScript::Simple and PostScript::Simple::EPS (one distribution, one package)
+  #   needed by: undocumentedscript/blastreport2dotplot.pl (only)
+  - perl-postscript-simple >=0.09
+
+  # cpanm, to hand-install the handful of Perl modules that conda does not
+  # package -- see the "NOT AVAILABLE FROM CONDA" section at the bottom.
+  - perl-app-cpanminus
+
+  # ---------------------------------------------------------------------------
+  # Sequence-analysis binaries
+  # ---------------------------------------------------------------------------
+
+  # Legacy NCBI BLAST: provides `formatdb`, `blastall`, `fastacmd`.
+  #   needed by: script/ispcr (formatdb / blastall -p blastn / fastacmd),
+  #              undocumentedscript/parablast.pl (blastall),
+  #              undocumentedscript/blastreport2dotplot.pl (formatdb)
+  # This is a separate package from `blast` below because the modern BLAST+
+  # suite dropped these three commands entirely.  If conda reports a file
+  # conflict between the two, install blast-legacy into its own environment and
+  # put it on PATH only for ispcr.
+  - blast-legacy >=2.2.26
+
+  # Modern BLAST+: provides `blastn`, `makeblastdb`, `blastdbcmd`.
+  #   needed by: undocumentedscript/blastreport2dotplot.pl (makeblastdb, blastn)
+  - blast >=2.12
+
+  # BLAT
+  #   needed by: undocumentedscript/parablat.pl,
+  #              undocumentedscript/blastreport2dotplot.pl (--blat mode)
+  - blat >=36
+
+  # primer3 -- provides `primer3_core`
+  #   needed by: undocumentedscript/Primer3.pm, undocumentedscript/primerdesign.pl
+  - primer3 >=2.6
+
+  # seqkit -- the scripts parse `seqkit stats` output rather than invoking it,
+  # but the output has to come from somewhere.
+  #   needed by: undocumentedscript/seqkitsstat2csv.pl,
+  #              undocumentedscript/seqkitstat2vds.pl
+  - seqkit >=2.0
+
+  # samtools -- OPTIONAL.  script/reduce_genome_feature does not call samtools;
+  # it parses a .fai index file, which is produced by `samtools faidx`.  Present
+  # here so that the --faidx input can be generated in the same environment.
+  - samtools >=1.15
+
+  # ---------------------------------------------------------------------------
+  # General-purpose command-line tools
+  # ---------------------------------------------------------------------------
+
+  # jq -- script/json2csv shells out to `jq -c keys` to discover column names
+  # (only when -c/--columns is not given).  It errors out with an explanatory
+  # message if jq is missing.
+  - jq >=1.6
+
+  # GNU parallel -- script/rep uses `sem` and `sem --wait`, NOT `parallel`.
+  # script/rep:301 documents why: Debian/Ubuntu's moreutils ships a rival
+  # `parallel` that has no `sem` at all.  The conda-forge package is real GNU
+  # parallel and does provide `sem`.
+  - parallel
+
+  # xz / gzip / bzip2 -- script/recompressbyxz declares
+  # REQUIRED_TOOLS = ["xz", "gzip", "bzip2"] and refuses to run without all three.
+  # It deliberately avoids `zcat` (Apple gzip's zcat behaves differently).
+  - xz
+  - gzip
+  - bzip2
+
+  # ---------------------------------------------------------------------------
+  # R -- OPTIONAL, only for script/plotr
+  # ---------------------------------------------------------------------------
+  # plotr generates an R script and execs `Rscript`.  The generated script calls
+  # pacman::p_load(tidyverse), pacman::p_load(gt) and pacman::p_load(ggplot2),
+  # and aborts with an explanatory message if pacman is not installed.
+  # Installing the R packages through conda avoids p_load trying to install them
+  # into a read-only library at runtime.  Drop this whole block if you do not
+  # use plotr -- r-tidyverse is a large dependency tree.
+  - r-base >=4.1
+  - r-pacman                  # plotr:320, the generated script's loader
+  - r-tidyverse               # plotr:324
+  - r-ggplot2                 # plotr:337 (also pulled in by r-tidyverse)
+  - r-gt                      # plotr:330, table rendering
+
+  # ---------------------------------------------------------------------------
+  # Development conveniences -- OPTIONAL
+  # ---------------------------------------------------------------------------
+  # GNU GLOBAL (gtags / global / htags).  Not used by any script at runtime; the
+  # repository is source-browsed with it (GTAGS/GRTAGS/GPATH are gitignored).
+  # NOTE the package name: conda-forge calls it `global`, not `gnu-global`.
+  # This repository used to carry a hand-written recipe under conda/gtags/; it
+  # was dropped in favour of the conda-forge package, which ships the same
+  # version and, unlike the local recipe, has an osx-arm64 build.
+  - global >=6.6.15
+
+  # git -- script/rep and script/cco drive git (rep also drives hg and svn,
+  # which are not listed; install them yourself if you use those backends).
+  - git
+
+
+# =============================================================================
+# NOT AVAILABLE FROM CONDA
+# =============================================================================
+#
+# Verified against the anaconda.org API on the conda-forge and bioconda
+# channels.  These have to come from CPAN, e.g.
+#
+#     cpanm Proc::PID::File
+#
+#   Proc::PID::File   -- no perl-proc-pid-file package on any channel.
+#                        Needed by script/mydaemon's daemon path only, and
+#                        loaded lazily (`eval { require Proc::PID::File; 1 }`),
+#                        so mydaemon still works without it.
+#
+#   Carton / App::cpm -- no perl-carton or perl-app-cpm package on any channel.
+#                        Use the bundled cpanm (above) if you want to install
+#                        the cpanfile's contents inside this environment:
+#                            cpanm --installdeps .
+#
+# =============================================================================
+# CANNOT BE SATISFIED AT ALL -- flagged, not fixed
+# =============================================================================
+#
+#   Bio::Seq::SeqWithQuality      RESOLVED -- no longer a dependency.
+#
+#     script/ispcr, undocumentedscript/blastm8alignments2alignmentsummary.pl and
+#     undocumentedscript/blastreport2dotplot.pl each carried a
+#     `use Bio::Seq::SeqWithQuality;` line.  The module was dropped from BioPerl
+#     after the 1.6 series and is packaged nowhere today, which would have forced
+#     this environment onto the legacy monolithic perl-bioperl 1.6.924 (linux-64 /
+#     osx-64 only, perl 5.22, incompatible with the `perl >=5.32` above).
+#
+#     All three imports were dead -- the module was named in the `use` line and
+#     never referenced anywhere else -- so the lines were removed.  The scripts
+#     run against current BioPerl and no pin is needed.
+#
+#   Bio::Tools::RestrictionEnzyme RESOLVED -- no longer a dependency.
+#
+#     Its only consumer was undocumentedscript/blastcsv2rflpmap.pl.  The module
+#     was removed from BioPerl before 1.6.924 and is 404 on MetaCPAN; its
+#     successors (Bio::Restriction::Analysis, Bio::Restriction::Enzyme) live in
+#     the bioperl/Bio-Restriction GitHub repository and have never been released
+#     to CPAN or packaged for conda, so the script could not be made to run
+#     without being ported.  The script was deleted instead.
+#
+#   TGEW                          used by undocumentedscript/ParallelExec.pm,
+#                                 parablast.pl, parablat.pl
+#
+#     A private grid-engine wrapper. Not in this repository, not on CPAN, not
+#     packaged. All three call sites already guard it with
+#     `eval { require TGEW; 1 }` and fall back, so it is intentionally omitted
+#     rather than listed as a dependency.
+#
+#     ParallelExec.pm additionally shells out to `tge_make` and `zsh`; tge_make
+#     is part of the same private toolchain and is likewise not listed.

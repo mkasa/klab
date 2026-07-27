@@ -51,6 +51,9 @@ sub tgewIsInstalled {
 
 # ParallelExec.pm may pull in TGEW.pm, so loading it can fail on a plain
 # checkout. Load it lazily so that we can say what went wrong.
+#
+# NOTE: 'require' (unlike 'use') never calls import(), so nothing is imported
+#       from ParallelExec here; its subs are called fully qualified below.
 unless(eval { require ParallelExec; 1 }) {
     my $loaderror = $@;
     print STDERR "ERROR: cannot load ParallelExec.pm\n";
@@ -321,7 +324,7 @@ EXECUTEBLASTINPARALLEL: {
 	        print STDERR "  $_\n";
 	    }
 	}
-    my %retobj = parallelExecute(@commandlines);
+    my %retobj = ParallelExec::parallelExecute(@commandlines);
     if($retobj{error}) {
 	    $errorHasOccured = "Parallel execution of BLAST failed";
 	    last;

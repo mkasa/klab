@@ -7,7 +7,6 @@ use PostScript::Simple;
 use PostScript::Simple::EPS;
 use Bio::Perl;
 use Bio::Seq;
-use Bio::Seq::SeqWithQuality;
 use Bio::SeqIO;
 use Getopt::Long;
 use Pod::Usage;
