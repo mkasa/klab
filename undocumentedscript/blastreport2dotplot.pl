@@ -1,6 +1,7 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 
 use PostScript::Simple;
 use PostScript::Simple::EPS;
@@ -14,8 +15,11 @@ use Pod::Usage;
 my $ratio = 0.00001;
 my $xbias = 2.0;
 my $ybias = 2.0;
-my $dx = 0.0; # image is rotated, so dx means vertical difference
-my $dy = 2.0; # dy means horizontal difference
+# -dx / -dy are given in the coordinate system of the *final* image.
+# When the image is drawn in landscape mode it is rotated by 90 degrees,
+# so the two axes have to be swapped before they are applied (see below).
+my $opt_dx = 2.0;
+my $opt_dy = 0.0;
 my $max_number_of_matched_alignment = 2147483646;
 my $gaugestep    =  50000; #  50kbp
 my $biggaugestep = 100000; # 100kbp
@@ -41,8 +45,8 @@ my $matchthreshold = 70;
 GetOptions( 'ratio=f' => \$ratio,
 	    'xbias=f' => \$xbias,
 	    'ybias=f' => \$ybias,
-	    'dx=f' => \$dy,
-	    'dy=f' => \$dx,
+	    'dx=f' => \$opt_dx,
+	    'dy=f' => \$opt_dy,
 	    'gstep=i' => \$gaugestep,
 	    'bgstep=i' => \$biggaugestep,
 	    'matchthres=i' =>\$matchthreshold,
@@ -67,10 +71,42 @@ my $assembly          = shift;
 my $blastreport       = shift;
 my $outputepsprefix   = shift;
 
-$flag_help = 1 if($genome eq '' or $assembly eq '' or $blastreport eq '' or $outputepsprefix eq '');
+sub isempty { my $s = shift; return (!defined $s || $s eq ''); }
+
+$flag_help = 1 if(isempty($genome) or isempty($assembly) or isempty($blastreport) or isempty($outputepsprefix));
 
 pod2usage(1) if $flag_help;
-pod2usage(-verbose => 2) if $flag_man; 
+pod2usage(-verbose => 2) if $flag_man;
+
+# The gauge steps are used both as a loop increment and as a modulus,
+# so a non-positive value would loop forever / die with "Illegal modulus zero".
+if($gaugestep <= 0) {
+    print STDERR "-gstep must be a positive integer (got $gaugestep)\n";
+    exit 1;
+}
+if($biggaugestep <= 0) {
+    print STDERR "-bgstep must be a positive integer (got $biggaugestep)\n";
+    exit 1;
+}
+
+# The internal drawing code always works in the unrotated coordinate system.
+# In landscape mode the resulting image is rotated by 90 degrees, so the
+# user supplied -dx/-dy have to be swapped; without rotation they are used
+# as they are.
+my ($dx, $dy);
+if($flag_nolandscape) {
+    ($dx, $dy) = ($opt_dx, $opt_dy);
+} else {
+    ($dx, $dy) = ($opt_dy, $opt_dx);
+}
+
+# Quote a string so that it can safely be used as a single shell word.
+sub shellquote {
+    my $s = shift;
+    $s = '' unless(defined $s);
+    $s =~ s/'/'\\''/g;
+    return "'$s'";
+}
 
 unless(-e "$blastreport"){
     print STDERR "Can not found BLAST report file '$blastreport' \n";
@@ -79,10 +115,9 @@ unless(-e "$blastreport"){
 	print STDERR "Will try to create MegaBLAST report\n\n";
 	unless(-e "${genome}.nhr" && -e "${genome}.nsq" && -e "${genome}.nin"){
 	    print STDERR "Creating Database\n";
-	    my $createdbcmd = "makeblastdb -dbtype nucl -in $genome -out $genome";
-	    print STDERR "% $createdbcmd\n";
-	    `$createdbcmd`;
-	    if($? > 0) {
+	    my @createdbcmd = ('makeblastdb', '-dbtype', 'nucl', '-in', $genome, '-out', $genome);
+	    print STDERR "% ", join(' ', map { shellquote($_) } @createdbcmd), "\n";
+	    if(system(@createdbcmd)) {
 		print STDERR "Error occured while formatdb. Abort.\n";
 		exit 1;
 	    }
@@ -90,10 +125,12 @@ unless(-e "$blastreport"){
 	    print STDERR "Already createdbed\n";
 	}
 	print STDERR "Mega BLASTing...\n";
-	my $blastcmdline = "blastn -db $genome -query $assembly -evalue 1e-4 -perc_identity 93 -outfmt 7 -out $blastreport -num_threads 16";
-	print STDERR "% $blastcmdline\n";
-	`$blastcmdline`;
-	if($? > 0) {
+	my @blastcmdline = ('blastn', '-db', $genome, '-query', $assembly,
+			    '-evalue', '1e-4', '-perc_identity', '93',
+			    '-outfmt', '7', '-out', $blastreport,
+			    '-num_threads', $numcpu);
+	print STDERR "% ", join(' ', map { shellquote($_) } @blastcmdline), "\n";
+	if(system(@blastcmdline)) {
 	    print STDERR "Error occured while BLASTing. Abort.\n";
 	    exit 1;
 	}
@@ -101,22 +138,22 @@ unless(-e "$blastreport"){
     } elsif($flag_useblat) {
 	print STDERR "'$blastreport' is not found, but -blat option is specified\n";
 	print STDERR "Will try to create MegaBLAST report by BLAT\n\n";
-	my $cmdline;
+	my @cmdline;
 	if($numcpu == 1) {
-	    $cmdline = "blat -out=blast9 -extendThroughN";
+	    @cmdline = ('blat', '-out=blast9', '-extendThroughN');
 	} else {
-	    $cmdline = "parablat.pl -numcpu=$numcpu -- -out=blast9 -extendThroughN";
+	    @cmdline = ('parablat.pl', "-numcpu=$numcpu", '--', '-out=blast9', '-extendThroughN');
 	}
 	if($fastMap) {
-	    $cmdline .= " -fastMap";
+	    push(@cmdline, '-fastMap');
 	}
 	if($tileSize > 0) {
-	    $cmdline .= " -tileSize=$tileSize";
+	    push(@cmdline, "-tileSize=$tileSize");
 	}
-	$cmdline .= " $genome $assembly $blastreport";
-	print STDERR "Execute : $cmdline\n" if($debug);
-	if(system "$cmdline") {
-	    die "Could not execute blat($cmdline)\n";
+	push(@cmdline, $genome, $assembly, $blastreport);
+	print STDERR "Execute : ", join(' ', map { shellquote($_) } @cmdline), "\n" if($debug);
+	if(system(@cmdline)) {
+	    die "Could not execute blat(" . join(' ', map { shellquote($_) } @cmdline) . ")\n";
 	}
     } else {
 	exit 2;
@@ -162,14 +199,9 @@ my %scaffold_length;
 # for use in figure mode 2
 my $flinestep = 10000;
 
-# color table
-#          0    1    2    3    4    5    6    7    8    9   10   11   12    13    14   ext,  oth
-my @r = (  0,   0, 255, 255,   0, 255, 128, 128,   0, 128, 255, 128,   0,  255,  128,  255,    0);
-my @g = (  0, 255, 255,   0, 255, 128, 128,   0, 128, 255, 128,   0, 255,  128,  255,    0,    0);
-my @b = (255,   0,   0, 255, 255, 128,   0, 128, 255, 128,   0, 255, 128,  255,    0,    0,    0);
-my $maxnormalcolor = 14;
-my $extcolor = 15;
-my $othcolor = 16;
+# colour used to draw a match (the old colour table had 17 entries but only
+# this one was ever used)
+my @matchcolour = (255, 128, 128);
 
 # map<string, vector<BlastMatch* >* > matches;
 my %matches;
@@ -179,20 +211,33 @@ my %matches;
 
 {
         print STDERR "Parsing BLAST report...\n";
-	open FH, "$blastreport" or die "Cannot open megaBLAST report '$blastreport'";
+	open(FH, '<', $blastreport) or die "Cannot open megaBLAST report '$blastreport': $!";
 	my $num = 0;
 	my $pushednum = 0;
+	my $numunknownquery = 0;
 	my @array;
 	while(<FH>){
 	    chomp;
 	    next if(/^#/ or /^$/);
 	    my %br = parseblastresult($_);
-	    my $subjectID = $br{sid};
+	    unless(defined $br{qid} && defined $br{sid} && defined $br{alignlen}) {
+		print STDERR "WARNING: skipping malformed BLAST report line: $_\n";
+		next;
+	    }
+	    unless(defined $scaffold_length{$br{qid}}) {
+		$numunknownquery++;
+		$num++;
+		next;
+	    }
 	    if ($br{'alignlen'} >= $matchthreshold && $scaffold_length{$br{qid}} >= $scaffoldcutofflength) {
 		push(@array , { %br } );
 		# push(@${$matches{$subjectID}}, { %br } );
 	    }
 	    $num++;
+	}
+	if($numunknownquery > 0) {
+	    print STDERR "WARNING: $numunknownquery hit(s) had a query ID that is not present in '$assembly'.\n";
+	    print STDERR "         Those hits were ignored. Check that the BLAST report matches the FASTA files.\n";
 	}
 
 	@array = sort { $b->{alignlen} <=> $a->{alignlen} } @array;
@@ -223,6 +268,7 @@ my %matches;
 }
 
 # Draw EPS
+my $numdrawingerrors = 0;
 {
         print STDERR "Drawing eps ...\n";
         # for(map::iter i = matches.begin(); i != matches.end(); i++){
@@ -230,6 +276,17 @@ my %matches;
 	    # print "  Output $key\n";
 	    # value : *vector<BlastMatch>
 	    my $matcharray = $$value;
+
+	    # The subject ID taken from the BLAST report must name a sequence of
+	    # the genome FASTA. If it does not, every length below would be undef
+	    # and we would silently emit an EPS of zero height.
+	    unless(defined $chromosome_length{$key}) {
+		print STDERR "ERROR: subject ID '$key' in '$blastreport' does not match any sequence name in '$genome'.\n";
+		print STDERR "       (the FASTA display IDs are compared verbatim, except for a trailing '|')\n";
+		print STDERR "       No plot is drawn for this subject.\n";
+		$numdrawingerrors++;
+		next;
+	    }
 
             # map<string/*scaffold name*/, int/*x-axis offset*/> xoffset;
             my %xoffset;
@@ -378,9 +435,13 @@ my %matches;
 	    # Vertical gauge
 	    # Draw the gauge of Chromosome axis
 	    $p->setcolour(0, 0, 0);
+	    # The plotted data is anchored at the bottom of the picture
+	    # ($_->{sstart} * $ratio + $ybias), so the gauge has to grow upwards
+	    # from $ybias as well; otherwise tick k would be labelled
+	    # chrlen - k*gaugestep instead of k*gaugestep.
 	    for(my $base = 0; ; $base += $gaugestep){
-		my $y = $maxy - $base * $ratio;
-		last if($ybias > $y);
+		my $y = $ybias + $base * $ratio;
+		last if($y > $maxy);
 		if($base % $biggaugestep == 0){
 		    $p->setlinewidth(0.08);
 		    $p->line($xbias +$dx, $y +$dy, $xbias * 0.8 +$dx, $y +$dy);
@@ -395,8 +456,6 @@ my %matches;
 	    my $fline     = 0;
 	    foreach( @$matcharray ){
 		# $_ = *BlastMatch
-		my $matchlen = $_->{qend} - $_->{qstart};
-		$matchlen = -$matchlen if($matchlen < 0);
 		my $xoff = $xoffset{$_->{qid}};
 		if($xoff != -1) {
 		    my $sx = ($_->{qstart} + $xoff) * $ratio + $xbias;
@@ -405,7 +464,7 @@ my %matches;
 		    my $ey =  $_->{send}            * $ratio + $ybias;
 		    my $scaffoldLineWidthThick = 8000;
 		    my $scaffoldLineWidthThin = 400;
-		    $p->setcolour($r[5], $g[5], $b[5]);
+		    $p->setcolour(@matchcolour);
 		    $p->setlinewidth($scaffoldLineWidthThick * $ratio);
 		    $p->line($sx +$dx, $sy +$dy, $ex +$dx, $ey +$dy);
 		    
@@ -456,25 +515,44 @@ my %matches;
 		      $maxy * 0.2 - $biggaugey * 0.5 - $ybias * 0.2 +$dy,
 		      "${kbps}kbp");
 	    
- 	    my $outputepsfilename = "$outputepsprefix.$key.eps";
- 	    $outputepsfilename =~ s/\|/-/g;
+	    # The subject ID becomes a part of the file name, so every character
+	    # that could escape the intended directory (or is simply hostile to a
+	    # file system) has to be replaced. Only the ID is sanitized; the
+	    # user-supplied prefix may legitimately contain a directory.
+	    my $sanitizedkey = $key;
+	    $sanitizedkey =~ s/[^A-Za-z0-9._-]/-/g;
+ 	    my $outputepsfilename = "$outputepsprefix.$sanitizedkey.eps";
  	    $p->output("$outputepsfilename");
+	    unless(-s $outputepsfilename) {
+		print STDERR "ERROR: could not write the EPS file '$outputepsfilename'.\n";
+		print STDERR "       Check that the output directory exists and is writable.\n";
+		$numdrawingerrors++;
+		next;
+	    }
 
 	    print STDERR "Drawing has fished $outputepsfilename\n" if($debug);
-	    
-	    &FixEPSFile($outputepsfilename) if (!$flag_nolandscape);
+
+	    unless($flag_nolandscape) {
+		$numdrawingerrors++ unless(&FixEPSFile($outputepsfilename));
+	    }
         }
         # }
 }
 
+if($numdrawingerrors > 0) {
+    print STDERR "$numdrawingerrors error(s) occured while drawing. See the messages above.\n";
+    exit 1;
+}
+
 sub parseblastresult {
     my $line = shift;
-    my @args = split(/\t/);
+    $line = '' unless(defined $line);
+    my @args = split(/\t/, $line);
     my %rval;
     $rval{'qid'}      = $args[ 0]; # Query ID
-    chop $rval{'qid'} if($rval{'qid'} =~ /\|$/);
+    chop $rval{'qid'} if(defined $rval{'qid'} && $rval{'qid'} =~ /\|$/);
     $rval{'sid'}      = $args[ 1]; # Subject ID
-    chop $rval{'sid'} if($rval{'sid'} =~ /\|$/);
+    chop $rval{'sid'} if(defined $rval{'sid'} && $rval{'sid'} =~ /\|$/);
     $rval{'identity'} = $args[ 2]; # Identity
     $rval{'alignlen'} = $args[ 3]; # Alignment length
     $rval{'mismatch'} = $args[ 4]; # Number of mismatch
@@ -488,19 +566,27 @@ sub parseblastresult {
     return %rval;
 }
 
+# Rewrites the '<x> <y> translate' operand of the /landscape procedure so that
+# the rotated page is shifted by the width taken from %%BoundingBox.
+# Returns true on success, false (with a diagnostic) on failure.
+# The file is only ever rewritten after it has been read completely; a failing
+# read must never truncate the freshly drawn EPS.
 sub FixEPSFile{
     my $filename = shift;
-    my $IN;
-    my $OUT;
-    my $buffer;
+    my $buffer = '';
     my $xsize;
     my $ysize;
-    
+
     print STDERR "Fixing EPS file $filename\n" if ($debug);
-    open(IN, "<$filename");
+    unless(open(IN, '<', $filename)) {
+	print STDERR "ERROR: cannot open EPS file '$filename' for reading ($!).\n";
+	print STDERR "       The file is left untouched.\n";
+	return 0;
+    }
     while(<IN>){
 	$buffer = $buffer . $_;
-	if($_ =~ m/^%%BoundingBox:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+).*/){
+	# %%BoundingBox operands are integers by specification, but be lenient.
+	if($_ =~ m/^%%BoundingBox:\s+([-+]?[\d.]+)\s+([-+]?[\d.]+)\s+([-+]?[\d.]+)\s+([-+]?[\d.]+)/){
 	    $xsize = $3;
 	    $ysize = $4;
 	    print STDERR "Filesize is detected.\n" if ($debug);
@@ -508,16 +594,36 @@ sub FixEPSFile{
 	}
 	elsif($_ =~ m/^\/landscape\s+.+/){
 	    my $tmp = <IN>;
+	    unless(defined $tmp) {
+		print STDERR "WARNING: '$filename' ends right after /landscape; nothing to fix up.\n";
+		last;
+	    }
 	    print STDERR "$tmp" if($debug);
-	    $tmp =~ s/^\s+(\d+)\s+(\d+)\s+translate(.*)/ $xsize $2 translate$3/g;
+	    if(!defined $xsize) {
+		print STDERR "WARNING: no %%BoundingBox seen before /landscape in '$filename';\n";
+		print STDERR "         the landscape offset was left as it is.\n";
+	    } else {
+		# The operands may well be fractional (e.g. '  595.2 0 translate').
+		unless($tmp =~ s/^(\s*)[-+]?[\d.]+\s+([-+]?[\d.]+)\s+translate/$1$xsize $2 translate/) {
+		    print STDERR "WARNING: could not find the 'translate' operands after /landscape\n";
+		    print STDERR "         in '$filename'; the landscape offset was left as it is.\n";
+		}
+	    }
 	    print STDERR "$tmp" if($debug);
 	    $buffer = $buffer . $tmp;
 	}
     }
     close(IN);
-    open(OUT,">$filename");
+    unless(open(OUT, '>', $filename)) {
+	print STDERR "ERROR: cannot open EPS file '$filename' for writing ($!).\n";
+	return 0;
+    }
     print OUT $buffer;
-    close(OUT);
+    unless(close(OUT)) {
+	print STDERR "ERROR: could not write '$filename' ($!).\n";
+	return 0;
+    }
+    return 1;
 }
 
 __END__
@@ -545,7 +651,7 @@ Set a scale of base pairs. -ratio=0.01 means 1pt corresponds to 100bp.
 =item B<-matchthres>
 
 Discards BLAST matches whose match ratio is less than specified value. 
-B<-matchthres=200> will discards mathes less than 200bp. The default value is set to 300bp.
+B<-matchthres=200> will discards mathes less than 200bp. The default value is set to 70bp.
 
 =item B<-scaffoldcutoff>
 

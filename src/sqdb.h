@@ -51,6 +51,16 @@
 namespace sqdb
 {
 
+// Some conversions below are dangerous unless the caller knows what it is
+// doing; make them explicit when the compiler is new enough to support it.
+#if defined(SQDB_NO_EXPLICIT_CONVERSION)
+#  define SQDB_EXPLICIT_CONVERSION
+#elif (defined(__cplusplus) && __cplusplus >= 201103L) || (defined(_MSC_VER) && _MSC_VER >= 1800)
+#  define SQDB_EXPLICIT_CONVERSION explicit
+#else
+#  define SQDB_EXPLICIT_CONVERSION
+#endif
+
 class Exception
 {
 public:
@@ -60,31 +70,75 @@ public:
 
   Exception(const SQDB_CHAR* errorMsg);
 
+  // Exception owns m_errorMsg, so it needs a deep copy (rule of three).
+  // Copying used to hand the same pointer to two objects, both of which
+  // free()d it (double free) -- e.g. 'catch (sqdb::Exception e)' by value or
+  // a 'throw e;' re-throw.
+  Exception(const Exception& x);
+  Exception& operator=(const Exception& x);
+
   ~Exception();
 
   int GetErrorCode() const;
 
+  // Never returns NULL; returns an empty string if no message is available.
   const SQDB_CHAR* GetErrorMsg() const;
 private:
   int m_errorCode;
   SQDB_CHAR* m_errorMsg;
 };
 
-#define CHECK(db, returnCode) \
-  if ( (returnCode) != SQLITE_OK ) throw Exception(db, returnCode) 
+// NOTE: wrapped in do { } while (0) so that
+//   if (cond) CHECK(db, rc); else foo();
+// keeps the 'else' attached to the caller's 'if'.  returnCode is evaluated
+// exactly once.
+#define CHECK(db, returnCode)                                        \
+  do {                                                               \
+    const int sqdb_check_return_code_ = (returnCode);                \
+    if ( sqdb_check_return_code_ != SQLITE_OK )                      \
+      throw ::sqdb::Exception(db, sqdb_check_return_code_);          \
+  } while (0)
 
+// Intrusive reference counter shared by the handle wrappers below.
+//
+// The counted resource itself is owned by the derived class, so the derived
+// class must release it when the last reference goes away.  For assignment
+// use Reassign(), which drops the reference to the old counter and takes a
+// reference to x's counter in one step and tells the caller whether it has
+// to release the resource it used to share.  A derived operator= must look
+// like:
+//
+//   Derived& Derived::operator=(const Derived& x)
+//   {
+//     if ( this != &x ) {
+//       Resource* const old = m_resource;          // remember
+//       const bool releaseOld = Reassign(x);       // re-bind the counter
+//       m_resource = x.m_resource;                 // adopt
+//       if ( releaseOld ) Release(old);            // free the old one
+//     }
+//     return *this;
+//   }
 class RefCount
 {
 protected:
   RefCount();
 
   RefCount(const RefCount& x);
-  RefCount& operator=(const RefCount& x);
+
+  // Drops the reference to the current counter and takes a reference to
+  // x's counter.  Returns true iff this object held the *last* reference to
+  // the previous counter, i.e. the caller must now release the resource that
+  // counter was guarding.  Safe when *this and x already share a counter.
+  bool Reassign(const RefCount& x);
 
   void IncRef();
   unsigned DecRef();
 
 private:
+  // Not implemented on purpose: it cannot tell the derived class that the
+  // previously shared resource has to be released.  Use Reassign() instead.
+  RefCount& operator=(const RefCount& x);
+
   unsigned* m_refCount;
 };
 
@@ -115,13 +169,23 @@ public:
   operator long long() const;
   operator double() const;
   operator SQDB_STD_STRING() const;
-  operator const SQDB_CHAR*() const;
+  // DANGEROUS, see GetText() below.  Explicit (when the compiler supports it)
+  // so that it cannot be picked up by accident.
+  SQDB_EXPLICIT_CONVERSION operator const SQDB_CHAR*() const;
   operator Blob() const;
 
   int GetInt() const;
   long long GetLongLong() const;
   double GetDouble() const;
+  // Returns an empty string when the column is SQL NULL.
   SQDB_STD_STRING GetString() const;
+  // !!! DANGER !!!  The returned pointer belongs to SQLite, NOT to the caller.
+  // It is invalidated by the next sqlite3_step()/reset()/finalize() on the
+  // statement (i.e. by Statement::Next(), Statement::Bind(), or the
+  // destruction of the Statement) and even by converting *another* column of
+  // the same row to a different type.  Copy it into a SQDB_STD_STRING (see
+  // GetString()) if it has to outlive the current row.  May return NULL when
+  // the column is SQL NULL.
   const SQDB_CHAR* GetText() const;
   Blob GetBlob() const;
 
@@ -145,7 +209,7 @@ public:
   template<class T>
   void Bind(int i, const T& value)
   {
-    if ( m_needReset ) 
+    if ( *m_needReset )
       Reset();
     DoBind(i, value);
   }
@@ -173,13 +237,21 @@ private:
 
   sqlite3* m_db;
   sqlite3_stmt* m_stmt;
-  bool m_needReset;
+  // The "a value has been bound and the statement has been stepped, so it must
+  // be reset before the next bind" state belongs to the sqlite3_stmt, not to
+  // an individual Statement handle, so every copy has to see the same flag.
+  bool* m_needReset;
 };
 
 class QueryStr
 {
 public:
   QueryStr();
+
+  // QueryStr owns m_buf, so it needs a deep copy (rule of three); copying it
+  // used to double-free the sqlite-allocated buffer.
+  QueryStr(const QueryStr& x);
+  QueryStr& operator=(const QueryStr& x);
 
   const SQDB_CHAR* Format(const SQDB_CHAR* fmt, ...);
 
@@ -188,6 +260,9 @@ public:
   ~QueryStr();
 
 private:
+  static SQDB_CHAR* CloneBuf(const SQDB_CHAR* buf);
+  static void FreeBuf(SQDB_CHAR* buf);
+
   SQDB_CHAR* m_buf;
 };
 

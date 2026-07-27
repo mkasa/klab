@@ -1,6 +1,7 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 
 use Getopt::Long;
 use Pod::Usage;
@@ -8,22 +9,24 @@ use Pod::Usage;
 my $flag_man     = 0;
 my $flag_help    = 0;
 my $flag_do      = 0;
+my $flag_force   = 0;
 my $debug        = 0;
 
 GetOptions( 'help|?'  => \$flag_help,
 	    'man'     => \$flag_man,
 	    'debug'   => \$debug,
 	    'do'      => \$flag_do,
+	    'force'   => \$flag_force,
 	    ) or pod2usage(2);
 pod2usage(1) if $flag_help;
-pod2usage(-verbose => 2) if $flag_man; 
+pod2usage(-verbose => 2) if $flag_man;
 
 my $expr = shift;
 my $to   = shift;
 
-$expr = "^$expr\$";
-
-if($expr eq '' || $to eq '') {
+# NOTE: the guard must come BEFORE the anchoring, otherwise "^$expr\$" is
+#       never the empty string and the 'no source pattern given' check is dead.
+if(!defined $expr || $expr eq '' || !defined $to || $to eq '') {
     print STDERR " usage: renameregex.pl [options...] <from expr> <toexpr>\n\n";
     print STDERR "   Quote by \"'\" in order not to expand regular expression by your shell.\n";
     print STDERR "   For safety, you have to add -do option to actually execute renaming.\n";
@@ -33,29 +36,118 @@ if($expr eq '' || $to eq '') {
     exit 1;
 }
 
+my $anchored_expr = "^$expr\$";
+# Compile the source pattern up front so that a bad pattern is reported
+# with a friendly message instead of blowing up at the first match.
+my $compiled_expr = eval { qr/$anchored_expr/ };
+unless(defined $compiled_expr) {
+    my $errmsg = $@;
+    $errmsg = '' unless(defined $errmsg);
+    $errmsg =~ s/\s+\z//;
+    print STDERR "Invalid source regular expression '$expr'\n";
+    print STDERR "  $errmsg\n" if($errmsg ne '');
+    exit 1;
+}
+
+# Expand $1..$9 / ${1}..${nn} in the replacement string.
+#
+# SECURITY: the replacement used to be interpolated into a string that was
+#           then eval'ed as Perl source, so a replacement such as
+#           '$1.html/; system("rm -rf /"); #' executed arbitrary code - and it
+#           did so even without -do, i.e. in the mode documented as safe.
+#           Nothing here is eval'ed and no shell is involved.
+sub expand_replacement($$)
+{
+    my ($template, $groupsref) = @_;
+    my $out = $template;
+    $out =~ s{ \\(.) | \$\{([1-9][0-9]*)\} | \$([1-9]) }
+             { defined $1 ? $1 : group_value($groupsref, defined $2 ? $2 : $3) }gex;
+    return $out;
+}
+
+sub group_value($$)
+{
+    my ($groupsref, $n) = @_;
+    return '' if($n < 1 || $n > @$groupsref);
+    my $v = $groupsref->[$n - 1];
+    return defined $v ? $v : '';
+}
+
+# Quote a string so that the printed 'mv' command can actually be run.
+sub shell_quote($)
+{
+    my $s = shift;
+    return "''" unless(defined $s && $s ne '');
+    return $s if($s =~ m|^[A-Za-z0-9_./-]+$|);
+    $s =~ s/'/'\\''/g;
+    return "'" . $s . "'";
+}
+
 my @files = ((glob "*"), (glob ".*"));
-my $count = 0;
+my @plan;
 for my $file (@files) {
-    if($file =~ /$expr/) {
-	my $newfname = $file;
-	eval "\$newfname =~ s/\$expr/$to/;";
-	if($@) {
-	    die "Invalid regular expression '$expr' or '$to'";
-	}
-	print "mv $file\t$newfname\n";
-	if($flag_do) {
-	    if(rename($file, $newfname)) {
-		$count++;
-	    } else {
-		print STDERR "Failed to mv $file\t$newfname\n";
-	    }
-	}
+    next if($file eq '.' || $file eq '..');   # glob ".*" returns these too
+    next unless($file =~ $compiled_expr);
+    my @groups;
+    for(my $n = 1; $n < scalar(@-); $n++) {
+	push(@groups, defined $-[$n] ? substr($file, $-[$n], $+[$n] - $-[$n]) : undef);
+    }
+    my $newfname = expand_replacement($to, \@groups);
+    print STDERR "DEBUG: '$file' -> '$newfname'\n" if($debug);
+    push(@plan, [$file, $newfname]);
+}
+
+# Refuse to destroy data: check the whole batch before touching anything.
+my @problems;
+my %destination_count;
+for my $p (@plan) {
+    $destination_count{$p->[1]}++;
+}
+for my $p (@plan) {
+    my ($file, $newfname) = @$p;
+    if($newfname eq '') {
+	push(@problems, "'$file' would be renamed to an empty name");
+	next;
+    }
+    if($destination_count{$newfname} > 1) {
+	push(@problems, "several files would be renamed to '$newfname'");
+	next;
+    }
+    if($newfname ne $file && -e $newfname) {
+	push(@problems, "'$newfname' already exists (would be overwritten by '$file')");
     }
 }
-unless($flag_do) {
-    print STDERR "\nIf you are satisfied with the renaming commands shown above,\njust add -do option to actually execute renaming\n\n";
-} else {
+{
+    my %seen;
+    @problems = grep { !$seen{$_}++ } @problems;
+}
+
+for my $p (@plan) {
+    my ($file, $newfname) = @$p;
+    print "mv ", shell_quote($file), " ", shell_quote($newfname), "\n";
+}
+
+if(@problems && !$flag_force) {
+    print STDERR "\nERROR: refusing to rename anything because:\n";
+    print STDERR "  - $_\n" for(@problems);
+    print STDERR "Nothing has been renamed. Add --force if you really mean to overwrite.\n\n";
+    exit 1;
+}
+
+my $count = 0;
+if($flag_do) {
+    for my $p (@plan) {
+	my ($file, $newfname) = @$p;
+	next if($newfname eq $file);
+	if(rename($file, $newfname)) {
+	    $count++;
+	} else {
+	    print STDERR "Failed to mv ", shell_quote($file), " ", shell_quote($newfname), " : $!\n";
+	}
+    }
     print "$count file(s) renamed\n";
+} else {
+    print STDERR "\nIf you are satisfied with the renaming commands shown above,\njust add -do option to actually execute renaming\n\n";
 }
 
 =pod
@@ -70,6 +162,7 @@ renameregex.pl [options..] <Source regexp> <Dest regexp>
 
 Options:
    -do              actually execute renaming commands
+   -force           allow overwriting existing files / colliding destinations
    -help            brief help message
    -man             full documentation
 
@@ -82,6 +175,13 @@ Options:
 Without -do option, renameregex.pl will just print out the series of 'mv' commands.
 This is for design because we often give a wrong regular expression that may destroy many files.
 -do option must be added only when you are satisfied with the series of commands shown.
+Without -do nothing on disk is touched at all.
+
+=item B<-force>
+
+By default renameregex.pl refuses to run (even with -do) when a destination
+file already exists, or when two source files would be renamed to the same
+name, because either would silently destroy data. -force disables that check.
 
 =item B<-help>
 

@@ -1,13 +1,11 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 
 use Getopt::Long;
 use Pod::Usage;
 use XML::Parser;
-use File::stat;
-use DBI;
-# also DBD::SQLite is nececcary.
 
 my $flag_man            = 0;
 my $flag_help           = 0;
@@ -33,28 +31,51 @@ pod2usage(-verbose => 2) if $flag_man;
 my $search_pattern = shift;
 my $input_filename = shift;
 
-if(($search_pattern eq '' && !$flag_index) || $input_filename eq '') {
+sub isempty { my $s = shift; return (!defined $s || $s eq ''); }
+
+if((isempty($search_pattern) && !$flag_index) || isempty($input_filename)) {
     print STDERR "usage: xmlex.pl [options] <pattern> <input XML>\n";
     print STDERR "See perldoc for details\n";
     exit 1;
 }
+$search_pattern = '' unless(defined $search_pattern);
 $flag_xml = 1 if($flag_newline);
 
 my $pattern_nodename;
 my @pattern_attributeconstraint;
 my $hasMatchedSomething = 0;
 if($search_pattern ne '') {
-    if($search_pattern =~ /^([^@]+)(@(.*))?$/) {
+    # <tagname>[@<constraint>[,<constraint>...]]
+    # A second '@' is a syntax error, not part of the attribute name.
+    if($search_pattern =~ /^([^@]+)(?:@([^@]*))?$/) {
 	$pattern_nodename = $1;
 	print STDERR "node name = '$pattern_nodename'\n" if($debug);
-	my $attrconststr = $3;
-	my @attrconstarr = split(/,/, $attrconststr);
+	my $attrconststr = $2;
+	my @attrconstarr = defined $attrconststr ? split(/,/, $attrconststr) : ();
 	for(@attrconstarr) {
-	    if(/^([^=]+)(=(.*))?$/) {
+	    # <attr>            attribute must be present
+	    # <attr>=<value>    attribute must be exactly <value>
+	    # <attr>~=<regexp>  attribute must match the regular expression
+	    if(/^([^=~]+)(?:(~?=)(.*))?$/) {
 		my $attrname = $1;
-		my $value = $3;
-		print STDERR "attr '$attrname', value '$value'\n" if($debug);
-		push(@pattern_attributeconstraint, {key => $attrname, val => $value});
+		my $operator = $2;
+		my $value    = $3;
+		print STDERR "attr '$attrname', op '", (defined $operator ? $operator : '(exists)'),
+		             "', value '", (defined $value ? $value : ''), "'\n" if($debug);
+		if(!defined $operator || !defined $value || $value eq '') {
+		    # bare attribute name (or a trailing '='): existence test
+		    push(@pattern_attributeconstraint, {key => $attrname, op => undef});
+		} elsif($operator eq '=') {
+		    push(@pattern_attributeconstraint, {key => $attrname, op => '=', val => $value});
+		} else {
+		    my $compiled = eval { qr/$value/ };
+		    unless(defined $compiled) {
+			print STDERR "Invalid regular expression '$value' in attribute constraint '$_':\n";
+			print STDERR "  $@";
+			exit 1;
+		    }
+		    push(@pattern_attributeconstraint, {key => $attrname, op => '~=', re => $compiled});
+		}
 	    } else {
 		print STDERR "Invalid attribute constraint '$_'\n";
 		exit 1;
@@ -62,72 +83,40 @@ if($search_pattern ne '') {
 	}
     } else {
 	print STDERR "Invalid pattern '$search_pattern'\n";
+	print STDERR "Expected '<tagname>' or '<tagname>\@<attr>[=<value>][,...]'\n";
 	exit 1;
     }
 }
 
 my $index_filename = "${input_filename}.index";
 
-if($flag_index && !-e $index_filename) {
-    print STDERR "Creating index file ...\n";
-    print STDERR "Done.\n";
+# Index mode has never been implemented: the creation code used to print
+# "Done." and then die, and the lookup code just printed a message and exited
+# successfully, producing no output at all. Fail loudly when it is requested,
+# and simply ignore a stale index file otherwise.
+if($flag_index) {
+    print STDERR "ERROR: index mode (-index) is not implemented.\n";
+    print STDERR "       (the index file would be '$index_filename')\n";
     if($debug) {
 	for(@param_attributes) {
-	    print "Specified attr. : $_\n";
+	    print STDERR "Specified attr. : $_\n";
 	}
     }
-    die "Not implemented yet";
-    my $databasehandle = DBI->connect("dbi:SQLite:dbname=${index_filename}","","");
-    my $result  = $databasehandle->do('create table xmlexidxattr (
-                                               tagname       text,
-                                               attributename text
-                                       );');
-    #	|| die $databasehandle->errstr; # error is OK. (for already existing database)
-    $result = $databasehandle->do('PRAGMA default_synchronous = OFF;') || die $databasehandle->errstr;
-    $result = $databasehandle->do('PRAGMA synchronous = OFF;')         || die $databasehandle->errstr;
-    my $insert_sql_statement = "insert into xmlexidxattr values (?, ?);";
-    my $insert_sql_handle    = $databasehandle->prepare($insert_sql_statement);
-    for(@param_attributes) {
-	if(/^([^@]+)(@(.*))?$/) {
-	    my $nodename = $1;
-	    print STDERR "node name = '$nodename'\n" if($debug);
-	    my $attrconststr = $3;
-	    my @attrconstarr = split(/,/, $attrconststr);
-	    for(@attrconstarr) {
-		if(/^([^=]+)(=(.*))?$/) {
-		    my $attrname = $1;
-		    my $value = $3;
-		    print STDERR "attr '$attrname', value '$value'\n" if($debug);
-		    push(@pattern_attributeconstraint, {key => $attrname, val => $value});
-		} else {
-		    print STDERR "Invalid attribute constraint '$_'\n";
-		    exit 1;
-		}
-	    }
-	} else {
-	    print STDERR "Invalid pattern '$search_pattern'\n";
-	}
-    }
-    # TODO: write next;
+    exit 1;
 }
-exit if($flag_index && $search_pattern eq '');
 
-my $index_mode = 0;
+unless(-r $input_filename) {
+    print STDERR "ERROR: cannot open the input XML file '$input_filename'",
+                 (-e $input_filename ? " (not readable)" : " (no such file)"), "\n";
+    exit 1;
+}
+
 if(-e $index_filename) {
-    my $inputfilestat = stat($input_filename);
-    my $indexfilestat = stat($index_filename);
-    if($inputfilestat->mtime <= $indexfilestat->mtime) {
-	$index_mode = 1;
-    } else {
-	print STDERR "Index file '$index_filename' is created at ", scalar localtime $indexfilestat->mtime, "\n";
-	print STDERR "Input file '$input_filename' is created at ", scalar localtime $inputfilestat->mtime, "\n";
-	print STDERR "Index file is older. Ignores index file for safety.\n";
-    }
+    print STDERR "NOTE: '$index_filename' exists, but index mode is not implemented.\n";
+    print STDERR "      The index file is ignored and '$input_filename' is scanned normally.\n";
 }
 
-if($index_mode) {
-    print STDERR "Index mode is not yet implemented\n";
-} else {
+{
     my @start_tag_pile;
     my @start_tag_pile_tobeoutput;
     my @end_tag_pile;
@@ -135,15 +124,17 @@ if($index_mode) {
     my $isShowing = 0;
     my $hasShownHeader = 0;
 
-    sub elemTextHandler ($$) {
+    sub elemTextHandler {
       my $self = shift;
       my $text = shift;
       if($isShowing) {
 	  $text =~ s/\s+//g if($flag_eliminatespace);
-	  print $text;
+	  # XML::Parser hands us the *unescaped* text, so it has to be
+	  # escaped again to stay well-formed XML.
+	  print xmlEscapeText($text);
       }
     }
-    sub elemEndHandler ($$) {
+    sub elemEndHandler {
       my $self = shift;
       my $name = shift;
       pop(@start_tag_pile_tobeoutput);
@@ -158,11 +149,11 @@ if($index_mode) {
       print "</$name>" if($tooutput);
       print "\n" if($tooutput_close && $flag_newline);
     }
-    sub elemStartHandler ($$%) {
+    sub elemStartHandler {
       my ($self, $name, %attrs) = @_;
       my $tagstr = $name;
-      while(my ($k, $v) = each %attrs) {
-	  $tagstr .= " $k=\"$v\"";
+      for my $k (sort keys %attrs) {
+	  $tagstr .= ' ' . $k . '="' . xmlEscapeAttributeValue($attrs{$k}) . '"';
       }
       push(@start_tag_pile, $tagstr);
       push(@start_tag_pile_tobeoutput, 1);
@@ -173,17 +164,23 @@ if($index_mode) {
 	  print "<$tagstr>";
 	  $isShowing++;
       } else {
-	  if($pattern_nodename eq $name) {
+	  if(defined $pattern_nodename && $pattern_nodename eq $name) {
 	      my $has_matched_the_criteria = 1;
 	      for my $attrconst (@pattern_attributeconstraint) {
-		  my $name = $attrconst->{key};
-		  my $val  = $attrconst->{val};
-		  if($val eq '') {
-		      unless(defined $attrs{$name}) {
+		  my $attrname = $attrconst->{key};
+		  my $operator = $attrconst->{op};
+		  my $actual   = $attrs{$attrname};
+		  if(!defined $actual) {
+		      $has_matched_the_criteria = 0; last;
+		  }
+		  if(!defined $operator) {
+		      # existence test only; already satisfied
+		  } elsif($operator eq '=') {
+		      unless($actual eq $attrconst->{val}) {
 			  $has_matched_the_criteria = 0; last;
 		      }
 		  } else {
-		      if($attrs{$name} !~ $val) {
+		      unless($actual =~ $attrconst->{re}) {
 			  $has_matched_the_criteria = 0; last;
 		      }
 		  }
@@ -223,16 +220,43 @@ if($index_mode) {
 }
 print "\n" if($hasMatchedSomething);
 
-sub extract_header_from_xml($) {
+# Escape a text node. XML::Parser unescapes the input, so '&' and '<' have to
+# be put back before the text is written out again.
+sub xmlEscapeText {
+    my $s = shift;
+    return '' unless(defined $s);
+    $s =~ s/&/&amp;/g;
+    $s =~ s/</&lt;/g;
+    $s =~ s/>/&gt;/g;
+    return $s;
+}
+
+# Same, for a value that goes inside a double quoted attribute.
+sub xmlEscapeAttributeValue {
+    my $s = shift;
+    return '' unless(defined $s);
+    $s =~ s/&/&amp;/g;
+    $s =~ s/</&lt;/g;
+    $s =~ s/>/&gt;/g;
+    $s =~ s/"/&quot;/g;
+    return $s;
+}
+
+sub extract_header_from_xml {
     my $filename = shift;
-    open EXTRACTHEADER, "< $filename" or die "Cannot open '$filename'";
+    open(my $fh, '<', $filename) or die "Cannot open '$filename': $!";
     my $restline = 10;
-    while(<EXTRACTHEADER>) {
-	print if(/<\?(.*)\?>/);
+    while(<$fh>) {
+	# print only the XML declaration itself: printing the whole line would
+	# emit the root element too when the two share a line.
+	if(/(<\?.*?\?>)/) {
+	    print "$1\n";
+	    last;
+	}
 	$restline--;
 	last if($restline <= 0);
     }
-    close EXTRACTHEADER;
+    close $fh;
 }
 
 =pod
@@ -295,6 +319,31 @@ index <country place="sth" name="sth"> and <state name="sth">.
 
 B<xmlex.pl> will read search the given pattern in XML.
 
+The pattern is C<< <tagname> >>, optionally followed by C<@> and a comma
+separated list of attribute constraints:
+
+=over 4
+
+=item C<attr>
+
+the attribute must be present, whatever its value
+
+=item C<< attr=value >>
+
+the attribute must be exactly C<value> (a plain string comparison, so
+C<name=US> does B<not> match C<USA>)
+
+=item C<< attr~=regexp >>
+
+the attribute must match the Perl regular expression C<regexp>. The
+expression is unanchored, so C<< name~=US >> matches C<USA> as well; use
+C<< name~=^US$ >> for an exact match. An invalid expression is reported
+instead of aborting with a regular expression compilation error.
+
+=back
+
+Only one C<@> is allowed in a pattern.
+
 =head1 EXAMPLES
 
 Example XML file (abc.xml)
@@ -310,9 +359,11 @@ Example XML file (abc.xml)
     </hello>
 
 Exmaple1:
-    xmlex.pl country@name=3 abc.xml
-    <hello><world><country name="Japan">
-    <prefecture name="Nagano" />
-    </country></world></hello>
+    xmlex.pl -xml -delspace country@name=Japan abc.xml
+    <hello><world><country name="Japan"><prefecture name="Nagano"></prefecture></country></world></hello>
+
+Exmaple2 (regular expression; matches both USA and Japan):
+    xmlex.pl -delspace 'country@name~=[Aa]' abc.xml
+    <country name="USA"><state name="Verginia"></state></country><country name="Japan"><prefecture name="Nagano"></prefecture></country>
 
 =cut

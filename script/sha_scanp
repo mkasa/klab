@@ -24,14 +24,31 @@ exclude_files_regex = (r'^\._',
                        r'^desktop\.ini$',
                        r'^\.git$',
                        r'^\.waf3-',
-                      )
+                       )
+
+# Compiled counterpart of exclude_files_regex. It is (re)built by
+# compile_exclude_regexes() before any scan starts so that a malformed
+# pattern is reported as a clean argument error instead of blowing up
+# in the middle of a directory walk.
+compiled_exclude_regexes = []
+
+
+def compile_exclude_regexes(patterns):
+    """ Compile the exclusion patterns, reporting a clean error for a bad pattern """
+    compiled = []
+    for pattern in patterns:
+        try:
+            compiled.append(re.compile(pattern))
+        except re.error as e:
+            raise click.BadParameter("invalid regular expression {!r}: {}".format(pattern, e), param_hint='--exclude')
+    return compiled
 
 
 def is_name_excluded(name):
     """ Check if the file name is excluded from the scan """
-    global exclude_files_regex
-    for regex in exclude_files_regex:
-        if re.match(regex, name):
+    global compiled_exclude_regexes
+    for regex in compiled_exclude_regexes:
+        if regex.match(name):
             return True
     return False
 
@@ -43,7 +60,7 @@ def get_file_digest(file_name, eskip):
             DIGEST_BLOCK_SIZE = 1024 * 1024
             for chunk in iter(lambda: f.read(DIGEST_BLOCK_SIZE), b""):
                 digest.update(chunk)
-    except IOError as e:
+    except IOError:
         print("Error: Unable to open file '{}'".format(file_name), file=sys.stderr)
         if eskip:
             return None
@@ -53,7 +70,8 @@ def get_file_digest(file_name, eskip):
 
 def hash_files_parallel(path_iter, num_threads, eskip):
     """ Hash files from path_iter (yielding (full_path, rel_path)) with a thread pool.
-        Yields (full_path, rel_path, hex_digest) in the same order as path_iter. """
+        Yields (full_path, rel_path, hex_digest) in the same order as path_iter.
+        hex_digest is None when the file could not be read and --eskip was given. """
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
         def collect(entry):
             full_path, rel_path, future = entry
@@ -75,10 +93,15 @@ def hash_files_parallel(path_iter, num_threads, eskip):
 
 def generate_full_and_relative_path(dir_path, root, fname):
     full_path = os.path.join(root, fname)
-    rel_path = full_path.replace(dir_path, '')
-    if rel_path[0] == '/':
-        rel_path = rel_path[1:]
+    rel_path = os.path.relpath(full_path, dir_path)
     return full_path, rel_path
+
+
+def database_key(full_path):
+    """ The primary key of a row in the database.
+        It is the absolute path of the file so that files with the same relative
+        path but under different scanned directories do not overwrite each other. """
+    return os.path.abspath(full_path)
 
 
 def walk_scan_files(dir_path, followsymlink, debug, stats):
@@ -119,11 +142,16 @@ def add_files(db_file, dir_path, followsymlink, eskip, show_summary, num_threads
         cursor = connection.cursor()
     uncommited_file_count = 0
     num_files = 0
+    num_skipped_files = 0
     path_iter = walk_scan_files(dir_path, followsymlink, debug, new_scan_stats())
     for full_path, rel_path, hex_digest in hash_files_parallel(path_iter, num_threads, eskip):
+        if hex_digest is None:
+            print("Skipped '{}' (could not be read)".format(rel_path), file=sys.stderr)
+            num_skipped_files += 1
+            continue
         print("Adding '{}': {}".format(rel_path, hex_digest), file=sys.stderr)
         num_files += 1
-        cursor.execute('''INSERT OR REPLACE INTO files VALUES (?, ?)''', (rel_path, hex_digest))
+        cursor.execute('''INSERT OR REPLACE INTO files VALUES (?, ?)''', (database_key(full_path), hex_digest))
         uncommited_file_count += 1
         if 80 <= uncommited_file_count:
             connection.commit()
@@ -132,47 +160,66 @@ def add_files(db_file, dir_path, followsymlink, eskip, show_summary, num_threads
     connection.close()
     if show_summary:
         print("Added {} files".format(num_files), file=sys.stderr)
+        print("Skipped {} files".format(num_skipped_files), file=sys.stderr)
 
 
-def search_files(do_remove, db_file, dir_path, eskip, followsymlink, show_only_new, show_summary, num_threads, debug):
+def search_files(do_remove, db_file, dir_path, eskip, followsymlink, show_only_new, show_summary, count_only, num_threads, debug):
     """ Search for files in the database """
     connection = sqlite3.connect(db_file)
     cursor = connection.cursor()
     stats = new_scan_stats()
     num_duplicated_files = 0
+    num_new_files = 0
+    num_skipped_files = 0
+    num_removed_files = 0
     path_iter = walk_scan_files(dir_path, followsymlink, debug, stats)
     for full_path, rel_path, hex_digest in hash_files_parallel(path_iter, num_threads, eskip):
+        if hex_digest is None:
+            # The file could not be read at all, so we know nothing about it.
+            # It is neither a known file nor a new file.
+            num_skipped_files += 1
+            if not count_only:
+                print("Skipped '{}' (could not be read)".format(rel_path))
+            continue
         if debug:
             print("Scanning '{}': {}".format(rel_path, hex_digest), file=sys.stderr)
-        result = cursor.execute('''SELECT COUNT(*) FROM files WHERE hash = ?''', (hex_digest,))
+        result = cursor.execute('''SELECT COUNT(*), MIN(name) FROM files WHERE hash = ?''', (hex_digest,))
         one_line = result.fetchone()
-        num_entries_in_db = one_line[0]
+        num_entries_in_db, name_in_db = one_line[0], one_line[1]
         if debug:
             print("  Result = {}".format(num_entries_in_db), file=sys.stderr)
         if num_entries_in_db == 0:
-            print("Not found '{}'".format(rel_path))
+            num_new_files += 1
+            if not count_only:
+                print("Not found '{}'".format(rel_path))
         else:
             num_duplicated_files += 1
-            if not show_only_new:
-                print("Found '{}' ({})".format(rel_path, num_entries_in_db))
+            if not show_only_new and not count_only:
+                print("Found '{}' ({}) same as '{}'".format(rel_path, num_entries_in_db, name_in_db))
             if do_remove:
                 try:
                     os.remove(full_path)
-                except IOError as e:
+                    num_removed_files += 1
+                except OSError as e:
                     print("Error: Unable to remove file '{}'".format(full_path), file=sys.stderr)
                     if eskip:
                         continue
                     print("Exiting due to the error. {}".format(e), file=sys.stderr)
                     sys.exit(1)
     connection.close()
+    if count_only:
+        print("Known files: {}".format(num_duplicated_files))
+        print("Unknown files: {}".format(num_new_files))
+        print("Skipped files: {}".format(num_skipped_files))
+        if do_remove:
+            print("Removed files: {}".format(num_removed_files))
     if show_summary:
         print("Scanned {} files in {} directories".format(stats['num_scanned_files'], stats['num_scanned_dirs']), file=sys.stderr)
         print("Excluded {} files, {} dirs".format(stats['num_excluded_files'], stats['num_excluded_dirs']), file=sys.stderr)
+        print("Skipped {} files".format(num_skipped_files), file=sys.stderr)
         print("Found {} duplicated files".format(num_duplicated_files), file=sys.stderr)
-
-
-def remove_files(db_file, dir_path, followsymlink, debug):
-    """ Remove files when they are in the database """
+        if do_remove:
+            print("Removed {} files".format(num_removed_files), file=sys.stderr)
 
 
 @click.command()
@@ -182,16 +229,19 @@ def remove_files(db_file, dir_path, followsymlink, debug):
 @click.option('--eskip', is_flag=True, help='Skip the error when the file cannot be opend in the database')
 @click.option('--summary', is_flag=True, help='Show the summary of the scan')
 @click.option('--new', is_flag=True, help='Show only the new files')
+@click.option('--count', is_flag=True, help='Show only the number of known/unknown files (with --search or --remove)')
 @click.option('--exclude', multiple=True, help='Exclude the file from the scan')
 @click.option('--followsymlink', is_flag=True, help='Follow the symlink')
 @click.option('--threads', '-j', type=int, default=None, help='Number of threads for hashing (default: number of CPUs)')
 @click.option('--debug', is_flag=True, help='Show the debug information')
 @click.argument('db_file_path')
 @click.argument('dir_path')
-def main(add, search, remove, eskip, summary, new, exclude, threads, debug, db_file_path, followsymlink, dir_path):
+def main(add, search, remove, eskip, summary, new, count, exclude, threads, debug, db_file_path, followsymlink, dir_path):
     """ Scan the directory and add the files to the database """
     global exclude_files_regex
-    exclude_files_regex += exclude_files_regex + exclude
+    global compiled_exclude_regexes
+    exclude_files_regex = exclude_files_regex + tuple(exclude)
+    compiled_exclude_regexes = compile_exclude_regexes(exclude_files_regex)
     if debug:
         print('exclude_files_regex: {}'.format(exclude_files_regex))
 
@@ -202,8 +252,8 @@ def main(add, search, remove, eskip, summary, new, exclude, threads, debug, db_f
     if (add and search) or (add and remove) or (search and remove):
         print('Please specify only one action from --add, --search, --remove')
         sys.exit(1)
-    if (eskip and not search):
-        print('Please specify the --search when using --eskip. --eskip is meaningful only when scanning.')
+    if count and add:
+        print('--count is meaningful only with --search or --remove.')
         sys.exit(1)
     if not add and not os.path.exists(db_file_path):
         print('Database file does not exist: %s' % db_file_path)
@@ -227,10 +277,10 @@ def main(add, search, remove, eskip, summary, new, exclude, threads, debug, db_f
         add_files(db_file_path, dir_path, followsymlink, eskip, summary, threads, debug)
         sys.exit(0)
     if search:
-        search_files(False, db_file_path, dir_path, eskip, followsymlink, new, summary, threads, debug)
+        search_files(False, db_file_path, dir_path, eskip, followsymlink, new, summary, count, threads, debug)
         sys.exit(0)
     if remove:
-        search_files(True, db_file_path, dir_path, eskip, followsymlink, new, summary, threads, debug)
+        search_files(True, db_file_path, dir_path, eskip, followsymlink, new, summary, count, threads, debug)
         sys.exit(0)
 
 
@@ -248,7 +298,7 @@ sha_scanp - Calculate SHA-256 hashes of files, and find duplicated files.
 =head1 QUICKSTART
 
 sha_scanp --add <DB name> <directory to scan>      (This is for the first scan phase)
-sha_scanp --scan <DB name> <directory to scan>     (This is to check files)
+sha_scanp --search <DB name> <directory to scan>   (This is to check files)
 sha_scanp --remove <DB name> <directory to scan>   (This is to remove redundant files)
 
 =head1 SYNOPSYS
@@ -259,11 +309,15 @@ B<sha_scanp> --add E<lt>DB fileE<gt> E<lt>input directoryE<gt>
 
 Check (files in) a directory:
 
-B<sha_scanp> --scan E<lt>DB fileE<gt> E<lt>input directoryE<gt>
+B<sha_scanp> --search E<lt>DB fileE<gt> E<lt>input directoryE<gt>
 
 Check files in a directory but shows only new files:
 
-B<sha_scanp> --new --scan E<lt>DB fileE<gt> E<lt>input directoryE<gt>
+B<sha_scanp> --new --search E<lt>DB fileE<gt> E<lt>input directoryE<gt>
+
+Show only the number of known/unknown files:
+
+B<sha_scanp> --count --search E<lt>DB fileE<gt> E<lt>input directoryE<gt>
 
 Removed files in a directory when their hashes are in DB file:
 
@@ -278,14 +332,19 @@ B<sha_scanp> --add E<lt>DB fileE<gt> E<lt>input directoryE<gt>
 The database is in SQLite3 format so you can view it using any SQLite3 clients.
 If the database file already exists, it simply adds new hashes into the database, so you can
 put hashes from different directories together in a single database file.
+Each row is keyed by the B<absolute> path of the file, so two files that share the same
+name (or the same path relative to the scanned directory) but live under different
+directories are stored as two distinct rows.
 
 Next, you want to see whether files in a specified directory match to the already-scanned files
 in the database.
 
-B<sha_scanp> --scan E<lt>DB fileE<gt> E<lt>checking directoryE<gt>
+B<sha_scanp> --search E<lt>DB fileE<gt> E<lt>checking directoryE<gt>
 
 For each file, it outputs whether a file of the same contents exists.
-If such a file exists, it also outputs the path of the file in the database.
+If such a file exists, it also outputs the path of one such file in the database.
+If a file could not be read (only possible with B<--eskip>), it is reported as
+skipped; a skipped file is counted neither as a known file nor as a new file.
 
 If you wish to directly remove redacted files, please use
 
@@ -298,26 +357,41 @@ are in the database file.
 
 =over 8
 
-=item B<-h>
-This option is valid only if -s is given.
+=item B<--add>
+Hash every file under the given directory and store the hashes in the database.
+
+=item B<--search>
+Hash every file under the given directory and look each hash up in the database.
+
+=item B<--remove>
+Same as B<--search>, but files whose hash is already in the database are deleted.
+
+=item B<--count>
+This option is valid only if B<--search> or B<--remove> is given.
 When you want to see if a specified directory contains any new files
 (i.e., any files whose hash do not match with the files registered in the databases),
 you just do not want to see a long list of results.
 You just need whether all files in the directory are known or not.
-When this option is given, sha_scanp outputs only the number of known/unknown files.
+When this option is given, sha_scanp outputs only the number of known/unknown/skipped files.
 
 =item B<--eskip>
 When a file could not be opened, B<sha_scanp> immediately quits, but it continues
-when this option is given.
+when this option is given. It can be used with B<--add>, B<--search> and B<--remove>.
+Files skipped this way are reported as skipped and counted separately.
 
 =item B<--exclude>
 Exclude files whose file name matches to a specified regex pattern.
+The pattern is matched against the B<base name> only (not the whole path), and it is
+also matched against directory names: a matching directory is pruned, so the whole
+subtree below it is excluded from the scan.
+The option can be given more than once. An invalid pattern is reported as an
+argument error before the scan starts.
 
 =item B<--followsymlink>
 Follow symbolic links when scanning directories.
 
 =item B<--new>
-Show only new files. This option can be used only with -s.
+Show only new files. This option can be used only with B<--search> or B<--remove>.
 
 =item B<--summary>
 Show the summary of the scan result.
@@ -326,6 +400,9 @@ Show the summary of the scan result.
 The number of threads used for hashing files.
 It defaults to the number of CPUs.
 Hashing is done in parallel, while the database is accessed only from the main thread.
+
+=item B<--debug>
+Show debug information while scanning.
 
 =back
 

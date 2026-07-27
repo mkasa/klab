@@ -16,6 +16,7 @@
 #include <iomanip>
 #include <map>
 #include <set>
+#include <climits>
 #include <cstdlib>
 #include <algorithm>
 #include <numeric>
@@ -40,6 +41,13 @@ void show_version()
 {
     cout << "fatt version " << VERSION_STRING << endl;
 }
+
+// Process-wide exit status.
+// fatt used to always return 0 from main(), so a script could not tell a failed
+// run (unknown command, unreadable input, DB error, missing read name, ...) from
+// a successful one. Every error path calls flagError(), and main() returns this.
+static int g_exit_status = 0;
+static void flagError() { if(g_exit_status == 0) g_exit_status = 1; }
 
 struct CSVEscape
 {
@@ -131,26 +139,16 @@ static bool is_file_fastq(const char* fastq_file_name)
     return first_char == '@';
 }
 
-class FileBuffering
-{
-    vector<char> buffer;
-public:
-    FileBuffering(size_t size = 256 * 1024u * 1024u) {
-        buffer.resize(size);
-    }
-    void connectToStream(ostream& os) {
-        os.rdbuf()->pubsetbuf(&*buffer.begin(), buffer.size());
-        std::ios_base::sync_with_stdio(false);
-    }
-};
-
 class CoutBuffering
 {
     vector<char> buffer;
 public:
     CoutBuffering(bool) {}
     void setBufferSize(size_t size = 256 * 1024u * 1024u) {
-        if(isatty(fileno(stdin))) return; // No buffering if TTY.
+        // The huge buffer is for the OUTPUT stream, so the decision has to be
+        // made on stdout (testing stdin used to allocate 256 MB and freeze the
+        // terminal whenever stdin happened to be redirected from a file).
+        if(isatty(fileno(stdout))) return; // No buffering if TTY.
         buffer.resize(size);
         cout.rdbuf()->pubsetbuf(&*buffer.begin(), buffer.size());
         std::ios_base::sync_with_stdio(false);
@@ -183,6 +181,8 @@ class FileLineBufferWithAutoExpansion
     // the file is BGZF we instead translate an uncompressed offset into a
     // virtual offset (block-start compressed offset << 16 | offset-in-block)
     // and seek straight to the containing block, exactly like htslib/tabix.
+    bool badFormat;              ///< the first line was neither '>' nor '@'
+    bool warnedAboutNulChar;     ///< an embedded NUL was already reported
     bool isBGZF;                 ///< detected from the gzip header at open()
     bool blockIndexReady;        ///< has the (caddr,uaddr) block map been built?
     bool seekUsesVirtualOffset;  ///< if true, seekg()'s argument is a virtual offset
@@ -305,6 +305,8 @@ public:
         headerID.reserve(INITIAL_BUFFER_SIZE);
         gzf = NULL;
         failed = false;
+        badFormat = false;
+        warnedAboutNulChar = false;
         isBGZF = false;
         blockIndexReady = false;
         seekUsesVirtualOffset = false;
@@ -320,6 +322,8 @@ public:
         if(gzf == NULL) { failed = true; return false; }
         gzbuffer(gzf, STREAM_BUFFER_SIZE);
         failed = false;
+        badFormat = false;
+        warnedAboutNulChar = false;
         line_count = 0;
         off_count = 0;
         fileName = file_name;
@@ -335,6 +339,11 @@ public:
     bool getline() {
         bufferOffsetToBeFill = 0u;
         bool got_any = false;
+        bool line_terminated = false;
+        // gztell() gives the true uncompressed offset, so we can tell exactly how
+        // many bytes a line occupied even if it contains an embedded NUL (which
+        // gzgets()+strlen() alone cannot see).
+        const off_t offset_before = static_cast<off_t>(gztell(gzf));
         do {
             const size_t remaining = currentBufferSize - bufferOffsetToBeFill;
             // gzgets() takes the buffer size as an int, so cap the request to avoid overflow.
@@ -349,6 +358,7 @@ public:
             bufferOffsetToBeFill += seglen;
             if(seglen > 0 && dst[seglen - 1] == '\n') {
                 b[--bufferOffsetToBeFill] = '\0'; // Strip the trailing newline.
+                line_terminated = true;
                 break;
             }
             if(seglen == static_cast<size_t>(space - 1)) {
@@ -359,7 +369,31 @@ public:
             break; // Reached EOF in the middle of a line (no trailing newline).
         } while(true);
         line_count++;
-        off_count += static_cast<off_t>(bufferOffsetToBeFill) + 1; // for the delimiter
+        {
+            const off_t offset_after = static_cast<off_t>(gztell(gzf));
+            const off_t consumed = offset_after - offset_before;
+            if(consumed > 0) {
+                off_count += consumed; // the line plus its delimiter, if any
+                // A NUL inside the line silently truncates it (gzgets() NUL-terminates
+                // whatever it read). Warn once per file rather than losing data quietly.
+                const off_t visible = static_cast<off_t>(bufferOffsetToBeFill) + (line_terminated ? 1 : 0);
+                if(visible < consumed && !warnedAboutNulChar) {
+                    warnedAboutNulChar = true;
+                    cerr << "WARNING: '" << fileName << "' contains a NUL character at line " << line_count
+                         << ". The rest of that line is ignored.\n";
+                }
+            } else {
+                // gztell() is not usable (should not happen); fall back to the old estimate.
+                off_count += static_cast<off_t>(bufferOffsetToBeFill) + (line_terminated ? 1 : 0);
+            }
+        }
+        // Strip a CR that precedes the LF so that DOS/Windows (CRLF) files are
+        // parsed exactly like UNIX ones. This is done AFTER off_count has been
+        // updated, so the offsets stored in the index still refer to real file
+        // positions.
+        if(bufferOffsetToBeFill > 0 && b[bufferOffsetToBeFill - 1] == '\r') {
+            b[--bufferOffsetToBeFill] = '\0';
+        }
         const bool isFirstLine = line_count == 1;
         if(isFirstLine) {
             if(looksLikeFASTQHeader()) {
@@ -368,12 +402,19 @@ public:
             } else if(looksLikeFASTAHeader()) {
                 isFASTAMode = true;
             } else {
+                // Do NOT exit() from here: the caller may have RAII objects
+                // (e.g. DeleteOnFailure in create_index) that must be run.
                 cerr << fileName << " does not look like either of FASTA/FASTQ!\n";
-                exit(1);
+                badFormat = true;
+                failed = true;
+                flagError();
+                return false;
             }
         }
         return true;
     }
+    /// True if the input turned out to be neither FASTA nor FASTQ.
+    bool hasBadFormat() const { return badFormat; }
     bool looksLikeFASTQHeader() const { return b[0] == '@'; }
     bool looksLikeFASTAHeader() const { return b[0] == '>'; }
     bool notFollowedByHeaderOrEOF() {
@@ -494,6 +535,7 @@ bool calculate_n50_statistics(const char* fname,
     FileLineBufferWithAutoExpansion f;
     if(!f.open(fname)) {
         cerr << "Cannot open '" << fname << "'" << endl;
+        flagError();
         return false;
     }
     if(f.getline()) {
@@ -583,6 +625,7 @@ void show_read_names_in_file(const char* fname, bool show_name, bool show_length
     FileLineBufferWithAutoExpansion f;
 	if(!f.open(fname)) {
 		cerr << "Cannot open '" << fname << "'" << endl;
+		flagError();
 		return;
 	}
     if(f.getline()) {
@@ -640,6 +683,7 @@ void count_number_of_reads_in_file(const char* fname)
     FileLineBufferWithAutoExpansion f;
     if(!f.open(fname)) {
         cerr << "Cannot open '" << fname << "'" << endl;
+        flagError();
         return;
     }
 	cout << fname << flush;
@@ -651,16 +695,20 @@ void count_number_of_reads_in_file(const char* fname)
     if(f.getline()) {
         number_of_sequences++;
         size_t number_of_nucleotides_in_read = 0;
-        if(!f.looksLikeFASTQHeader()) { 
+        if(!f.looksLikeFASTQHeader()) {
             while(f.getline()) {
                 if(f.looksLikeFASTAHeader()) {
                     number_of_sequences++;
 					UPDATE_MIN_AND_MAX(number_of_nucleotides_in_read);
 					number_of_nucleotides_in_read = 0;
                 } else {
-                    number_of_nucleotides += f.len();
+                    const size_t number_of_nucleotides_in_line = f.len();
+                    number_of_nucleotides += number_of_nucleotides_in_line;
+                    number_of_nucleotides_in_read += number_of_nucleotides_in_line;
                 }
             }
+            // The last record is not followed by a header, so account for it here.
+            UPDATE_MIN_AND_MAX(number_of_nucleotides_in_read);
         } else {
             while(f.getline()) {
                 if(f.looksLikeFASTQSeparator()) {
@@ -684,7 +732,9 @@ void count_number_of_reads_in_file(const char* fname)
             }
         }
     }
-	cout << '\t' << number_of_sequences << '\t' << number_of_nucleotides << '\t' << (double(number_of_nucleotides) / number_of_sequences);
+    if(number_of_sequences == 0) min_read_len = 0; // instead of printing SIZE_MAX
+    const double average_read_length = number_of_sequences == 0 ? 0.0 : double(number_of_nucleotides) / number_of_sequences;
+	cout << '\t' << number_of_sequences << '\t' << number_of_nucleotides << '\t' << average_read_length;
 	cout << '\t' << min_read_len << '\t' << max_read_len << '\n';
 	#undef UPDATE_MIN_AND_MAX
 }
@@ -710,10 +760,12 @@ static void add_read_name_and_show_error_if_duplicates(map<string, int>& readNam
     if(cit == readName2fileIndex.end()) {
         readName2fileIndex[readName] = fileIndex;
     } else {
-        cerr << start;
+        // The duplicated names are the RESULT of this subcommand, so they go to
+        // stdout ('fatt chksamename foo.fastq > dups.txt' must work).
+        cout << start;
         if(!doNotShowFileName)
-            cerr << '\t' << argv[cit->second];
-        cerr << '\n';
+            cout << '\t' << argv[cit->second];
+        cout << '\n';
     }
     *end = saved_char;
 }
@@ -744,6 +796,7 @@ void do_check_same_names(int argc, char** argv)
         const char* file_name = argv[findex];
         if(!f.open(file_name)) {
             cerr << "Cannot open '" << file_name << "'" << endl;
+            flagError();
             continue;
         }
         size_t number_of_sequences = 0;
@@ -800,7 +853,26 @@ struct DeleteOnFailure {
 	}
 };
 
-void create_index(const char* fname, bool flag_force)
+// Is 'name' already registered in the index being built? (Used to tell a
+// duplicated sequence name apart from any other insertion failure.)
+static bool is_name_already_in_index(sqdb::Db& db, const string& name)
+{
+    try {
+        sqdb::Statement stmt = db.Query("select count(*) from seqpos where name=?");
+        stmt.Bind(1, name);
+        if(stmt.Next()) {
+            const long long number_of_rows = stmt.GetField(0).GetLongLong();
+            return 0 < number_of_rows;
+        }
+    } catch(const sqdb::Exception&) {
+        // Fall through; we simply cannot tell.
+    }
+    return false;
+}
+
+// Returns true if an index for 'fname' is available after the call, false if the
+// index could not be created (in which case no index file is left behind).
+bool create_index(const char* fname, bool flag_force)
 {
     const string index_file_name = get_index_file_name(fname);
     if(doesIndexExist(fname)) {
@@ -809,10 +881,12 @@ void create_index(const char* fname, bool flag_force)
             cerr << "However, --force flag is given, so we remove it first." << endl;
             if(unlink(index_file_name.c_str()) != 0) {
                 cerr << "Could not delete '" << index_file_name << "'. Abort." << endl;
-                return;
+                flagError();
+                return false;
             }
         } else {
-            return;
+            // The index the user asked for is there; nothing to do.
+            return true;
         }
     }
     cerr << "Creating index" << flush;
@@ -827,7 +901,8 @@ void create_index(const char* fname, bool flag_force)
         FileLineBufferWithAutoExpansion f;
         if(!f.open(fname)) {
             cerr << "Cannot open '" << fname << "'" << endl;
-            return;
+            flagError();
+            return false; // dof removes the half-created index file.
         }
         // For BGZF input, store BGZF virtual offsets so that 'fatt extract' can
         // seek straight to the right ~64KiB block instead of decompressing from
@@ -836,7 +911,30 @@ void create_index(const char* fname, bool flag_force)
 		long long sequence_count = 0;
         off_t last_pos = f.get_offset();
         if(f.getline()) {
-            #define INSERT_NAME_INTO_TABLE() { stmt.Bind(1, get_read_name_from_header(f.b)); stmt.Bind(2, use_voffset ? f.uncompressedToVirtualOffset(last_pos) : static_cast<long long>(last_pos)); stmt.Bind(3, sequence_count); stmt.Next(); }
+            // Report the offending name when the insert fails: by far the most
+            // common cause is a sequence name that occurs more than once, which
+            // violates the 'name text primary key' constraint.
+            #define INSERT_NAME_INTO_TABLE() { \
+                const string seq_name_to_register__ = get_read_name_from_header(f.b); \
+                try { \
+                    stmt.Bind(1, seq_name_to_register__); \
+                    stmt.Bind(2, use_voffset ? f.uncompressedToVirtualOffset(last_pos) : static_cast<long long>(last_pos)); \
+                    stmt.Bind(3, sequence_count); \
+                    stmt.Next(); \
+                } catch(const sqdb::Exception& e__) { \
+                    cerr << "\nERROR: could not register the sequence '" << seq_name_to_register__ \
+                         << "' (at line " << f.getLineCount() << " of '" << fname << "') into the index.\n"; \
+                    if(is_name_already_in_index(db, seq_name_to_register__)) { \
+                        cerr << "       The sequence name '" << seq_name_to_register__ << "' appears more than once in '" << fname << "'.\n"; \
+                        cerr << "       Sequence names must be unique to be indexed. Use 'fatt chksamename " << fname << "'\n"; \
+                        cerr << "       to list all the duplicated names.\n"; \
+                    } else { \
+                        cerr << "       " << e__.GetErrorMsg() << "\n"; \
+                    } \
+                    flagError(); \
+                    return false; /* dof removes the half-created index file. */ \
+                } \
+            }
             INSERT_NAME_INTO_TABLE();
 			++sequence_count;
             size_t number_of_nucleotides_in_read = 0;
@@ -877,6 +975,12 @@ void create_index(const char* fname, bool flag_force)
                 }
             }
             #undef INSERT_NAME_INTO_TABLE
+        } else if(f.hasBadFormat()) {
+            // Neither FASTA nor FASTQ. Bail out here so that DeleteOnFailure
+            // removes the (otherwise empty but perfectly usable-looking) index.
+            cerr << "ERROR: could not create an index for '" << fname << "'." << endl;
+            flagError();
+            return false;
         }
     	db.Do("end");
     	cerr << "." << flush;
@@ -893,9 +997,14 @@ void create_index(const char* fname, bool flag_force)
 		dof.doNotDelete();
     } catch(size_t line_num) {
         cerr << "DB Creation Error. (insert) at line " << line_num << endl;
+        flagError();
+        return false;
     } catch(const sqdb::Exception& e) {
 		cerr << "DB Creation Error. " << e.GetErrorMsg() << endl;
+        flagError();
+        return false;
 	}
+    return true;
 }
 
 void do_count(int argc, char** argv)
@@ -1052,6 +1161,7 @@ void do_stat(int argc, char** argv)
     }
     if(flag_html && flag_json) {
         cerr << "ERROR: You can use either --html or --json\n";
+        flagError();
         return;
     }
     vector<size_t> length_of_scaffolds_wgap;
@@ -1065,18 +1175,30 @@ void do_stat(int argc, char** argv)
     }
     if(number_of_successfully_processed_files <= 0) {
         cerr << "ERROR: All file(s) could not be opened." << endl;
+        flagError();
         return;
     }
     if(!(length_of_scaffolds_wgap.size() == length_of_scaffolds_wogap.size())) {
         cerr << "Assertion failed. Maybe you found a bug! Please report to the author.\n";
+        flagError();
         return;
     }
+    // NOTE: the opening '<table>'/'{' must be emitted regardless of which
+    // section(s) are requested; otherwise '--json --contig' produced invalid
+    // JSON (a leading comma and an unmatched '}').
+    if(flag_html) {
+        cout << "<table border=\"2\" bgcolor=\"#ffffff\">\n";
+    } else if(flag_json) {
+        cout << "{";
+    }
+    bool is_first_json_section = true;
     if(flag_all || flag_scaffold) {
         if(flag_html) {
-            cout << "<table border=\"2\" bgcolor=\"#ffffff\">\n";
             cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (w/gap) statistics</th></tr>\n";
         } else if(flag_json) {
-            cout << "{\"scaffold_wgap\": ";
+            if(!is_first_json_section) cout << ",";
+            cout << "\"scaffold_wgap\": ";
+            is_first_json_section = false;
         } else {
             cout << "Scaffold (w/gap) statistics\n";
         }
@@ -1086,7 +1208,9 @@ void do_stat(int argc, char** argv)
         if(flag_html) {
             cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Scaffold (wo/gap) statistics</th></tr>\n";
         } else if(flag_json) {
-            cout << ",\"scaffold_wogap\": ";
+            if(!is_first_json_section) cout << ",";
+            cout << "\"scaffold_wogap\": ";
+            is_first_json_section = false;
         } else {
             cout << "\nScaffold (wo/gap) statistics\n";
         }
@@ -1096,7 +1220,9 @@ void do_stat(int argc, char** argv)
         if(flag_html) {
             cout << "<tr><th colspan=\"3\" bgcolor=\"#fdfdd4\">Contig statistics</th></tr>\n";
         } else if(flag_json) {
-            cout << ",\"contig\": ";
+            if(!is_first_json_section) cout << ",";
+            cout << "\"contig\": ";
+            is_first_json_section = false;
         } else {
             cout << "\nContig statistics\n";
         }
@@ -1163,15 +1289,32 @@ void do_split(int argc, char** argv)
             output_file_prefix = argv[optind + 1];
         } else {
             cerr << "ERROR: No input files." << endl;
+            flagError();
             return;
         }
     }
     if(flag_max && flag_num) {
         cerr << "ERROR: You can use either --max or --num, but not both.\n";
+        flagError();
+        return;
+    }
+    if(!flag_max && !flag_num) {
+        cerr << "ERROR: Give either --num=n or --max=n. See 'fatt help split'.\n";
+        flagError();
+        return;
+    }
+    if(flag_max && param_specified_max <= 0) {
+        cerr << "ERROR: --max must be a positive number of bases.\n";
+        flagError();
+        return;
+    }
+    if(flag_num && param_specified_num <= 0) {
+        cerr << "ERROR: --num must be a positive number of files.\n";
+        flagError();
         return;
     }
     int out_file_index = 0;
-    long bases_per_file = -1;
+    long long bases_per_file = -1;
     if(flag_max) {
         bases_per_file = param_specified_max;
     } else if(flag_num) {
@@ -1185,33 +1328,50 @@ void do_split(int argc, char** argv)
         cerr << "\n";
         if(!(length_of_scaffolds_wgap.size() == length_of_scaffolds_wogap.size())) {
             cerr << "Assertion failed. Maybe you have found a bug! Please report to the author.\n";
+            flagError();
             return;
         }
         const long long total_bases = flag_exclude_n ?
             accumulate(length_of_scaffolds_wogap.begin(), length_of_scaffolds_wogap.end(), 0ll):
             accumulate(length_of_scaffolds_wgap.begin(),  length_of_scaffolds_wgap.end(),  0ll);
-        const long long bases_per_file = (total_bases + param_specified_num - 1) / param_specified_num;
+        // NOTE: this MUST assign to the outer 'bases_per_file'. A local
+        // declaration here used to shadow it, so --num computed the right value
+        // and then threw it away, leaving bases_per_file == -1 (and therefore
+        // producing no output at all).
+        bases_per_file = (total_bases + param_specified_num - 1) / param_specified_num;
+        if(bases_per_file < 1) bases_per_file = 1; // do not open one file per sequence
         cerr << "Total " << total_bases << " bases (" << (flag_exclude_n ? "wo/ gaps" : "w/ gaps") << ") ";
         cerr << bases_per_file << " bases per file\n" << flush;
     } else { /* never come here */ cerr << "ERROR: Please report to the author." << endl; exit(-1); }
     {
-        size_t number_of_nucleotides_in_output_file = bases_per_file + 1;
+        // Signed, so that the comparison with bases_per_file is a signed one.
+        long long number_of_nucleotides_in_output_file = bases_per_file + 1;
         ofstream ost;
+        string current_output_file_name;
+#define CHECK_OUTPUT_STREAM() if(ost.is_open()) { ost.flush(); \
+                                  if(!ost) { \
+                                      cerr << "ERROR: failed to write to the output file '" << current_output_file_name << "'." << endl; \
+                                      flagError(); return; \
+                                  } \
+                              }
         for(int findex = optind + 1; findex < argc; ++findex) {
             const char* file_name = argv[findex];
             FileLineBufferWithAutoExpansion f;
             if(!f.open(file_name)) {
                 cerr << "Cannot open '" << file_name << "'" << endl;
+                flagError();
                 continue;
             }
 #define OPEN_NEXT_FILE_IF_NEEDED() if(bases_per_file <= number_of_nucleotides_in_output_file) { \
+                                       CHECK_OUTPUT_STREAM(); \
                                        ost.close(); \
                                        number_of_nucleotides_in_output_file = 0; \
                                        out_file_index++; \
-                                       char buf[16]; sprintf(buf, "%d", out_file_index); \
-                                       const string output_file_name = output_file_prefix + "." + buf; \
-                                       ost.open(output_file_name.c_str()); \
-                                       if(!ost) { cerr << "ERROR: cannot open an output file '" << output_file_name << "'" << endl; return; } \
+                                       char buf[16]; snprintf(buf, sizeof(buf), "%d", out_file_index); \
+                                       current_output_file_name = output_file_prefix + "." + buf; \
+                                       ost.clear(); \
+                                       ost.open(current_output_file_name.c_str()); \
+                                       if(!ost) { cerr << "ERROR: cannot open an output file '" << current_output_file_name << "'" << endl; flagError(); return; } \
                                    }
             if(f.getline()) {
                 OPEN_NEXT_FILE_IF_NEEDED();
@@ -1259,9 +1419,20 @@ void do_split(int argc, char** argv)
             }
 #undef OPEN_NEXT_FILE_IF_NEEDED
         }
+        CHECK_OUTPUT_STREAM();
+        if(ost.is_open()) {
+            ost.close();
+            if(!ost) {
+                cerr << "ERROR: failed to close the output file '" << current_output_file_name << "'." << endl;
+                flagError();
+                return;
+            }
+        }
+#undef CHECK_OUTPUT_STREAM
     }
     if(out_file_index <= 0) {
         cerr << "No output.\n";
+        flagError();
     } else {
         cerr << out_file_index << " files output.\n";
     }
@@ -1269,13 +1440,14 @@ void do_split(int argc, char** argv)
         ofstream ost(status_file_name.c_str());
         if(!ost) {
             cerr << "ERROR: cannot open a status file '" << status_file_name << "'" << endl;
+            flagError();
         } else {
             ost << out_file_index << endl;
         }
     }
     if(flag_return_number_of_partitions_by_errcode)
         exit(out_file_index < 100 ? out_file_index : 100);
-    exit(0);
+    exit(g_exit_status);
 }
 
 void do_index(int argc, char** argv)
@@ -1378,10 +1550,12 @@ void do_extract(int argc, char** argv)
 	}
 	if(flag_index && flag_noindex) {
 		cerr << "ERROR: do not specify --index and --noindex at once" << endl;
+		flagError();
 		return;
 	}
 	if(param_end != -1 && param_num != -1) {
 		cerr << "ERROR: you cannot specify --end and --num at once" << endl;
+		flagError();
 		return;
 	}
     if(param_num != -1) {
@@ -1392,6 +1566,12 @@ void do_extract(int argc, char** argv)
             param_end = param_start + param_num;
         }
     }
+    // '--end' alone means 'from the very first sequence up to --end'. Without
+    // this, param_start stayed -1 and the name-matching path was taken with an
+    // empty name set, so nothing at all was printed.
+    if(param_end != -1 && param_start == -1) param_start = 0;
+    // -1 means 'no upper bound'.
+    const long long param_effective_end = param_end == -1 ? LLONG_MAX : param_end;
     if(flag_output_unique) {
         flag_reverse_condition = !flag_reverse_condition;
     }
@@ -1406,6 +1586,7 @@ void do_extract(int argc, char** argv)
             ifstream ist(fileInputs[i].c_str());
             if(!ist) {
                 cerr << "ERROR: Cannot open '" << fileInputs[i] << "'" << endl;
+                flagError();
                 return;
             }
             string line;
@@ -1416,17 +1597,28 @@ void do_extract(int argc, char** argv)
     }
     if(!readNamesToTake.empty() && param_start != -1) {
         cerr << "ERROR: you can either select the range or the sequence names, but not both." << endl;
+        flagError();
         return;
     }
     for(int findex = optind + 1; findex < argc; ++findex) {
         const char* file_name = argv[findex];
-		if(flag_index && !doesIndexExist(file_name)) {
-			create_index(file_name, flag_force);
+		bool index_is_available = doesIndexExist(file_name);
+		if(flag_index && !index_is_available) {
+			// If the index could not be created, do NOT fall through with
+			// use_index set: sqdb::Db would then create a fresh, empty index
+			// file that poisons every later run on this input.
+			if(!create_index(file_name, flag_force)) {
+				cerr << "ERROR: could not use an index for '" << file_name << "'. Skipping this file." << endl;
+				flagError();
+				continue;
+			}
+			index_is_available = doesIndexExist(file_name);
 		}
-		const bool use_index = (flag_index || (!flag_noindex && doesIndexExist(file_name))) && !flag_reverse_condition;
+		const bool use_index = ((flag_index && index_is_available) || (!flag_noindex && index_is_available)) && !flag_reverse_condition;
         FileLineBufferWithAutoExpansion f;
         if(!f.open(file_name)) {
             cerr << "Cannot open '" << file_name << "'" << endl;
+            flagError();
             continue;
         }
         if(use_index) {
@@ -1461,6 +1653,19 @@ void do_extract(int argc, char** argv)
                             f.seekg(pos);
                             if(f.fail() || !f.getline()) {
                                 cerr << "WARNING: " << read_name << " is missing in the file. Maybe the index is old?\n";
+                                flagError();
+                                continue;
+                            }
+                            // The index may be stale (its mtime is not always
+                            // newer, and stat() may even fail), in which case the
+                            // offset points at some other sequence. Emitting that
+                            // one under the requested name would be silent data
+                            // corruption, so verify the header we landed on.
+                            if(get_read_name_from_header(f.b) != read_name) {
+                                cerr << "ERROR: '" << index_file_name << "' is out of date: the offset recorded for '"
+                                     << read_name << "' points at '" << get_read_name_from_header(f.b) << "'.\n";
+                                cerr << "       Recreate the index with 'fatt index --force " << file_name << "'.\n";
+                                flagError();
                                 continue;
                             }
                             cout << f.b << "\n";
@@ -1492,6 +1697,7 @@ void do_extract(int argc, char** argv)
                             }
                         } else {
                             cerr << "WARNING: " << read_name << " was not found.\n";
+                            flagError();
                         }
                     }
                 } else {
@@ -1503,6 +1709,7 @@ void do_extract(int argc, char** argv)
                         f.seekg(pos);
                         if(f.fail() || !f.getline()) {
                             cerr << "WARNING: Cannot seek to that far. Maybe the index is old?\n";
+                            flagError();
                             continue;
                         }
                         cout << f.b << "\n";
@@ -1520,14 +1727,19 @@ void do_extract(int argc, char** argv)
                                         if(n <= 0) break;
                                     }
                                     sequence_index++;
-                                    if(param_end <= sequence_index) break;
+                                    if(param_effective_end <= sequence_index) break;
                                     const long long line_start_pos = f.get_offset();
                                     if(!f.getline()) {
-                                        cerr << "WARNING: reached the end of file.\n";
-                                        return;
+                                        if(param_end != -1) {
+                                            // The user asked for more sequences than the file holds.
+                                            cerr << "WARNING: reached the end of file.\n";
+                                            flagError();
+                                        }
+                                        break; // ... and go on with the next input file.
                                     }
                                     if(!f.looksLikeFASTQHeader()) {
                                         cerr << "ERROR: bad file format. The line does not start with '@' at line " << f.getLineCount() << " (pos " << line_start_pos << ")" << endl;
+                                        flagError();
                                         return;
                                     }
                                     cout << f.b << "\n";
@@ -1542,17 +1754,20 @@ void do_extract(int argc, char** argv)
                             while(f.getline()) {
                                 if(f.looksLikeFASTAHeader()) {
                                     sequence_index++;
-                                    if(param_end <= sequence_index) break;
+                                    if(param_effective_end <= sequence_index) break;
                                 }
                                 cout << f.b << "\n";
                             }
                         }
                     } else {
                         cerr << "WARNING: the start index (" << param_start << ") is larger than the number of sequences in the file." << endl;
+                        flagError();
                     }
                 }
             } catch (const sqdb::Exception& e) {
                 cerr << "ERROR: db error. " << e.GetErrorMsg() << endl;
+                cerr << "       ('" << index_file_name << "' may be broken; remove it or recreate it with 'fatt index --force " << file_name << "'.)" << endl;
+                flagError();
                 return;
             }
         } else {
@@ -1565,7 +1780,7 @@ void do_extract(int argc, char** argv)
                 if(param_start == -1) {
                     current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(f.b)) != 0) ^ flag_reverse_condition;
                 } else {
-                    current_read_has_been_taken = param_start + 1 <= number_of_sequences && number_of_sequences <= param_end;
+                    current_read_has_been_taken = param_start + 1 <= (long long)number_of_sequences && (long long)number_of_sequences <= param_effective_end;
                     // NOTE: the latter condition never hold, if I properly implemented.
                 }
                 if(current_read_has_been_taken) cout << f.b << endl;
@@ -1577,7 +1792,7 @@ void do_extract(int argc, char** argv)
                             if(param_start == -1) {
                                 current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(f.b)) != 0) ^ flag_reverse_condition;
                             } else {
-                                current_read_has_been_taken = param_start + 1 <= number_of_sequences && number_of_sequences <= param_end;
+                                current_read_has_been_taken = param_start + 1 <= (long long)number_of_sequences && (long long)number_of_sequences <= param_effective_end;
                                 // NOTE: the latter condition never hold, if I properly implemented.
                             }
                             if(current_read_has_been_taken) cout << f.b << endl;
@@ -1607,10 +1822,10 @@ void do_extract(int argc, char** argv)
                             if(param_start == -1) {
                                 current_read_has_been_taken = (readNamesToTake.count(get_read_name_from_header(f.b)) != 0) ^ flag_reverse_condition;
                             } else {
-                                current_read_has_been_taken = param_start + 1 <= number_of_sequences && number_of_sequences <= param_end;
+                                current_read_has_been_taken = param_start + 1 <= (long long)number_of_sequences && (long long)number_of_sequences <= param_effective_end;
                                 // NOTE: the latter condition never hold, if I properly implemented.
                             }
-                            if(param_end < number_of_sequences) // NOTE: param_end is 0-origin, number_of_sequences is 1-origin.
+                            if(param_effective_end < (long long)number_of_sequences) // NOTE: param_end is 0-origin, number_of_sequences is 1-origin.
                                 break;
                             if(current_read_has_been_taken) cout << f.b << endl;
                             if(flag_output_unique) readNamesToTake.insert(get_read_name_from_header(f.b));
@@ -1712,28 +1927,60 @@ void do_convert_qv_type(int argc, char** argv)
             break;
 		}
 	}
+    // NOTE: both QV ranges are CLOSED intervals ([min, max]); the messages used
+    // to advertise a half-open one while the code always accepted the maximum
+    // (a Solexa QV of exactly 40, for instance, is perfectly valid).
 	if(param_in_qv_max < param_in_qv_min) {
-		cerr << "ERROR: Input QV range [" << param_in_qv_min << ", " << param_in_qv_max << ") is empty." << endl;
+		cerr << "ERROR: Input QV range [" << param_in_qv_min << ", " << param_in_qv_max << "] is empty." << endl;
+		flagError();
 		return;
 	}
 	if(param_out_qv_max < param_out_qv_min) {
-		cerr << "ERROR: Output QV range [" << param_out_qv_min << ", " << param_out_qv_max << ") is empty." << endl;
+		cerr << "ERROR: Output QV range [" << param_out_qv_min << ", " << param_out_qv_max << "] is empty." << endl;
+		flagError();
 		return;
 	}
-    cerr << "QV [" << param_in_qv_min << ", " << param_in_qv_max << "):base" << param_from_base << " ==> "
-            "QV [" << param_out_qv_min << ", " << param_out_qv_max << "):base" << param_to_base << endl;
+    if(param_from_base < 0 || 127 < param_from_base) {
+        cerr << "ERROR: --frombase (" << param_from_base << ") must be in [0, 127]." << endl;
+        flagError();
+        return;
+    }
+    if(param_to_base < 0 || 127 < param_to_base) {
+        cerr << "ERROR: --tobase (" << param_to_base << ") must be in [0, 127]." << endl;
+        flagError();
+        return;
+    }
+    {
+        // Output characters are param_to_base + a QV clamped into
+        // [param_out_qv_min, param_out_qv_max], so we can check up front that
+        // they all fit in a printable byte instead of silently overflowing.
+        const int lowest_output_char  = param_to_base + param_out_qv_min;
+        const int highest_output_char = param_to_base + param_out_qv_max;
+        if(lowest_output_char < 33 || 126 < highest_output_char) {
+            cerr << "ERROR: with --tobase=" << param_to_base << " and the output QV range ["
+                 << param_out_qv_min << ", " << param_out_qv_max << "], the output characters would range from "
+                 << lowest_output_char << " to " << highest_output_char << ",\n";
+            cerr << "       which is outside the printable ASCII range [33, 126]. Adjust --tobase/--min/--max." << endl;
+            flagError();
+            return;
+        }
+    }
+    cerr << "QV [" << param_in_qv_min << ", " << param_in_qv_max << "]:base" << param_from_base << " ==> "
+            "QV [" << param_out_qv_min << ", " << param_out_qv_max << "]:base" << param_to_base << endl;
     for(int findex = optind + 1; findex < argc; ++findex) {
         const char* file_name = argv[findex];
         FileLineBufferWithAutoExpansion f;
         if(!f.open(file_name)) {
             cerr << "Cannot open '" << file_name << "'" << endl;
+            flagError();
             continue;
         }
         if(f.getline()) {
             size_t number_of_nucleotides_in_read = 0;
-            if(!f.looksLikeFASTQHeader()) { 
+            if(!f.looksLikeFASTQHeader()) {
                 cerr << "ERROR: the input file '" << file_name << "' does not seem to be a FASTQ file at line " << f.getLineCount() << endl;
-                return;
+                flagError();
+                continue; // ... but still process the remaining input files.
             }
             cout << f.b << "\n";
             while(f.getline()) {
@@ -1746,6 +1993,8 @@ void do_convert_qv_type(int argc, char** argv)
                             int qv = *p - param_from_base;
                             if(qv < param_in_qv_min || param_in_qv_max < qv) {
                                 cerr << "ERROR: the input file '" << file_name << "' contains an invalid QV (" << qv << "; chr = '" << *p << "'; ord = '" << int(*p) << "') at line " << f.getLineCount() << endl;
+                                cerr << "       The conversion is aborted here, so the output is TRUNCATED in the middle of a record." << endl;
+                                flagError();
                                 return;
                             }
                             if(param_out_qv_max < qv) qv = param_out_qv_max;
@@ -1778,6 +2027,7 @@ void do_guess_qv_type(int argc, char** argv)
         FileLineBufferWithAutoExpansion f;
         if(!f.open(file_name)) {
             cerr << "Cannot open '" << file_name << "'" << endl;
+            flagError();
             continue;
         }
         size_t histogram[256];
@@ -1787,9 +2037,10 @@ void do_guess_qv_type(int argc, char** argv)
         if(f.getline()) {
             number_of_sequences++;
             size_t number_of_nucleotides_in_read = 0;
-            if(!f.looksLikeFASTQHeader()) { 
+            if(!f.looksLikeFASTQHeader()) {
                 cerr << "ERROR: the input file '" << file_name << "' does not seem to be a FASTQ file at line " << f.getLineCount() << endl;
-                return;
+                flagError();
+                continue; // ... but still process the remaining input files.
             }
             while(f.getline()) {
                 if(f.looksLikeFASTQSeparator()) {
@@ -1850,6 +2101,7 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
     FileLineBufferWithAutoExpansion f;
     if(!f.open(file_name)) {
         cerr << "Cannot open '" << file_name << "'" << endl;
+        flagError();
         return;
     }
     size_t number_of_sequences = 0;
@@ -1930,11 +2182,39 @@ void to_csv(const char* file_name, bool does_not_output_header, bool output_in_t
     }
 }
 
+// Emits [buf, buf + len) folded at 'length_of_line' characters.
+// 'number_of_chars_in_output_line' carries the fill level of the current output
+// line across calls. length_of_line must be >= 1 (the callers validate --len);
+// with 0 the loop below would never make progress and fatt used to hang forever.
+static void output_folded(const char* buf, size_t len, size_t length_of_line, size_t& number_of_chars_in_output_line)
+{
+    if(length_of_line < 1) length_of_line = 1; // defensive; must not happen
+    size_t off = 0;
+    while(off < len) {
+        size_t s = len - off;
+        const size_t space_left_in_output_line = length_of_line - number_of_chars_in_output_line;
+        if(space_left_in_output_line <= s) s = space_left_in_output_line;
+        for(size_t i = 0; i < s; ++i) cout << buf[off + i];
+        off += s;
+        number_of_chars_in_output_line += s;
+        if(length_of_line <= number_of_chars_in_output_line) {
+            cout << '\n';
+            number_of_chars_in_output_line = 0;
+        }
+    }
+}
+
 void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
 {
+    if(is_folding && length_of_line < 1) {
+        cerr << "ERROR: the line length must be a positive number (" << length_of_line << " was given)." << endl;
+        flagError();
+        return;
+    }
     FileLineBufferWithAutoExpansion f;
     if(!f.open(file_name)) {
         cerr << "Cannot open '" << file_name << "'" << endl;
+        flagError();
         return;
     }
     if(f.getline()) {
@@ -1950,20 +2230,9 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
                     }
                     cout << f.b << '\n';
                 } else {
-                    const int number_of_chars_in_line = f.len();
+                    const size_t number_of_chars_in_line = f.len();
                     if(is_folding) {
-                        int off = 0;
-                        while(off < number_of_chars_in_line) {
-                            int s = number_of_chars_in_line - off;
-                            if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
-                            for(int i = 0; i < s; ++i) cout << f.b[off + i];
-                            off += s;
-                            number_of_nucleotides_in_output_line += s;
-                            if(length_of_line <= number_of_nucleotides_in_output_line) {
-                                cout << '\n';
-                                number_of_nucleotides_in_output_line = 0;
-                            }
-                        }
+                        output_folded(f.b, number_of_chars_in_line, length_of_line, number_of_nucleotides_in_output_line);
                     } else {
                         cout << f.b;
                         number_of_nucleotides_in_output_line += number_of_chars_in_line;
@@ -1980,23 +2249,15 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
                         cout << '\n';
                         number_of_nucleotides_in_output_line = 0;
                     }
-					cout << "+\n";
+                    // Emit the separator line as it was ('+' possibly followed by
+                    // a repeat of the read name/description) instead of dropping
+                    // whatever came after the '+'.
+                    cout << f.b << '\n';
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
                         const size_t number_of_qvchars_in_line = f.len();
                         if(is_folding) {
-                            int off = 0;
-                            while(off < number_of_qvchars_in_line) {
-                                int s = number_of_qvchars_in_line - off;
-                                if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
-                                for(int i = 0; i < s; ++i) cout << f.b[off + i];
-                                off += s;
-                                number_of_nucleotides_in_output_line += s;
-                                if(length_of_line <= number_of_nucleotides_in_output_line) {
-                                    cout << '\n';
-                                    number_of_nucleotides_in_output_line = 0;
-                                }
-                            }
+                            output_folded(f.b, number_of_qvchars_in_line, length_of_line, number_of_nucleotides_in_output_line);
                         } else {
                             cout << f.b;
                             number_of_nucleotides_in_output_line += number_of_qvchars_in_line;
@@ -2014,21 +2275,10 @@ void fold_fastx(const char* file_name, int length_of_line, bool is_folding)
                     }
                     cout << f.b << '\n';
                 } else {
-                    const int number_of_chars_in_line = f.len();
+                    const size_t number_of_chars_in_line = f.len();
                     number_of_nucleotides_in_read += number_of_chars_in_line;
                     if(is_folding) {
-                        int off = 0;
-                        while(off < number_of_chars_in_line) {
-                            int s = number_of_chars_in_line - off;
-                            if(length_of_line - number_of_nucleotides_in_output_line <= s) s = length_of_line - number_of_nucleotides_in_output_line;
-                            for(int i = 0; i < s; ++i) cout << f.b[off + i];
-                            off += s;
-                            number_of_nucleotides_in_output_line += s;
-                            if(length_of_line <= number_of_nucleotides_in_output_line) {
-                                cout << '\n';
-                                number_of_nucleotides_in_output_line = 0;
-                            }
-                        }
+                        output_folded(f.b, number_of_chars_in_line, length_of_line, number_of_nucleotides_in_output_line);
                     } else {
                         cout << f.b;
                         number_of_nucleotides_in_output_line += number_of_chars_in_line;
@@ -2045,16 +2295,18 @@ void fastq_to_fasta(const char* file_name)
     FileLineBufferWithAutoExpansion f;
     if(!f.open(file_name)) {
         cerr << "Cannot open '" << file_name << "'" << endl;
+        flagError();
         return;
     }
     if(f.getline()) {
         size_t number_of_nucleotides_in_output_line = 0;
-        if(!f.looksLikeFASTQHeader()) { 
+        if(!f.looksLikeFASTQHeader()) {
             if(f.looksLikeFASTAHeader()) {
                 cerr << "Input is already FASTA." << endl;
             } else {
                 cerr << "Input does not look like FASTA/FASTQ." << endl;
             }
+            flagError();
             return;
         }
         // This is FASTQ
@@ -2071,8 +2323,17 @@ void fastq_to_fasta(const char* file_name)
                     if(n <= 0) break;
                 }
                 if(f.notFollowedByHeaderOrEOF()) {
-                    cerr << "WARNING: bad file format? at line " << f.getLineCount() << "." << endl;
-                    return;
+                    // The quality string did not have the same length as the
+                    // sequence. Do NOT just stop: that used to drop every
+                    // remaining read of the file without even a non-zero exit
+                    // status. Report it and resynchronise on the next record.
+                    cerr << "ERROR: bad file format in '" << file_name << "' at line " << f.getLineCount() << ".\n";
+                    cerr << "       The quality string does not have the same length as the sequence.\n";
+                    cerr << "       Skipping to the next line that starts with '@'.\n";
+                    flagError();
+                    while(f.notFollowedByHeaderOrEOF()) {
+                        if(!f.getline()) break;
+                    }
                 }
                 number_of_nucleotides_in_read = 0;
                 if(!f.getline()) break;
@@ -2080,7 +2341,7 @@ void fastq_to_fasta(const char* file_name)
                 f.b[0] = '>';
                 cout << f.b << '\n';
             } else {
-                const int number_of_chars_in_line = f.len();
+                const size_t number_of_chars_in_line = f.len();
                 number_of_nucleotides_in_read += number_of_chars_in_line;
                 cout << f.b << '\n';
             }
@@ -2091,13 +2352,13 @@ void fastq_to_fasta(const char* file_name)
 void clean_nucleotide_line(char* buffer, bool process_n, int char_change_into)
 {
     for(char* p = buffer; *p != '\0'; p++) {
-        const char c = toupper(*p);
+        const char c = toupper(static_cast<unsigned char>(*p)); // toupper() is UB on negative chars
         if(c != 'A' && c != 'C' && c != 'G' && c != 'T') {
             if(process_n || c != 'N') {
                 if(char_change_into != -1) {
                     *p = char_change_into;
                 } else {
-                    const char t = rand() / ((RAND_MAX / 2 + 1) / 2);
+                    const int t = rand() / ((RAND_MAX / 2 + 1) / 2);
                     *p = "ACGTT"[t];
                 }
             }
@@ -2110,6 +2371,7 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
     FileLineBufferWithAutoExpansion f;
     if(!f.open(file_name)) {
         cerr << "Cannot open '" << file_name << "'" << endl;
+        flagError();
         return;
     }
     srand(time(NULL));
@@ -2125,7 +2387,9 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
             size_t number_of_nucleotides_in_read = 0;
             while(f.getline()) {
                 if(f.looksLikeFASTQSeparator()) {
-					cout << "+\n";
+                    // Keep the separator line verbatim; it may repeat the read
+                    // name/description, which used to be silently discarded.
+                    cout << f.b << '\n';
                     long long n = number_of_nucleotides_in_read;
                     while(f.getline()) {
                         const size_t number_of_qvchars_in_line = f.len();
@@ -2139,7 +2403,7 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
                     f.registerHeaderLine();
                     cout << f.b << '\n';
                 } else {
-                    const int number_of_chars_in_line = f.len();
+                    const size_t number_of_chars_in_line = f.len();
                     number_of_nucleotides_in_read += number_of_chars_in_line;
                     clean_nucleotide_line(f.b, flag_process_n, char_change_into);
                     cout << f.b << '\n';
@@ -2149,9 +2413,11 @@ void clean_fastx(const char* file_name, bool flag_process_n, int char_change_int
     }
 }
 
-static char asterisk_if_nulchar(int i)
+// NOTE: the return type must be UNSIGNED char; with a plain (signed) char the
+// bytes >= 0x80 became negative values.
+static unsigned char asterisk_if_nulchar(size_t i)
 {
-    if(i != 0) return i;
+    if(i != 0) return static_cast<unsigned char>(i);
     return '*';
 }
 
@@ -2160,6 +2426,7 @@ void investigate_composition(const char* file_name, bool ignore_case, bool flag_
     FileLineBufferWithAutoExpansion f;
     if(!f.open(file_name)) {
         cerr << "Cannot open '" << file_name << "'" << endl;
+        flagError();
         return;
     }
     // We will investigate 1-mer to 3-mer composition of the given input file.
@@ -2173,7 +2440,11 @@ void investigate_composition(const char* file_name, bool ignore_case, bool flag_
     memset(freq_3_mer, 0, sizeof(freq_3_mer));
     if(f.getline()) {
         const size_t LOOK_BEHIND_SIZE = 2;
-        char previousCharacters[LOOK_BEHIND_SIZE];
+        // UNSIGNED: these are used as array subscripts, and a plain char is
+        // signed on most platforms, so any byte >= 0x80 (e.g. a UTF-8 character
+        // that sneaked into the sequence) produced a NEGATIVE index, i.e. an
+        // out-of-bounds write into the freq_*_mer tables.
+        unsigned char previousCharacters[LOOK_BEHIND_SIZE];
         memset(previousCharacters, 0, sizeof(previousCharacters));
         if(f.looksLikeFASTQHeader()) {
             size_t number_of_nucleotides_in_read = 0;
@@ -2186,7 +2457,7 @@ void investigate_composition(const char* file_name, bool ignore_case, bool flag_
                         if(n <= 0) break;
                     }
                     {
-                        const char c = 0;
+                        const unsigned char c = 0;
                         freq_1_mer[c]++;
                         freq_2_mer[previousCharacters[0]][c]++;
                         freq_3_mer[previousCharacters[1]][previousCharacters[0]][c]++;
@@ -2197,10 +2468,11 @@ void investigate_composition(const char* file_name, bool ignore_case, bool flag_
                     if(!f.getline()) break;
                     f.registerHeaderLine();
                 } else {
-                    const int number_of_chars_in_line = f.len();
+                    const size_t number_of_chars_in_line = f.len();
                     number_of_nucleotides_in_read += number_of_chars_in_line;
                     for(size_t i = 0; i < number_of_chars_in_line; i++) {
-                        const char c = ignore_case ? toupper(f.b[i]) : f.b[i];
+                        const unsigned char raw_char = static_cast<unsigned char>(f.b[i]);
+                        const unsigned char c = ignore_case ? static_cast<unsigned char>(toupper(raw_char)) : raw_char;
                         freq_1_mer[c]++;
                         freq_2_mer[previousCharacters[0]][c]++;
                         freq_3_mer[previousCharacters[1]][previousCharacters[0]][c]++;
@@ -2213,7 +2485,7 @@ void investigate_composition(const char* file_name, bool ignore_case, bool flag_
             while(f.getline()) {
                 if(f.looksLikeFASTAHeader()) {
                     {
-                        const char c = 0;
+                        const unsigned char c = 0;
                         freq_1_mer[c]++;
                         freq_2_mer[previousCharacters[0]][c]++;
                         freq_3_mer[previousCharacters[1]][previousCharacters[0]][c]++;
@@ -2222,7 +2494,8 @@ void investigate_composition(const char* file_name, bool ignore_case, bool flag_
                 } else {
                     const size_t number_of_chars_in_line = f.len();
                     for(size_t i = 0; i < number_of_chars_in_line; i++) {
-                        const char c = ignore_case ? toupper(f.b[i]) : f.b[i];
+                        const unsigned char raw_char = static_cast<unsigned char>(f.b[i]);
+                        const unsigned char c = ignore_case ? static_cast<unsigned char>(toupper(raw_char)) : raw_char;
                         freq_1_mer[c]++;
                         freq_2_mer[previousCharacters[0]][c]++;
                         freq_3_mer[previousCharacters[1]][previousCharacters[0]][c]++;
@@ -2357,6 +2630,11 @@ void do_fold(int argc, char** argv)
 			break;
 		}
 	}
+    if(length_of_line < 1) {
+        cerr << "ERROR: --len must be a positive integer (" << length_of_line << " was given)." << endl;
+        flagError();
+        return;
+    }
     for(int i = optind + 1; i < argc; ++i) {
         fold_fastx(argv[i], length_of_line, true);
     }
@@ -2494,12 +2772,13 @@ void do_composition(int argc, char** argv)
 }
 
 struct Sequence {
+    /// Load order. saveall() sorts on this, so it MUST always be initialized.
     size_t file_position;
     string name;
     string description;
     vector<char> sequence;
     vector<char> qv;
-    Sequence() {}
+    Sequence() : file_position(0) {}
     Sequence(size_t file_position, string name, string description, const vector<char>& sequence) : file_position(file_position), name(name), description(description), sequence(sequence) {}
     Sequence(size_t file_position, string name, string description, const vector<char>& sequence, const vector<char>& qv) : file_position(file_position), name(name), description(description), sequence(sequence), qv(qv) {}
     inline bool operator < (const Sequence& b) const {
@@ -2555,6 +2834,12 @@ class GenomeEditScript {
     bool is_verbose;
     typedef map<string, Sequence> SequenceMap;
     SequenceMap sequences;
+    /// Monotonically increasing load order, used to keep the output in input
+    /// order. It must NOT restart per file (the line number used to, which made
+    /// 'saveall' interleave the records of the different input files). The step
+    /// leaves room for the two halves produced by 'split'.
+    size_t load_order_counter;
+    size_t nextFilePosition() { load_order_counter += 16; return load_order_counter; }
 
     static const size_t FOLD_WITH_THIS_SIZE;
 
@@ -2604,6 +2889,15 @@ class GenomeEditScript {
         return retval;
     }
 public:
+    /// Registers a freshly read sequence, warning about a name clash instead of
+    /// dropping the previous record without a word.
+    void registerLoadedSequence(const Sequence& seq, const char* seq_file_name) {
+        if(sequences.count(seq.name)) {
+            cerr << "WARNING: the sequence name '" << seq.name << "' (in '" << seq_file_name
+                 << "') has already been loaded. The previous one is replaced.\n";
+        }
+        sequences[seq.name] = seq;
+    }
     bool loadEntireSeq(const char* seq_file_name) {
         FileLineBufferWithAutoExpansion f;
         if(!f.open(seq_file_name)) {
@@ -2615,7 +2909,7 @@ public:
             f.registerHeaderLineWithDesc();
             vector<char> current_sequence;
             current_sequence.reserve(64 * 1024);
-            if(!f.looksLikeFASTQHeader()) { 
+            if(!f.looksLikeFASTQHeader()) {
                 // This should be FASTA
                 if(has_file_type_determined) {
                     if(is_fastq) {
@@ -2625,20 +2919,24 @@ public:
                     }
                 } else {
                     is_fastq = false;
+                    // Without this the documented 'you cannot mix FASTA and
+                    // FASTQ' check never fired for loadall (only loadone used
+                    // to set it), and FASTA records were happily written out as
+                    // FASTQ with an empty quality line.
+                    has_file_type_determined = true;
                 }
                 while(f.getline()) {
                     if(f.looksLikeFASTAHeader()) {
                         const string sequence_name = f.getSequenceName();
-                        sequences[sequence_name] = Sequence(f.getLineCount(), sequence_name, f.getSequenceDescription(), current_sequence);
+                        registerLoadedSequence(Sequence(nextFilePosition(), sequence_name, f.getSequenceDescription(), current_sequence), seq_file_name);
                         current_sequence.resize(0);
                         f.registerHeaderLineWithDesc();
                     } else {
-                        const int number_of_chars_in_line = f.len();
                         current_sequence.insert(current_sequence.end(), f.b, f.b + f.len());
                     }
                 }
                 const string sequence_name = f.getSequenceName();
-                sequences[sequence_name] = Sequence(f.getLineCount(), sequence_name, f.getSequenceDescription(), current_sequence);
+                registerLoadedSequence(Sequence(nextFilePosition(), sequence_name, f.getSequenceDescription(), current_sequence), seq_file_name);
             } else {
                 if(has_file_type_determined) {
                     if(!is_fastq) {
@@ -2648,6 +2946,7 @@ public:
                     }
                 } else {
                     is_fastq = true;
+                    has_file_type_determined = true;
                 }
                 vector<char> current_qv;
                 current_qv.reserve(64 * 1024);
@@ -2663,19 +2962,29 @@ public:
                         f.expectHeaderOfEOF();
                         {
                             const string sequence_name = f.getSequenceName();
-                            sequences[sequence_name] = Sequence(f.getLineCount(), sequence_name, f.getSequenceDescription(), current_sequence, current_qv);
+                            // A record whose quality string has a different
+                            // length than its sequence would make every later
+                            // operation (print/split/trim) read past the end of
+                            // the quality vector, so reject it right here.
+                            if(current_qv.size() != current_sequence.size()) {
+                                cerr << "ERROR: in '" << seq_file_name << "', the sequence '" << sequence_name << "' is "
+                                     << current_sequence.size() << " bp long but its quality string is "
+                                     << current_qv.size() << " characters long (line " << f.getLineCount() << ").\n";
+                                return false;
+                            }
+                            registerLoadedSequence(Sequence(nextFilePosition(), sequence_name, f.getSequenceDescription(), current_sequence, current_qv), seq_file_name);
                             current_sequence.resize(0);
                             current_qv.resize(0);
                         }
                         if(!f.getline()) break;
                         f.registerHeaderLineWithDesc();
                     } else {
-                        const int number_of_chars_in_line = f.len();
-                        current_sequence.insert(current_sequence.end(), f.b, f.b + number_of_chars_in_line);
+                        current_sequence.insert(current_sequence.end(), f.b, f.b + f.len());
                     }
                 }
             }
         }
+        if(f.hasBadFormat()) return false;
         return true;
     }
     ostream& output_with_fold(ostream& os, const vector<char>& s) {
@@ -2689,6 +2998,11 @@ public:
         return os;
     }
     typedef pair<size_t, const Sequence *> OrderPreservedSequence;
+    /// Compares the load order only, so that std::stable_sort really is stable
+    /// (comparing the pair would fall back to comparing the pointers).
+    static bool compareByFilePosition(const OrderPreservedSequence& a, const OrderPreservedSequence& b) {
+        return a.first < b.first;
+    }
     bool saveEntireSeq(const char* sequence_file_name) {
         ofstream ost(sequence_file_name);
         if(!ost) {
@@ -2699,7 +3013,9 @@ public:
         for(SequenceMap::const_iterator cit = sequences.begin(); cit != sequences.end(); ++cit) {
             ops.push_back(OrderPreservedSequence(cit->second.file_position, &(cit->second)));
         }
-        sort(ops.begin(), ops.end());
+        // stable_sort so that sequences that ended up with the same load order
+        // keep a deterministic (name) order instead of a pointer-dependent one.
+        stable_sort(ops.begin(), ops.end(), compareByFilePosition);
         if(is_fastq) {
             for(size_t i = 0; i < ops.size(); i++) {
                 const Sequence& s = *(ops[i].second);
@@ -2782,6 +3098,12 @@ public:
                 if(!f.getline()) {
                     cerr << "'" << sequence_name << "' is missing in the file. The header is not as expected. Maybe the index is old?\n"; return false;
                 }
+                if(get_read_name_from_header(f.b) != sequence_name) {
+                    cerr << "'" << index_file_name << "' is out of date: the offset recorded for '" << sequence_name
+                         << "' points at '" << get_read_name_from_header(f.b) << "'.\n";
+                    cerr << "Recreate the index with 'fatt index --force " << sequence_file_name << "'.\n";
+                    return false;
+                }
                 f.registerHeaderLineWithDesc();
                 vector<char> current_sequence, current_qv;
                 if(is_verbose) { cerr << "HEADER: " << f.b << endl; }
@@ -2796,7 +3118,13 @@ public:
                                 n -= number_of_qvchars_in_line;
                                 if(n <= 0) break;
                             }
-                            sequences[f.getSequenceName()] = Sequence(f.getLineCount(), f.getSequenceName(), f.getSequenceDescription(), current_sequence, current_qv);
+                            if(current_qv.size() != current_sequence.size()) {
+                                cerr << "ERROR: in '" << sequence_file_name << "', the sequence '" << f.getSequenceName() << "' is "
+                                     << current_sequence.size() << " bp long but its quality string is "
+                                     << current_qv.size() << " characters long.\n";
+                                return false;
+                            }
+                            registerLoadedSequence(Sequence(nextFilePosition(), f.getSequenceName(), f.getSequenceDescription(), current_sequence, current_qv), sequence_file_name.c_str());
                             break;
                         } else {
                             current_sequence.insert(current_sequence.end(), f.b, f.b + f.len());
@@ -2807,7 +3135,7 @@ public:
                         if(f.looksLikeFASTAHeader()) break;
                         current_sequence.insert(current_sequence.end(), f.b, f.b + f.len());
                     }
-                    sequences[f.getSequenceName()] = Sequence(f.getLineCount(), f.getSequenceName(), f.getSequenceDescription(), current_sequence);
+                    registerLoadedSequence(Sequence(nextFilePosition(), f.getSequenceName(), f.getSequenceDescription(), current_sequence), sequence_file_name.c_str());
                 }
             } else {
                 cerr << "'" << sequence_name << "' was not found.\n"; return false;
@@ -2855,12 +3183,15 @@ public:
         if(sequences.count(new_name)) {
             cerr << "There is already a sequence '" << new_name << "', to which you tried to duplicate a sequence '" << old_name << "'\n"; return false;
         }
-        size_t length = sequences[old_name].sequence.size();
+        const size_t length = sequences[old_name].sequence.size();
+        // NOTE: 'complement' REPLACES the source sequence (it is erased below).
         sequences[new_name].name = new_name;
         sequences[new_name].description = sequences[old_name].description;
+        // Keep the position of the source so that saveall() keeps the output order.
+        sequences[new_name].file_position = sequences[old_name].file_position;
         sequences[new_name].sequence = vector<char>(length);
-        for(int i = 0; i < length; ++i) {
-          char c = complement_char(sequences[old_name].sequence[i]);
+        for(size_t i = 0; i < length; ++i) {
+          const char c = complement_char(sequences[old_name].sequence[i]);
           sequences[new_name].sequence[length-1-i] = c;
         }
         sequences[new_name].qv = sequences[old_name].qv;
@@ -2882,6 +3213,9 @@ public:
         Sequence& right_seq = sequences[right_sequence_name];
         Sequence& new_seq = sequences[new_sequence_name];
         new_seq.name = new_sequence_name;
+        // Take over the position of the left sequence, otherwise saveall() would
+        // sort the joined sequence on an arbitrary value.
+        new_seq.file_position = left_seq.file_position;
         new_seq.sequence.resize(left_seq.sequence.size() + right_seq.sequence.size());
         copy(left_seq.sequence.begin(), left_seq.sequence.end(), new_seq.sequence.begin());
         copy(right_seq.sequence.begin(), right_seq.sequence.end(), new_seq.sequence.begin() + left_seq.sequence.size());
@@ -2919,8 +3253,13 @@ public:
         }
         const long long pos = atoll(split_position_str.c_str());
         Sequence& orig_seq = sequences[seq_name];
-        if(pos < 0 || orig_seq.sequence.size() < pos) {
+        if(pos < 0 || (long long)orig_seq.sequence.size() < pos) {
             cerr << "Sequence '" << seq_name << "' was " << orig_seq.sequence.size() << " bp in length, but you tried to split it at " << pos << " bp, which is out of range" << endl; return false;
+        }
+        if(!orig_seq.qv.empty() && orig_seq.qv.size() != orig_seq.sequence.size()) {
+            // Splitting the quality string at 'pos' would run past its end.
+            cerr << "Sequence '" << seq_name << "' is " << orig_seq.sequence.size() << " bp long but its quality string is "
+                 << orig_seq.qv.size() << " characters long, so it cannot be split." << endl; return false;
         }
         Sequence& left_seq = sequences[left_seq_name];
         Sequence& right_seq = sequences[right_seq_name];
@@ -2948,21 +3287,28 @@ public:
         if(start_pos < 0 || s.sequence.size() < start_pos) {
             cerr << "Start position (" << start_pos << " bp; 0-origin, inclusive) is out of range. The length of the sequence '" << seq_name << "' is " << s.sequence.size() << endl; return;
         }
-        if(end_pos < 0 || s.sequence.size() < end_pos) {
+        if(end_pos < 0 || (long long)s.sequence.size() < end_pos) {
             cerr << "End position (" << end_pos << " bp; 0-origin, exclusive) is out of range. The length of the sequence '" << seq_name << "' is " << s.sequence.size() << endl; return;
         }
+        if(is_fastq && s.qv.size() != s.sequence.size()) {
+            // Printing would walk the SEQUENCE length over the QUALITY vector.
+            cerr << "Sequence '" << seq_name << "' is " << s.sequence.size() << " bp long but its quality string is "
+                 << s.qv.size() << " characters long, so it cannot be printed as FASTQ." << endl;
+            flagError();
+            return;
+        }
         cout << (is_fastq ? '@' : '>') << seq_name;
-        if(0 < start_pos || end_pos < s.sequence.size()) cout << ' ' << (start_pos + 1) << ':' << end_pos;
+        if(0 < start_pos || end_pos < (long long)s.sequence.size()) cout << ' ' << (start_pos + 1) << ':' << end_pos;
         cout << '\n';
         if(is_fastq) {
-            for(size_t i = start_pos; i < end_pos; i++) cout << s.sequence[i];
+            for(long long i = start_pos; i < end_pos; i++) cout << s.sequence[i];
             cout << "\n+\n";
-            for(size_t i = start_pos; i < end_pos; i++) cout << s.qv[i];
+            for(long long i = start_pos; i < end_pos; i++) cout << s.qv[i];
             cout << '\n';
         } else {
-            for(size_t i = start_pos; i < end_pos; ) {
-                size_t len = min<size_t>(FOLD_WITH_THIS_SIZE, end_pos - i); 
-                for(size_t j = 0; j < len; j++) cout << s.sequence[i + j];
+            for(long long i = start_pos; i < end_pos; ) {
+                const long long len = min<long long>(FOLD_WITH_THIS_SIZE, end_pos - i); 
+                for(long long j = 0; j < len; j++) cout << s.sequence[i + j];
                 cout << '\n';
                 i += len;
             }
@@ -2975,7 +3321,13 @@ public:
         if(direction != 5 && direction != 3) {
             cerr << "ERROR: logic error (trimSequence)\n"; return false;
         }
-        long long amount_int = atoll(amount.c_str());
+        const long long amount_int = atoll(amount.c_str());
+        if(amount_int < 0) {
+            // Without this the comparison below turned the negative amount into
+            // a huge unsigned value and ERASED THE WHOLE SEQUENCE.
+            cerr << "ERROR: You cannot trim a negative number of bases (" << amount_int << ") from '" << seq_name << "'\n";
+            return false;
+        }
         if(amount_int == 0) {
             cerr << "WARNING: You tried to trim 0 bases from '" << seq_name << "'\n";
         }
@@ -2984,12 +3336,13 @@ public:
         }
         vector<char>& seq = sequences[seq_name].sequence;
         vector<char>& qv = sequences[seq_name].qv;
-        if(seq.size() <= amount_int) {
+        if(seq.size() <= (size_t)amount_int) {
             cerr << "WARNING: You tried to trim '" << seq_name << "' by " << amount_int << "bp, but its size is only " << seq.size() << " bp.\n";
             seq.resize(0);
             sequences[seq_name].qv.resize(0);
             return true;
         }
+        if(qv.size() < (size_t)amount_int) qv.resize(0); // defensive; must not happen
         if(direction == 5) {
             seq.erase(seq.begin(), seq.begin() + amount_int);
             if(!qv.empty())
@@ -3005,7 +3358,7 @@ public:
         ifstream ist(script_file_name);
         if(!ist) {
             cerr << "ERROR: Cannot open '" << script_file_name << "'\n" << endl;
-            return;
+            exit(2);
         }
         size_t script_line_number = 0;
         string line;
@@ -3026,7 +3379,7 @@ public:
                 if(subargs.size() != 1) {
                     cerr << "ERROR: # of the arguments is invalid.\n";
                     cerr << "usage: loadall <file name (FASTA or FASTQ)>" << endl;
-                    return;
+                    exit(2);
                 }
                 if(!loadEntireSeq(subargs.front().c_str())) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3037,7 +3390,7 @@ public:
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: saveall <file name>\n";
                     cerr << "The file type (either FASTA or FASTQ) is automatically determined by the input file" << endl;
-                    return;
+                    exit(2);
                 }
                 if(!saveEntireSeq(subargs.front().c_str())) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3047,7 +3400,7 @@ public:
                 if(subargs.size() != 2) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: loadone <file name> <sequence name>\n";
-                    return;
+                    exit(2);
                 }
                 if(!loadOneSeq(subargs[0], subargs[1])) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3057,7 +3410,7 @@ public:
                 if(subargs.size() != 2) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: saveone <file name> <sequence name>\n";
-                    return;
+                    exit(2);
                 }
                 if(!saveOneSeq(subargs[0], subargs[1])) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3067,7 +3420,7 @@ public:
                 if(subargs.size() != 2) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: rename <old name> <new name>\n";
-                    return;
+                    exit(2);
                 }
                 if(!renameSequence(subargs[0], subargs[1])) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3078,7 +3431,7 @@ public:
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: setdesc <sequence name> <descriptions (spaces are allowed)>\n";
                     cerr << "Note that successive space characters are compressed into one.\n";
-                    return;
+                    exit(2);
                 }
                 if(!setSequenceDescription(subargs)) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3088,7 +3441,7 @@ public:
                 if(subargs.size() != 2) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: trim5 <sequence name> <trim size (in bp)>\n";
-                    return;
+                    exit(2);
                 }
                 if(!trimSequence(5, subargs[0], subargs[1])) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3098,7 +3451,7 @@ public:
                 if(subargs.size() != 2) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: trim3 <sequence name> <trim size (in bp)>\n";
-                    return;
+                    exit(2);
                 }
                 if(!trimSequence(3, subargs[0], subargs[1])) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3108,7 +3461,7 @@ public:
                 if(subargs.size() < 1 || 3 < subargs.size()) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: print <sequence name> [<start position (0-origin, inclusive)> <end position (0-origin, exclusive)]\n";
-                    return;
+                    exit(2);
                 }
                 printSequence(subargs);
             } else if(cmd == "split") {
@@ -3116,7 +3469,7 @@ public:
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: split <sequence name> <split position (0-origin)> <left sequence name> <right sequence name>\n";
                     cerr << "The base at the split position goes to the right sequence.\n" << endl;
-                    return;
+                    exit(2);
                 }
                 if(!splitSequence(subargs[0], subargs[1], subargs[2], subargs[3])) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3126,7 +3479,7 @@ public:
                 if(subargs.size() != 2) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: dupseq <sequence name> <new sequence name>\n";
-                    return;
+                    exit(2);
                 }
                 if(!duplicateSequence(subargs[0], subargs[1])) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3136,7 +3489,7 @@ public:
                 if(subargs.size() != 1) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: delete <sequence name>\n";
-                    return;
+                    exit(2);
                 }
                 if(!deleteSequence(subargs[0])) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3146,7 +3499,7 @@ public:
                 if(subargs.size() != 2) {
                     cerr << "ERROR: # of the argument is invalid.\n";
                     cerr << "usage: complement <sequence name> <new sequence name>\n";
-                    return;
+                    exit(2);
                 }
                 if(!complementSequence(subargs[0], subargs[1])) {
                     cerr << "ERROR: an error occurred." << endl;
@@ -3155,20 +3508,21 @@ public:
             } else if(cmd == "join") {
                 if(subargs.size() != 3) {
                     cerr << "ERROR: # of the argument is invalid.\n";
-                    cerr << "usage: join <left sequence> <right sequence>\n";
-                    return;
+                    cerr << "usage: join <left sequence> <right sequence> <new sequence name>\n";
+                    exit(2);
                 }
                 if(!joinSequence(subargs[0], subargs[1], subargs[2])) {
                     cerr << "ERROR: an error occurred." << endl;
                     exit(2);
                 }
             } else {
+                // A typo used to abort the rest of the script with exit code 0.
                 cerr << "ERROR: unknown command '" << cmd << "' at line " << script_line_number << endl;
-                return;
+                exit(2);
             }
         }
     }
-    GenomeEditScript(char** argv, int start, int end, bool verbose) : is_verbose(verbose) {
+    GenomeEditScript(char** argv, int start, int end, bool verbose) : is_verbose(verbose), load_order_counter(0) {
         is_fastq = false;
         has_file_type_determined = false;
         for(int i = start + 1; i < end; ++i) {
@@ -3241,12 +3595,16 @@ void show_help(const char* subcommand)
         cerr << "--start\tSpecify the start index of reads to be output. 0-based, inclusive.\n";
         cerr << "--end\tSpecify the end index of reads to be output. 0-based, exclusive.\n";
         cerr << "--num\tSpecify the number of reads to be output.\n";
-        cerr << "--force\tForce on error.\n";
+        cerr << "--index\tCreate an index (<file>.index) if there is none, and use it.\n";
+        cerr << "--noindex\tDo not use an index even if <file>.index exists.\n";
+        cerr << "--force\tForce on error (with --index, replace an existing index).\n";
+        cerr << "\nNOTE: an index is used automatically whenever <file>.index exists (unless --noindex\n";
+        cerr << "is given or --reverse is in effect).\n";
         return;
     }
     if(subcmd == "len") {
         cerr << "Usage: fatt len [options...] <FAST(A|Q) files>\n\n";
-        cerr << "--name\tAdd the name of the sequences in the second column.\n\n";
+        cerr << "--name\tPrepend the name of the sequences (i.e. output '<name><TAB><length>').\n\n";
         cerr << "It outputs the length of the sequences in given files.\n";
         return;
     }
@@ -3330,6 +3688,7 @@ void show_help(const char* subcommand)
         cerr << "--bimer\tShow only bimers\n";
         cerr << "--trimer\tShow only trimers\n";
         cerr << "--dapicheck\tShow DAPI-staining related stats\n";
+        cerr << "--countends\tAlso count the n-mers that run over the ends of the sequences ('*' stands for such an end)\n";
         return;
     }
     if(subcmd == "edit") {
@@ -3353,7 +3712,7 @@ void show_help(const char* subcommand)
         cerr << "\t\tprint\tprint a specified sequence (arg1) in memory; range [arg2, arg3) is optional\n";
         cerr << "\t\tsplit\tsplit a specified sequence (arg1) at position (arg2; 0-origin; the base at arg2 belongs to the latter fragment) into arg3 and arg4\n";
         cerr << "\t\tdupseq\tduplicate a specified sequence (arg1) and name it arg2\n";
-        cerr << "\t\tcomplement\tconstruct reverse complement of a specified sequence (arg1) and name it arg2\n";
+        cerr << "\t\tcomplement\tconstruct reverse complement of a specified sequence (arg1) and name it arg2; arg1 is REMOVED\n";
         cerr << "\t\tjoin\tjoin two specified sequences (arg1, arg2) into one (arg3)\n";
         cerr << "\nFiles given in the command line will be loaded by loadall command before executing the edit script.\n";
         return;
@@ -3362,9 +3721,12 @@ void show_help(const char* subcommand)
         cerr << "Usage: fatt split --num=n <FAST(A|Q) file>\n";
         cerr << "                split the file into n files.\n";
         cerr << "       fatt split --max=n <FAST(A|Q) file>\n";
-        cerr << "                split the file into files of around n bytes\n";
+        cerr << "                split the file into files of around n bases\n";
         cerr << "Split the input files into multiple files.\n\n";
         cerr << "--prefix=name\tSpecify the prefix of output file name. If not specified, it will be the first input file\n";
+        cerr << "--excn\tDo not count N's (case insensitive) as bases\n";
+        cerr << "--retstat\tReturn the number of the output files as the exit code (at most 100)\n";
+        cerr << "--filestat=file\tWrite the number of the output files into the specified file\n";
         cerr << "\n";
         cerr << "'fatt split --num=3 huge.fastq' will split huge.fastq into 3 files.\n";
         cerr << "fatt counts the number of bases in huge.fastq in the first phase.\n";
@@ -3481,6 +3843,7 @@ void dispatchByCommand(const string& commandString, int argc, char** argv)
     // Help or error.
     if(commandString != "help") {
         cerr << "ERROR: Unknown command '" << commandString << "'" << endl;
+        flagError();
     }
 	if(commandString == "help" && 3 <= argc) {
 		show_help(argv[2]);
@@ -3499,5 +3862,7 @@ int main(int argc, char** argv)
     }
     const char* commandStr = argv[1];
     dispatchByCommand(commandStr, argc, argv);
-    return 0;
+    // Non-zero when anything went wrong (main used to always return 0, so a
+    // script could not tell a failure from a success).
+    return g_exit_status;
 }

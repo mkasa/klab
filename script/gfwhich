@@ -1,6 +1,7 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 use Getopt::Long;
 use Pod::Usage;
 use Cwd 'getcwd';
@@ -49,13 +50,17 @@ GetOptions(
     "qgfid=s"       => \$param_gfid_query,
     "cmd=s"         => \$param_command,
     "sudo"          => \$flag_sudo
-);
+) or pod2usage(-exitval => 2, -verbose => 0);
 
 my $param_fix_file;
 my $param_fix_host;
 
+if($flag_fix && $flag_dirfix) {
+    print STDERR "ERROR: --fix and --dirfix are mutually exclusive. Please give only one of them.\n";
+    exit 1;
+}
 if($flag_fix) {
-	$param_fix_file = shift;
+    $param_fix_file = shift;
     $param_fix_host = shift;
     $flag_help = 1 if(!defined $param_fix_file || !defined $param_fix_host);
 }
@@ -65,14 +70,95 @@ if($flag_dirfix) {
 }
 
 pod2usage(1) if $flag_help;
-pod2usage(-verbose => 2) if $flag_man; 
+pod2usage(-verbose => 2) if $flag_man;
+
+# Matches one line of 'ls -al' output (in the C locale).
+#   $1 = permission field (the leading 10 characters)
+#   $2 = owner, $3 = group, $4 = size, $5 = name (possibly 'link -> target')
+# The 10 mode characters may be followed by an SELinux '.', an ACL '+' or a
+# macOS extended-attribute '@'. Owner/group names may contain '-', '.', '$', etc.
+my $LS_DATE_RE = qr{(?:\w{3}\s+\d{1,2}\s+(?:\d{1,2}:\d{2}|\d{4})|\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s*[-+]\d{4})?)};
+my $LS_LINE_RE = qr{^([-bcdlpsD?][-rwxsStTlL]{9})[.+@]*\s+\d+\s+(\S+)\s+(\S+)\s+(\d+)\s+$LS_DATE_RE\s+(.*)$};
+
+# Quote a single string so that a POSIX shell passes it through verbatim.
+sub sq
+{
+    my $s = shift;
+    $s = '' unless(defined $s);
+    $s =~ s/'/'\\''/g;
+    return "'$s'";
+}
+
+# Render an argv list as something a human can copy & paste.
+sub cmd_to_string
+{
+    return join(" ", map { m|^[\w./:=+,\@-]+$| ? $_ : sq($_) } @_);
+}
+
+# Build the argv of an ssh invocation that runs $remote_cmd (a string that is
+# meant to be interpreted by the remote shell) on $host.
+sub ssh_cmd
+{
+    my ($host, $remote_cmd) = @_;
+    my @c = ("ssh");
+    # '-t' is only useful (and only works) when we do have a terminal to
+    # forward; asking for it without one just prints a warning and makes the
+    # remote side emit CRLF line endings.
+    push(@c, "-t") if($flag_sudo && -t STDIN);
+    push(@c, $host);
+    if($flag_sudo) {
+        push(@c, "sudo sh -c " . sq($remote_cmd));
+    } else {
+        push(@c, $remote_cmd);
+    }
+    return @c;
+}
+
+sub run_system
+{
+    print "\$ " . cmd_to_string(@_) . "\n" if($debug);
+    return system(@_);
+}
+
+# Run a command (argv list, no shell involved) and return its output as a list
+# of chomped lines. CR is stripped so that 'ssh -t' output does not corrupt the
+# layout.
+sub run_capture
+{
+    my @cmd = @_;
+    print "\$ " . cmd_to_string(@cmd) . "\n" if($debug);
+    my $ph;
+    unless(open($ph, "-|", @cmd)) {
+        print STDERR "WARNING: could not execute: " . cmd_to_string(@cmd) . "\n";
+        return ();
+    }
+    my @out;
+    while(<$ph>) {
+        s/\r?\n\z//;
+        s/\r\z//;
+        push(@out, $_);
+    }
+    close $ph;
+    return @out;
+}
 
 sub read_config
 {
     my $brick_info_file = $ENV{'HOME'} . "/.gfinfo";
     open my $fh, "<", $brick_info_file or die "Cannot open ~/.gfinfo. Read the manual (gfwhich -man).";
     my @retval;
-    my $gpath = <$fh>; chomp $gpath;
+    my $gpath = <$fh>;
+    unless(defined $gpath) {
+        print STDERR "~/.gfinfo is empty. The first line must be the GlusterFS mount point.\n";
+        exit 1;
+    }
+    chomp $gpath;
+    $gpath =~ s|\s+$||;
+    $gpath =~ s|/+$|| while($gpath =~ m|.+/$|); # keep a bare '/' as is
+    if($gpath eq '') {
+        print STDERR "The first line of ~/.gfinfo must be the GlusterFS mount point.\n";
+        exit 1;
+    }
     while(<$fh>) {
         chomp;
         next if(m|^\s*$|);
@@ -81,18 +167,22 @@ sub read_config
             print "Line: $_\n";
             exit 1;
         }
-        push(@retval, {"host" => $1, "path" => $2});
+        my ($host, $path) = ($1, $2);
+        $path =~ s|/+$|| while($path =~ m|.+/$|);
+        push(@retval, {"host" => $host, "path" => $path});
     }
     close $fh;
     return {"gluster_path" => $gpath, "bricks" => \@retval};
 }
 
+# Run a command given as an argv list. Nothing is passed through a shell, so
+# file names containing spaces, quotes, ';', '`' or '$( )' are safe.
 sub print_and_do
 {
-    my $cmd = shift;
+    my @cmd = @_;
     print STDERR " "x$param_left_column_size;
-    print STDERR color('yellow') . "\$ $cmd" . color('reset') . "\n";
-    system $cmd;
+    print STDERR color('yellow') . "\$ " . cmd_to_string(@cmd) . color('reset') . "\n";
+    system @cmd;
     if($? == -1) {
         print STDERR "Failed to spawn.\n";
         exit 3;
@@ -104,13 +194,19 @@ sub print_and_do
     }
 }
 
+# Returns 'host:<remote-shell-quoted path>'. scp hands the part after the colon
+# to a shell on the remote side, so the path has to be quoted for that shell.
+# (The local shell is not involved at all because we always use the list form
+# of system().)
 sub get_scp_path_from_fname
 {
     my ($cwd, $file, $host, @bricks) = @_;
     my $remote_path;
     for(@bricks) {
         if($_->{"host"} eq $host) {
-            $remote_path = "$host:" . $_->{"path"} . "/" . $cwd . "/" . $file;
+            my $p = $_->{"path"} . "/" . $cwd . "/" . $file;
+            $p =~ s|//+|/|g;
+            $remote_path = "$host:" . sq($p);
             last;
         }
     }
@@ -130,47 +226,41 @@ sub fix_file
         exit 1;
     }
     my $local_path = "$file.tmp.$$";
-    print_and_do("scp $remote_path $local_path");
-    print_and_do("mv $file $file.orig");
-    print_and_do("mv $local_path $file");
+    print_and_do("scp", "--", $remote_path, $local_path);
+    print_and_do("mv", "--", $file, "$file.orig");
+    print_and_do("mv", "--", $local_path, $file);
     if($flag_clean) {
-        print_and_do("rm $file.orig");
+        print_and_do("rm", "--", "$file.orig");
     }
 }
 
 sub fix_dir
 {
     my $dir_name = shift;
+    $dir_name =~ s|/+$|| while($dir_name =~ m|.+/$|);
+    unless(-d $dir_name) {
+        print STDERR "ERROR: '$dir_name' is not a directory.\n";
+        exit 1;
+    }
     my $tmp_dir_name = "$dir_name.tmp.$$";
-    print_and_do("mkdir '$tmp_dir_name'");
+    print_and_do("mkdir", "--", $tmp_dir_name);
     {
-        my $cmd = "sh -c 'mv ";
-        my $any_file_exists = 0;
-        my @regular_files = <$dir_name/*>;
-        if(0 < @regular_files) {
-            $cmd .= "\"$dir_name\"/*";
-            $any_file_exists = 1;
+        # readdir() gives us every entry (including dot files whose names start
+        # with an upper case letter, '_' or '-') and, unlike a glob, it does not
+        # care about spaces or shell metacharacters in $dir_name.
+        my $dh;
+        unless(opendir($dh, $dir_name)) {
+            print STDERR "ERROR: Could not read the directory '$dir_name'.\n";
+            exit 1;
         }
-        my @dot_files = <$dir_name/.*>;
-        if(2 < @dot_files) { # we always see '.' and '..'
-            $cmd .= " " if($any_file_exists);
-            $cmd .= "\"$dir_name\".[0-9a-z]*"; # this is to avoid matching against '.' or '..'
-            $any_file_exists = 1;
-        }
-        $cmd .= " \"$tmp_dir_name\"/'";
-        if($any_file_exists) {
-            print_and_do($cmd);
+        my @entries = grep { $_ ne '.' && $_ ne '..' } readdir($dh);
+        closedir $dh;
+        if(0 < @entries) {
+            print_and_do("mv", "--", (map { "$dir_name/$_" } @entries), "$tmp_dir_name/");
         }
     }
-    print_and_do("rmdir '$dir_name'");
-    print_and_do("mv '$tmp_dir_name' '$dir_name'");
-}
-
-sub shell_escape
-{
-    my $s = shift;
-    $s =~ s|(['"\\])|\\$1|g;
-    return $s;
+    print_and_do("rmdir", "--", $dir_name);
+    print_and_do("mv", "--", $tmp_dir_name, $dir_name);
 }
 
 sub execute_command
@@ -179,18 +269,17 @@ sub execute_command
     for my $brick (@bricks) {
         my $host = $brick->{"host"};
         my $path = $brick->{"path"};
-        my $cmd = "ssh ";
-        $cmd .= "-t " if($flag_sudo);
-        $cmd .= "$host ";
-        $cmd .= "sudo " if($flag_sudo);
-        {
-            $command =~ s|:P|$path/$cwd|;
-            my $pcmd = "sh -c \"cd $path/$cwd; " . shell_escape($command) . "\"";
-            $cmd .= "\"" . shell_escape($pcmd) ."\"";
-        }
-        print "\$ $cmd\n" if($debug);
+        my $remote_dir = "$path/$cwd";
+        $remote_dir =~ s|//+|/|g;
+        # Work on a copy: otherwise the first brick's path would be baked into
+        # $command and reused for every later brick.
+        my $this_command = $command;
+        $this_command =~ s|:P|$remote_dir|g;
+        my $remote_cmd = "cd " . sq($remote_dir) . " && " . $this_command;
+        my @cmd = ssh_cmd($host, $remote_cmd);
+        print "\$ " . cmd_to_string(@cmd) . "\n" if($debug);
         print "On host $host:\n";
-        system $cmd;
+        system @cmd;
     }
 }
 
@@ -201,20 +290,14 @@ sub print_disk_free_space
     for my $brick (@bricks) {
         my $host = $brick->{"host"};
         my $path = $brick->{"path"};
-        my $cmd = "ssh ";
-        $cmd .= "-t " if($flag_sudo);
-        $cmd .= "$host ";
-        $cmd .= "sudo " if($flag_sudo);
-        $cmd .= "env LANG=C df -h $path";
-        print "\$ $cmd\n" if($debug);
-        my @results = `$cmd`;
+        my @results = run_capture(ssh_cmd($host, "env LC_ALL=C LANG=C df -h " . sq($path)));
         for(@results) {
             if(/Mounted on/) {
                 if($has_header_shown) { next; }
                 $has_header_shown = 1;
-                print "          $_";
+                print "          $_\n";
             } else {
-                printf "%9s:%s", $host, $_;
+                printf "%9s:%s\n", $host, $_;
             }
         }
     }
@@ -222,7 +305,7 @@ sub print_disk_free_space
 
 sub print_gfid_dir
 {
-    my ($gfid, $suffix, @bricks) = @_;
+    my ($gfid, @bricks) = @_;
     $gfid =~ s|^xattrop-||;
     $gfid =~ s|^0x||;
     $gfid =~ tr/A-Z/a-z/;
@@ -242,14 +325,7 @@ sub print_gfid_dir
     for my $brick (@bricks) {
         my $host = $brick->{"host"};
         my $path = $brick->{"path"};
-        my $cmd = "ssh ";
-        $cmd .= "-t " if($flag_sudo);
-        $cmd .= "$host ";
-        $cmd .= "sudo " if($flag_sudo);
-        $cmd .= "env LANG=C ls -iald $path/$lpath";
-        $cmd .= "/$suffix" if(defined $suffix && $suffix ne '');
-        print "\$ $cmd\n" if($debug);
-        system $cmd;
+        run_system(ssh_cmd($host, "env LC_ALL=C LANG=C ls -iald " . sq("$path/$lpath")));
     }
 }
 
@@ -259,13 +335,7 @@ sub print_indices_xattr
     for my $brick (@bricks) {
         my $host = $brick->{"host"};
         my $path = $brick->{"path"};
-        my $cmd = "ssh ";
-        $cmd .= "-t " if($flag_sudo);
-        $cmd .= "$host ";
-        $cmd .= "sudo " if($flag_sudo);
-        $cmd .= "env LANG=C ls -al $path/.glusterfs/indices/xattrop";
-        print "\$ $cmd\n" if($debug);
-        system $cmd;
+        run_system(ssh_cmd($host, "env LC_ALL=C LANG=C ls -al " . sq("$path/.glusterfs/indices/xattrop")));
     }
 }
 
@@ -275,28 +345,29 @@ sub print_gfid_of_file_or_dir
     unless($lpath =~ m|^/|) { # relative
         $lpath = "$cwd/$lpath";
     }
-    unless($lpath =~ s|^$gluster_path/||) {
+    $lpath =~ s|//+|/|g;
+    $lpath =~ s|/+$|| while($lpath =~ m|.+/$|);
+    my $qgp = quotemeta($gluster_path);
+    if($lpath eq $gluster_path) {
+        $lpath = "";
+    } elsif($lpath =~ s|^$qgp/+||) {
+        # ok, $lpath is now relative to the mount point
+    } else {
         print "The given directory '$lpath' does not seem like a GlusterFS directory.\n";
         exit 1;
     }
     for my $brick (@bricks) {
         my $host = $brick->{"host"};
         my $path = $brick->{"path"};
-        my $cmd = "ssh ";
-        $cmd .= "-t " if($flag_sudo);
-        $cmd .= "$host ";
-        $cmd .= "sudo " if($flag_sudo);
-        $cmd .= "env LANG=C getfattr -m trusted.gfid -d -e hex $path/$lpath";
-        $cmd .= " | grep trusted.gfid";
-        print "\$ $cmd\n" if($debug);
-        system $cmd;
+        my $target = $lpath eq '' ? $path : "$path/$lpath";
+        run_system(ssh_cmd($host, "env LC_ALL=C LANG=C getfattr -m trusted.gfid -d -e hex " . sq($target) . " | grep trusted.gfid"));
     }
 }
 
 sub remove_xattrop
 {
     my ($fname, $spec_host, @bricks) = @_;
-    if($fname =~ /^\s*$/) {
+    if(!defined $fname || $fname =~ /^\s*$/) {
         print STDERR "USAGE gfwhich -removexattrop host fname\n";
         exit 1;
     }
@@ -304,13 +375,7 @@ sub remove_xattrop
         my $host = $brick->{"host"};
         next if($spec_host ne $host);
         my $path = $brick->{"path"};
-        my $cmd = "ssh ";
-        $cmd .= "-t " if($flag_sudo);
-        $cmd .= "$host ";
-        $cmd .= "sudo " if($flag_sudo);
-        $cmd .= "env LANG=C rm $path/.glusterfs/indices/xattrop/$fname";
-        print "\$ $cmd\n" if($debug);
-        system $cmd;
+        run_system(ssh_cmd($host, "env LC_ALL=C LANG=C rm " . sq("$path/.glusterfs/indices/xattrop/$fname")));
     }
 }
 
@@ -339,28 +404,18 @@ sub resolve_gfid
         for my $brick (@bricks) {
             my $host = $brick->{"host"};
             my $path = $brick->{"path"};
-            my $cmd = "ssh ";
-            $cmd .= "-t " if($flag_sudo);
-            $cmd .= "$host ";
-            $cmd .= "sudo " if($flag_sudo);
-            $cmd .= "env LANG=C ls -iald $path/$lpath";
-            print "\$ $cmd\n" if($debug);
-            use File::Temp qw/tempfile/;
-            my ($fh, $fname) = tempfile("gfwhichXXXXXX", DIR => "/tmp", UNLINK => 0);
-            system "$cmd > $fname";
-            for(`cat $fname`) {
+            for(run_capture(ssh_cmd($host, "env LC_ALL=C LANG=C ls -iald " . sq("$path/$lpath")))) {
                 if(/^\s*(\d+)/) {
                     my $inode_number = $1;
                     push(@{$host_2_inums->{$host}}, $inode_number);
                     print STDERR "Found inum $inode_number at host $host\n" if($debug > 0);
                 }
             }
-            unlink $fname;
         }
     }
     my $number_of_inodes_found = 0;
     while(my ($k, $v) = each %$host_2_inums) {
-        $number_of_inodes_found += length(@$v);
+        $number_of_inodes_found += scalar(@$v);
     }
     if($number_of_inodes_found <= 0) {
         print STDERR "No inode number found. Abort.\n";
@@ -371,25 +426,30 @@ sub resolve_gfid
     for my $brick (@bricks) {
         my $host = $brick->{"host"};
         my $path = $brick->{"path"};
-        my $cmd = "ssh ";
-        $cmd .= "-t " if($flag_sudo);
-        $cmd .= "$host ";
-        $cmd .= "sudo " if($flag_sudo);
-        $cmd .= "env LANG=C find $path -name .glusterfs -prune";
-        for my $inum (@{$host_2_inums->{$host}}) {
-            $cmd .= " -o -inum $inum -print";
+        my @inums = @{$host_2_inums->{$host} || []};
+        next unless(0 < @inums);
+        my $remote_cmd = "env LC_ALL=C LANG=C find " . sq($path) . " -name .glusterfs -prune";
+        for my $inum (@inums) {
+            $remote_cmd .= " -o -inum " . sq($inum) . " -print";
         }
-        $path .= "/" unless($path =~ m|/$|);
-        $mount_point .= "/" unless($mount_point =~ m|/$|);
-        $cmd .= " | perl -ple 's|^$path|$mount_point|'";
-        print "\$ $cmd\n" if($debug);
-        system "$cmd";
+        # The brick path is rewritten into the mount point locally; doing it
+        # remotely used to interpolate both paths into a regular expression
+        # (and into a shell command) without any escaping.
+        my $brick_prefix = $path;  $brick_prefix .= "/" unless($brick_prefix =~ m|/$|);
+        my $mount_prefix = $mount_point; $mount_prefix .= "/" unless($mount_prefix =~ m|/$|);
+        for my $line (run_capture(ssh_cmd($host, $remote_cmd))) {
+            if(index($line, $brick_prefix) == 0) {
+                substr($line, 0, length($brick_prefix)) = $mount_prefix;
+            }
+            print "$line\n";
+        }
     }
 }
 
 sub ensure_you_have_root
 {
-    if($ENV{'USER'} ne 'root' && !$flag_sudo) {
+    # $ENV{'USER'} is not set under cron/su, so ask the kernel instead.
+    if($> != 0 && !$flag_sudo) {
         print STDERR "ERROR: you need to be root, or add -sudo option.\n";
         exit 1;
     }
@@ -406,7 +466,7 @@ if($flag_df) {
 
 if(defined $param_gfid) {
     ensure_you_have_root();
-    print_gfid_dir($param_gfid, "", @bricks);
+    print_gfid_dir($param_gfid, @bricks);
     exit 0;
 }
 my $cwd = getcwd();
@@ -432,13 +492,19 @@ if(defined $param_remove_xattrop) {
     exit 0;
 }
 
-unless($cwd =~ m|^$gluster_path/(.*)$|) {
-    print "The current directory '$cwd' does not seem like a GlusterFS directory.\n";
-    print "Check the first line of ~/.gfinfo\n";
-    print "It should contain the mount point of GlusterFS.\n";
-    exit 1;
+{
+    my $qgp = quotemeta($gluster_path);
+    if($cwd eq $gluster_path) {
+        $cwd = ""; # we are standing on the mount point itself
+    } elsif($cwd =~ m|^$qgp/(.*)$|) {
+        $cwd = $1;
+    } else {
+        print "The current directory '$cwd' does not seem like a GlusterFS directory.\n";
+        print "Check the first line of ~/.gfinfo\n";
+        print "It should contain the mount point of GlusterFS.\n";
+        exit 1;
+    }
 }
-$cwd = $1;
 
 if($flag_fix) {
     fix_file($gluster_path, $cwd, $param_fix_file, $param_fix_host, @bricks);
@@ -454,7 +520,7 @@ if(defined $param_command) {
 }
 
 if($debug) {
-    print "Bricks:\n  " . join("\n  ", @bricks) . "\n";
+    print "Bricks:\n  " . join("\n  ", map { $_->{"host"} . ":" . $_->{"path"} } @bricks) . "\n";
 }
 
 my %file_name_2_infos = ();
@@ -462,21 +528,19 @@ my %file_name_2_infos = ();
 for my $brick (@bricks) {
     my $host = $brick->{"host"};
     my $path = $brick->{"path"};
-    my $cmd = "ssh $host env LANG=C ls -al $path/$cwd";
-    print "\$ $cmd\n" if($debug);
-    my @results = `$cmd`;
+    my $remote_dir = "$path/$cwd";
+    $remote_dir =~ s|//+|/|g;
+    my @results = run_capture(ssh_cmd($host, "env LC_ALL=C LANG=C ls -al " . sq($remote_dir)));
     if(0 < @results) {
-        shift @results;
-        shift @results;
-        shift @results;
+        splice(@results, 0, 3); # 'total N', '.' and '..'
         for(@results) {
             # -rw-r--r-- 2 mkasa users 1329004544 Mar 18 16:11 CEPdaoD.sspace.scafSeq.fill.fa.sp2
-            if(m|([ldrwxst-]{10}?)\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:?\d+\s+(.*)$|i) {
+            if(m|$LS_LINE_RE|) {
                 my $perm = $1;
-                my $fsize = $2;
-                my $fname = $3;
+                my $fsize = $4;
+                my $fname = $5;
                 print "$host: $fname = $fsize\n" if($debug);
-                my $line = $_; chomp $line;
+                my $line = $_;
                 if($perm =~ m|^l|) {
                     unless($fname =~ m|^(.*) -> (.*)$|) {
                         print STDERR "ERROR: Symbolic link could not be parsed.\n";
@@ -500,24 +564,23 @@ for my $brick (@bricks) {
     }
 }
 
-my @ls_results = `env LANG=C ls -al`;
+my @ls_results = run_capture("env", "LC_ALL=C", "LANG=C", "ls", "-al");
 my $line_num = 0;
 for my $line (@ls_results) {
-    chomp $line;
     $line_num++;
     if($line_num <= 3) {
         print " "x$param_left_column_size;
         print "$line\n";
         next;
     }
-    unless($line =~ m|([ldrwxst-]{10}?)\s+\d+\s+[\w\d]+\s+[\w\d]+\s+(\d+)\s+\w+\s+\d+\s+\d+:?\d+\s+(.*)$|i) {
+    unless($line =~ m|$LS_LINE_RE|) {
         print STDERR "WARNING: local ls yielded a unparsable result\n";
         print STDERR "   LINE: $line\n";
         next;
     }
     my $perm = $1;
-    my $fsize = $2;
-    my $fname = $3;
+    my $fsize = $4;
+    my $fname = $5;
     my $origin_name_if_symbolic_link;
     my $is_symbolic_link = $perm =~ m|^l|;
     if($is_symbolic_link) {
@@ -535,14 +598,23 @@ for my $line (@ls_results) {
     my $is_directory = $perm =~ m|^d|;
     if($is_directory) {
         my %t;
-        for my $o (@{$file_name_2_infos{$fname}}) {
+        for my $o (@{$file_name_2_infos{$fname} || []}) {
             $t{$o->{"size"}}++;
         }
         while(my ($k, $v) = each %t) {
             if($v % $param_num_replica != 0) { $has_found_inconsistency = 1; }
         }
+        # The modal (most frequently seen) size is regarded as the correct one,
+        # so that the odd replica can be highlighted below.
+        my $best_count = 0;
+        for my $k (keys %t) {
+            $best_count = $t{$k} if($t{$k} > $best_count);
+        }
+        for my $k (keys %t) {
+            $valid_directory_sizes{$k} = 1 if($t{$k} == $best_count);
+        }
     } else {
-        for my $o (@{$file_name_2_infos{$fname}}) {
+        for my $o (@{$file_name_2_infos{$fname} || []}) {
             if($o->{"perm"} eq '---------T') {
                 $has_found_inconsistency = 1 if($o->{"size"} != 0);
             } else {
@@ -551,14 +623,14 @@ for my $line (@ls_results) {
         }
     }
     next if($flag_omit_consistent && !$has_found_inconsistency);
-    for my $o (@{$file_name_2_infos{$fname}}) {
+    for my $o (@{$file_name_2_infos{$fname} || []}) {
         my $host = $o->{"host"};
         if($is_directory) {
             if($has_found_inconsistency) {
                 if(exists $valid_directory_sizes{$o->{"size"}}) {
-                    print color('red'), $host, color('reset'), " ";
-                } else {
                     print color('green'), $host, color('reset'), " ";
+                } else {
+                    print color('red'), $host, color('reset'), " ";
                 }
             } else {
                 if($o->{"size"} < 10) {
@@ -594,10 +666,10 @@ for my $line (@ls_results) {
         if($flag_show_detail) {
             print " "x$param_left_column_size;
             my $largest_file_size = 0;
-            for my $o (@{$file_name_2_infos{$fname}}) {
+            for my $o (@{$file_name_2_infos{$fname} || []}) {
                 $largest_file_size = $o->{"size"} if($o->{"size"} > $largest_file_size);
             }
-            for my $o (@{$file_name_2_infos{$fname}}) {
+            for my $o (@{$file_name_2_infos{$fname} || []}) {
                 my $host = $o->{"host"};
                 print "$host: ";
                 if($largest_file_size > $o->{"size"}) {
@@ -609,7 +681,7 @@ for my $line (@ls_results) {
             print "\n";
         }
         if($flag_whole) {
-            for my $o (@{$file_name_2_infos{$fname}}) {
+            for my $o (@{$file_name_2_infos{$fname} || []}) {
                 print " "x$param_left_column_size;
                 print color('yellow'), $o->{"host"}, ": ", $o->{"linestr"}, color('reset'), "\n";
             }
@@ -625,47 +697,50 @@ for my $line (@ls_results) {
             print STDERR color('red') . "WARNING: '$fname' is a symbolic link, so will not fix it (not supported). Check it manually." . color('reset') . "\n";
         } else {
             my @sane_files;
-            for my $o (@{$file_name_2_infos{$fname}}) {
+            for my $o (@{$file_name_2_infos{$fname} || []}) {
                 if($o->{"perm"} ne '---------T' && $o->{"size"} == $fsize) { push(@sane_files, $o); }
             }
             if($param_num_replica <= @sane_files) {
+                my $all_replica_retrieved = 1;
                 for(@sane_files) {
                     print " "x$param_left_column_size;
                     print "$_->{host} looks sane.\n";
                     $_->{"local_path"} = "$fname.tmp.$_->{host}.$$";
                     my $remote_path = get_scp_path_from_fname($cwd, $fname, $_->{host}, @bricks);
                     if(defined $remote_path) {
-                        print_and_do("scp $remote_path $_->{local_path}");
+                        print_and_do("scp", "--", $remote_path, $_->{"local_path"});
                     } else {
                         print STDERR color('red') . "ERROR: Could not find the remote path for '$fname'" . color('reset') ."\n";
+                        $all_replica_retrieved = 0;
                     }
                 }
-                my $files_were_different = 0;
+                my $files_were_different = !$all_replica_retrieved;
                 for(my $i = 1; $i < @sane_files; $i++) {
-                    my $cmd = "cmp -s $sane_files[0]->{local_path} $sane_files[$i]->{local_path}";
-                    print STDERR " "x$param_left_column_size;
-                    if($? == -1) {
-                        print STDERR "ERROR: Could not spawn 'cmp -s' for '$fname'" . color('reset') . "\n";
-                    } else {
-                        my $retcode = $? >> 8;
-                        if($retcode != 0) {
-                            print STDERR "$sane_files[0]->{host} and $sane_files[$i]->{host} are different.\n";
-                            $files_were_different = 1;
-                        }
+                    my @cmp_cmd = ("cmp", "-s", "--", $sane_files[0]->{"local_path"}, $sane_files[$i]->{"local_path"});
+                    print "\$ " . cmd_to_string(@cmp_cmd) . "\n" if($debug);
+                    my $rc = system(@cmp_cmd);
+                    if($rc == -1) {
+                        print STDERR " "x$param_left_column_size;
+                        print STDERR color('red') . "ERROR: Could not spawn 'cmp -s' for '$fname'" . color('reset') . "\n";
+                        $files_were_different = 1;
+                    } elsif($rc != 0) {
+                        print STDERR " "x$param_left_column_size;
+                        print STDERR "$sane_files[0]->{host} and $sane_files[$i]->{host} are different.\n";
+                        $files_were_different = 1;
                     }
                 }
                 if($files_were_different) {
                     print STDERR " "x$param_left_column_size;
-                    print STDERR color('red') . "ERROR: The retrieved replica were different! You have to fix it for yourself.\n";
+                    print STDERR color('red') . "ERROR: The retrieved replica were different! You have to fix it for yourself." . color('reset') . "\n";
                 } else {
                     print "All replica were identical, so we will fix it.\n";
-                    print_and_do("mv $fname $fname.orig");
-                    print_and_do("cp $sane_files[0]->{local_path} $fname");
+                    print_and_do("mv", "--", $fname, "$fname.orig");
+                    print_and_do("cp", "--", $sane_files[0]->{"local_path"}, $fname);
                     for(@sane_files) {
-                        print_and_do("rm $_->{local_path}");
+                        print_and_do("rm", "--", $_->{"local_path"});
                     }
                     if($flag_clean) {
-                        print_and_do("rm $fname.orig");
+                        print_and_do("rm", "--", "$fname.orig");
                     }
                 }
             } else {
@@ -720,6 +795,12 @@ fit them in, so you will give -l=39.
 =item B<-debug>
 This is for debugging.
 
+=item B<-df>
+B<-df> shows the disk free space (the output of 'df -h') of the brick
+directory on every host listed in ~/.gfinfo. The header line is printed
+only once, and each of the remaining lines is prefixed with the host name.
+No other work is done; B<gfwhich> exits right after showing the result.
+
 =item B<--fix>
 You give B<--fix> option when you wish to fix an inconsistent file.
 This option also requires a file name and a host name.
@@ -743,6 +824,8 @@ in the given directory into the temporary directory. If successful,
 it removes the (empty) given directory, rename the temporary directory
 to the original given directory. After the whole process, the metadata
 of the given directory becomes consistent across replicas.
+
+B<--fix> and B<--dirfix> cannot be given at the same time.
 
 =item B<-clean>
 B<-clean> can be used with B<--fix> or B<--quickfix>. B<--fix> and B<--quickfix> fix
@@ -768,7 +851,7 @@ B<-qgfid> queries the GFID of a given file. For example, 'gfwhich -sudo -qgfid a
 This option requires a root priviledge--you need a root account or at least that you can do sudo.
 
 =item B<-lsattr>
-B<-lsattr> shows the GFIDs of pending operations (such as self-heal) 
+B<-lsattr> shows the GFIDs of pending operations (such as self-heal)
 
 This option requires a root priviledge--you need a root account or at least that you can do sudo.
 
@@ -816,7 +899,11 @@ You may need to escape spaces and parentheses if any::
 
     $ gfwhich -cmd 'ls -al'
 
-If the command includes ':P' (without parens), it is expanded into the corresponding physical path (on a brick) of the current directory.
+The given command is interpreted by the shell on the B<remote> host only;
+the local shell never sees it, so 'gfwhich -cmd "echo \$HOSTNAME"' prints the
+name of each remote host rather than the local one.
+
+If the command includes ':P' (without parens), every occurrence of it is expanded into the corresponding physical path (on a brick) of the current directory.
 
 =back
 

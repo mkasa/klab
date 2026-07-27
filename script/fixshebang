@@ -3,10 +3,14 @@
 # @author Masahiro Kasahara (masahiro@kasahara.ws)
 
 use strict;
+use warnings;
 
 use Pod::Usage;
 use Getopt::Long;
-use Term::ANSIColor;
+use File::Temp qw(tempfile);
+use File::Basename qw(dirname basename);
+use File::Copy qw();
+use Cwd qw(abs_path);
 
 my $flag_debug   = 0;
 my $flag_help    = 0;
@@ -24,56 +28,138 @@ GetOptions("debug"   => \$flag_debug,
 pod2usage(-verbose => 1) if($flag_help);
 pod2usage(-verbose => 2) if($flag_man);
 
+# Run a command without going through a shell, and return its standard output.
+# Returns (output, exit_status). exit_status is -1 when the command could not
+# be started at all.
+sub capture_command {
+	my @cmd = @_;
+	my $pid = open(my $ph, "-|");
+	unless(defined $pid) {
+		return ('', -1);
+	}
+	unless($pid) {
+		# child
+		open(STDERR, ">", "/dev/null");
+		exec { $cmd[0] } @cmd;
+		exit 127;
+	}
+	my $out = do { local $/; <$ph> };
+	$out = '' unless(defined $out);
+	close $ph;
+	my $status = $?;
+	return ($out, $status);
+}
+
+# Locate a program using the POSIX 'command -v' builtin. 'which' is not
+# portable: the csh-derived version prints "<name> not found" on STDOUT and
+# still exits 0. The program name is passed as an argument (never interpolated
+# into the shell command), so any character in it is safe.
+sub locate_program {
+	my ($name) = @_;
+	my ($out, $status) = capture_command('sh', '-c', 'command -v "$1"', 'sh', $name);
+	return '' if($status != 0);
+	$out =~ s/\r?\n.*//s;
+	$out =~ s/^\s+//;
+	$out =~ s/\s+$//;
+	# 'command -v' prints a bare name for shell builtins/keywords; we need a path.
+	return '' unless($out =~ m|^/|);
+	return $out;
+}
+
 my $has_any_error = 0;
-while(my $file = shift) {
+for my $file (@ARGV) {
 	print STDERR "$file " if($flag_debug);
-	my $file_res = `file -b -- \Q$file\E`;
-	unless($file_res =~ /executable/ && $file_res =~ /text/ && $file_res =~ /script/) {
-		print STDERR "was not a script.\n" if($flag_debug);
+	unless(-e $file) {
+		print STDERR "'$file' does not exist.\n";
+		$has_any_error = 1;
 		next;
 	}
+	if(-d $file) {
+		print STDERR "Skipping '$file': it is a directory.\n";
+		next;
+	}
+	my ($file_res, $file_status) = capture_command('file', '-b', '--', $file);
+	if($file_status != 0) {
+		print STDERR "Could not run 'file' on '$file'. Is the 'file' command installed and is '$file' readable?\n";
+		$has_any_error = 1;
+		next;
+	}
+	unless($file_res =~ /executable/ && $file_res =~ /text/ && $file_res =~ /script/) {
+		chomp $file_res;
+		print STDERR "Skipping '$file': not an executable text script ('file' says: $file_res).\n";
+		next;
+	}
+
+	# Follow symlinks so that we edit the file the link points at instead of
+	# replacing the symlink itself.
+	my $target = abs_path($file);
+	unless(defined $target) {
+		print STDERR "Cannot resolve the path of '$file': $!\n";
+		$has_any_error = 1;
+		next;
+	}
+	print "Resolved '$file' to '$target'\n" if($flag_debug && $target ne $file);
+
 	my $fh;
-	unless(open $fh, "<", $file) {
+	unless(open $fh, "<", $target) {
 		print STDERR "Cannot open '$file'.\n";
 		$has_any_error = 1;
 		next;
 	}
+	binmode $fh;
 	my $shebang = <$fh>;
-	unless(defined $shebang && $shebang =~ m|^#!\s*(\S+)(.*?)\r?$|) {
-		print STDERR "It does not seem like scripts. Could not find shebang.\n";
+	unless(defined $shebang && $shebang =~ m|^#!\s*(\S+)([^\r\n]*)|) {
+		print STDERR "It does not seem like scripts. Could not find shebang. ('$file')\n";
 		$has_any_error = 1;
 		close $fh;
 		next;
 	}
 	my $orig_bin = $1;
 	my $rest = $2;
+	# Preserve "no trailing newline"; otherwise always terminate the shebang
+	# line with a bare LF (a CR there would be passed to the kernel as part of
+	# the interpreter arguments).
+	my $terminator = ($shebang =~ m|\r?\n\z|) ? "\n" : "";
 
 	print "Detected [$orig_bin]\n" if($flag_debug);
 	my $base_name = $orig_bin;
 	$base_name =~ s|.*/||;
 	print "Base name [$base_name]\n" if($flag_debug);
 	my $args = $rest;
+	my $uses_env_split = 0;
 	if($base_name eq 'env') {
 		my $env_rest = $rest;
-		# drop env's split-string option if present; it is re-added later as needed
-		$env_rest =~ s|^(\s+)-S\s*|$1|;
+		# note whether env's split-string option is in use; it is re-added later as needed
+		$uses_env_split = 1 if($env_rest =~ s|^(\s+)-S\s*|$1|);
 		unless($env_rest =~ m|^\s+(\S+)(.*)|) {
-			print STDERR "lacks a valid interpreter?\n";
+			print STDERR "lacks a valid interpreter? ('$file')\n";
+			$has_any_error = 1;
 			close $fh;
 			next;
 		}
 		$base_name = $1;
 		$args = $2;
 	}
+	$args =~ s/[ \t]+$//;
 	print "Final base name [$base_name]\n" if($flag_debug);
 	my $new_shebang;
 	if($flag_env) {
 		# On Linux the kernel passes everything after the interpreter as a single
 		# argument, so 'env' needs -S to split it; the macOS kernel splits it itself.
-		my $split_opt = ($args =~ /\S/ && $^O ne 'darwin') ? ' -S' : '';
+		# If the script already used -S, keep it: dropping it would break the
+		# script on Linux even when fixshebang happens to run on macOS.
+		my $split_opt = ($args =~ /\S/ && ($uses_env_split || $^O ne 'darwin')) ? ' -S' : '';
 		$new_shebang = "#!/usr/bin/env$split_opt $base_name$args";
 	} else {
-		my $abs_path_intpret = `which \Q$base_name\E`; chomp $abs_path_intpret;
+		if($uses_env_split && $args =~ /\S/) {
+			# '#!<abspath> arg1 arg2' is exactly the form the Linux kernel
+			# cannot split, which is why '/usr/bin/env -S' exists. Rewriting
+			# it would break the script (and bake in a machine-specific path).
+			print STDERR "Skipping '$file': '#!/usr/bin/env -S $base_name$args' has no absolute-path equivalent; leaving it untouched (use -e to normalize it).\n";
+			close $fh;
+			next;
+		}
+		my $abs_path_intpret = locate_program($base_name);
 		print "The absolute path [$abs_path_intpret]\n" if($flag_debug);
 		if($abs_path_intpret eq '') {
 			print STDERR "Could not find '$base_name' in PATH.\n";
@@ -86,15 +172,19 @@ while(my $file = shift) {
 
 	my $old_shebang = $shebang;
 	$old_shebang =~ s/\r?\n?$//;
-	if($old_shebang eq $new_shebang) {
-		print "no need to modify\n";
+	# A CR at the end of the shebang line becomes part of the interpreter path
+	# (or of its arguments) on Linux, so it always has to go, even when the
+	# shebang is otherwise already correct.
+	my $shebang_has_cr = ($shebang =~ m|\r\n\z|) ? 1 : 0;
+	if($old_shebang eq $new_shebang && !$shebang_has_cr) {
+		print "no need to modify '$file'\n";
 		close $fh;
 		next;
 	}
 
 	if($flag_interactive) {
 		print "filename: $file\n";
-		print "OLD shebang: $shebang";
+		print "OLD shebang: $old_shebang\n";
 		print "NEW shebang: $new_shebang\n";
 		my $doit = 0;
 		while(1) {
@@ -108,30 +198,86 @@ while(my $file = shift) {
 		unless($doit) { close $fh; next; }
 	}
 
-	my $tmp_file_name = "$file.tmp";
-	my $ofh;
-	unless(open $ofh, ">", $tmp_file_name) {
-		print STDERR "Cannot open '$tmp_file_name' for output.\n";
+	my @st = stat($target);
+	unless(@st) {
+		print STDERR "Cannot stat '$file': $!\n";
 		$has_any_error = 1;
 		close $fh;
 		next;
 	}
-	print $ofh "$new_shebang\n";
-	while(<$fh>) {
-		chomp;
-		chop if(/\r$/);
-		print $ofh "$_\n";
+	my ($mode, $nlink, $uid, $gid) = ($st[2] & 07777, $st[3], $st[4], $st[5]);
+
+	# Create the temporary file in the same directory (so that rename() stays
+	# within one filesystem) but with an unpredictable name, so that we never
+	# clobber an existing '<file>.tmp' and cannot be pre-empted by an attacker
+	# in a shared directory.
+	my $dir = dirname($target);
+	my ($ofh, $tmp_file_name);
+	eval {
+		($ofh, $tmp_file_name) = tempfile(basename($target) . ".XXXXXXXX", DIR => $dir);
+		1;
+	} or do {
+		print STDERR "Cannot create a temporary file in '$dir': $@";
+		$has_any_error = 1;
+		close $fh;
+		next;
+	};
+	binmode $ofh;
+
+	# Rewrite ONLY the shebang line; the rest of the file is copied verbatim
+	# so that CRLF line endings (and a missing final newline) are preserved.
+	my $write_error = '';
+	unless(print $ofh $new_shebang . $terminator) {
+		$write_error = "write failed: $!";
 	}
-	close $ofh;
+	unless($write_error) {
+		while(1) {
+			my $buf;
+			my $n = read($fh, $buf, 65536);
+			unless(defined $n) { $write_error = "read failed: $!"; last; }
+			last if($n == 0);
+			unless(print $ofh $buf) { $write_error = "write failed: $!"; last; }
+		}
+	}
+	unless(close $ofh) {
+		$write_error ||= "close failed: $!";
+	}
 	close $fh;
-    # preserve the permission of the file
-    my @st = stat($file);
-    chmod($st[2] & 07777, $tmp_file_name) or warn "Could not chmod '$tmp_file_name': $!\n";
-	print "Renaming '$tmp_file_name' to '$file'\n" if($flag_debug);
-	unless(rename($tmp_file_name, $file)) {
-		print STDERR "Could not rename '$tmp_file_name' to '$file'. Maybe permission denied?\n";
+	if($write_error) {
+		print STDERR "Could not write the new '$file' ($write_error). The original file is left untouched.\n";
+		unlink $tmp_file_name;
 		$has_any_error = 1;
 		next;
+	}
+
+	# preserve the permission (and, when possible, the ownership) of the file
+	chmod($mode, $tmp_file_name) or warn "Could not chmod '$tmp_file_name': $!\n";
+	unless(chown($uid, $gid, $tmp_file_name)) {
+		my ($tuid, $tgid) = (stat($tmp_file_name))[4, 5];
+		if(defined $tuid && ($tuid != $uid || $tgid != $gid)) {
+			warn "Could not preserve the ownership of '$file': $!\n";
+		}
+	}
+
+	if($nlink > 1) {
+		# rename() would break the hard links, so write through the existing
+		# inode instead.
+		print "Copying '$tmp_file_name' onto '$target' (it has $nlink hard links)\n" if($flag_debug);
+		unless(File::Copy::copy($tmp_file_name, $target)) {
+			print STDERR "Could not update '$file': $!\n";
+			unlink $tmp_file_name;
+			$has_any_error = 1;
+			next;
+		}
+		unlink $tmp_file_name;
+	} else {
+		print "Renaming '$tmp_file_name' to '$target'\n" if($flag_debug);
+		unless(rename($tmp_file_name, $target)) {
+			print STDERR "Could not rename '$tmp_file_name' to '$file'. Maybe permission denied?\n";
+			unlink $tmp_file_name;
+			$has_any_error = 1;
+			next;
+		}
 	}
 }
 
@@ -154,9 +300,11 @@ fixshebang [options] <files>
 Options:
    -help                brief help message
    -man                 see the manual
+   -debug               print what is going on
    -i, --interactive    modify interactively
    -e, --env            rewrite to '#!/usr/bin/env <interpreter>' instead of an absolute path
-                        (on non-macOS systems, '-S' is added when the interpreter takes arguments)
+                        (on non-macOS systems, '-S' is added when the interpreter takes arguments;
+                        an existing '-S' is always kept)
 
 =over 8
 
@@ -171,5 +319,18 @@ Print a brief help message and exits.
 Shebang lines usually have a machine-specific settings; the full path to a specific interpereter may vary system to system.
 Therefore we cannot simply copy scripts to other systems where the absolute path to the interpreter differs.
 fixshebang fixes such scripts so that the interpreter path is correctly modified.
+
+Only the shebang line is rewritten; the rest of the file is copied byte for
+byte, so line endings elsewhere in the file are preserved.
+
+A script whose shebang is C<#!/usr/bin/env -S I<interpreter> I<args>> is left
+untouched in the default (absolute-path) mode, because C<#!I<abspath> I<args>>
+is exactly the form that the Linux kernel refuses to split: it would pass all
+of I<args> to the interpreter as one single argument. Use C<-e> if you want
+such a shebang normalized.
+
+Symbolic links are followed, so the file the link points at is the one that
+gets edited. Files with more than one hard link are updated in place so that
+the links are preserved.
 
 =cut

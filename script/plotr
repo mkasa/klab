@@ -1,10 +1,14 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 use Getopt::Long qw(:config no_ignore_case bundling);
 use Pod::Usage;
 use Term::ANSIColor;
 use File::Temp qw/tempfile/;
+use File::Path qw/make_path/;
+use File::Spec;
+use Fcntl qw/O_RDONLY O_WRONLY O_CREAT O_EXCL O_TRUNC O_NOFOLLOW/;
 
 my $flag_leavefile          = 0;
 my $flag_showscript         = 0;
@@ -26,7 +30,7 @@ my $flag_man  = 0;
 my $debug     = 0;
 
 GetOptions(
-    'help|?'        => \$flag_help,
+    'help|h|?'      => \$flag_help,
     'man'           => \$flag_man,
     'leave'         => \$flag_leavefile,
     'showscript'    => \$flag_showscript,
@@ -34,7 +38,7 @@ GetOptions(
     'tsv|t=s'       => \$param_tsv,
     'C'             => \$flag_csv_stdin,
     'T'             => \$flag_tsv_stdin,
-    'height|h=i'    => \$param_height,
+    'height=i'      => \$param_height,
     'width|w=i'     => \$param_width,
     'interactive|i' => \$flag_interactive_first,
     "edit|e"        => \$flag_interactive_second,
@@ -57,15 +61,220 @@ if($debug && !$flag_leavefile) {
 
 my $rcmd = join("\n", @ARGV) . "\n";
 
-sub ensure_iterm2_is_there()
+# Quote a Perl string so that it can be embedded in an R double-quoted string
+# literal. Without this, a file name containing a backslash (C:\data\x.csv) or
+# a double quote would either break the generated R script or, worse, let an
+# arbitrary R expression be injected into it.
+sub r_string_literal($)
 {
-    system "~/.iterm2/it2check";
-    if($? < 0) {
-        print STDERR "ERROR: could not execute it2check, which is needed for downloading. Note that this feature is strictly for iTerm2 on macOS.\n";
+    my $str = shift;
+    $str = '' unless(defined $str);
+    $str =~ s/\\/\\\\/g;
+    $str =~ s/"/\\"/g;
+    $str =~ s/\r/\\r/g;
+    $str =~ s/\n/\\n/g;
+    return '"' . $str . '"';
+}
+
+# Strip R comments so that patterns are not matched inside comments.
+sub strip_r_comments($)
+{
+    my $code = shift;
+    $code = '' unless(defined $code);
+    my @lines;
+    for my $line (split(/\n/, $code, -1)) {
+        $line =~ s/#.*\z//;
+        push(@lines, $line);
+    }
+    return join("\n", @lines);
+}
+
+# A private directory (mode 0700) that only the current user can write into.
+# The interactive scratch script used to live at a completely predictable
+# $TMPDIR/<date>.r, which let anybody else on the machine pre-create it (as a
+# symlink, or with R code of their own) and have plotr run it as us.
+sub get_script_directory()
+{
+    my $dir;
+    if(defined $ENV{'PLOTR_SCRIPT_DIR'} && $ENV{'PLOTR_SCRIPT_DIR'} ne '') {
+        $dir = $ENV{'PLOTR_SCRIPT_DIR'};
+    } elsif(defined $ENV{'HOME'} && $ENV{'HOME'} ne '' && -d $ENV{'HOME'}) {
+        $dir = File::Spec->catdir($ENV{'HOME'}, '.cache', 'plotr');
+    } else {
+        my $tmpbase = $ENV{'TMPDIR'} || $ENV{'TMP'} || '/tmp';
+        $tmpbase =~ s{/+\z}{};
+        $dir = File::Spec->catdir($tmpbase, "plotr-$<");
+    }
+    unless(-d $dir) {
+        eval { make_path($dir, { mode => 0700 }); 1 }
+            or do { print STDERR "ERROR: cannot create '$dir': $@"; exit 2; };
+    }
+    if(-l $dir) {
+        print STDERR "ERROR: '$dir' is a symbolic link. Refusing to use it.\n";
         exit 2;
     }
-    if(0 < ($? >> 8)) {
-        print STDERR "ERROR: your terminal is not iTerm2. Abordted.\n";
+    my @st = stat($dir);
+    unless(@st) {
+        print STDERR "ERROR: cannot stat '$dir' ($!).\n";
+        exit 2;
+    }
+    unless($st[4] == $<) {
+        print STDERR "ERROR: '$dir' is not owned by you. Refusing to use it.\n";
+        exit 2;
+    }
+    if($st[2] & 077) {
+        chmod(0700, $dir) or do {
+            print STDERR "ERROR: '$dir' is accessible by other users and its permission cannot be fixed ($!).\n";
+            exit 2;
+        };
+    }
+    return $dir;
+}
+
+# Open a script file for reading, refusing symbolic links and files owned by
+# somebody else.
+sub open_script_for_reading($)
+{
+    my $path = shift;
+    my $fh;
+    unless(sysopen($fh, $path, O_RDONLY | O_NOFOLLOW)) {
+        print STDERR "ERROR: Cannot open '$path' ($!).\n";
+        exit 2;
+    }
+    my @st = stat($fh);
+    unless(@st && $st[4] == $<) {
+        print STDERR "ERROR: '$path' is not owned by you. Refusing to use it.\n";
+        exit 2;
+    }
+    return $fh;
+}
+
+# Find the script that was edited most recently. '-e' used to look only at
+# today's file name, so retrying a failed plot after midnight did not work.
+sub find_latest_script($)
+{
+    my $dir = shift;
+    my $latest = undef;
+    my $latest_mtime = undef;
+    if(opendir(my $dh, $dir)) {
+        while(my $entry = readdir $dh) {
+            next unless($entry =~ /\.r\z/);
+            my $path = File::Spec->catfile($dir, $entry);
+            next if(-l $path || !-f $path);
+            my @st = stat($path);
+            next unless(@st);
+            if(!defined($latest_mtime) || $latest_mtime < $st[9]) {
+                $latest_mtime = $st[9];
+                $latest = $path;
+            }
+        }
+        closedir $dh;
+    }
+    return $latest;
+}
+
+if($flag_interactive_first || $flag_interactive_second) {
+    my $script_dir = get_script_directory();
+    my ($sec, $min, $hour, $mday, $mon, $year, $wday) = localtime();
+    my $todays_file_name = File::Spec->catfile($script_dir,
+        sprintf("%04d-%02d-%02d.r", $year + 1900, $mon + 1, $mday));
+    my $temp_file_name = $todays_file_name;
+    if($flag_interactive_second) {
+        # --edit: reuse the most recently edited script, whichever day it is from.
+        my $latest = find_latest_script($script_dir);
+        unless(defined $latest) {
+            print STDERR "ERROR: no previous plotr script is found in '$script_dir'. Please use -i first.\n";
+            exit 2;
+        }
+        $temp_file_name = $latest;
+    }
+    my $editor = $ENV{'EDITOR'};
+    unless(defined $editor && $editor ne '') {
+        $editor = 'vi';
+    }
+    if($flag_interactive_first && !$flag_interactive_second) {
+        # if the file already exists, rename it to a backup file name
+        if(-e $temp_file_name || -l $temp_file_name) {
+            my $backup_generation = 1;
+            while(1) {
+                my $fname = $temp_file_name . "." . $backup_generation;
+                unless(-e $fname || -l $fname) {
+                    rename($temp_file_name, $fname);
+                    last;
+                }
+                $backup_generation++;
+            }
+        }
+        # creates a new template
+        my $fh;
+        unless(sysopen($fh, $temp_file_name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)) {
+            print STDERR "ERROR: Cannot create '$temp_file_name' ($!).\n";
+            exit 2;
+        }
+        print $fh "# a <- read_csv(\"input.csv\")\n";
+        print $fh join("\n", @ARGV);
+        print $fh "\n";
+        print $fh "# assign the ggplot to g\n";
+        print $fh "# g <- ggplot()\n";
+        close $fh;
+    }
+    # The editor command may be something like 'emacsclient -nw', so it is
+    # given to the shell, but the file name we generated never needs quoting.
+    my $cmdline = $editor . " " . $temp_file_name;
+    system $cmdline;
+    if($?) {
+        print STDERR "ERROR: an editor quits with an error.\n";
+        exit 2;
+    }
+    my $fh = open_script_for_reading($temp_file_name);
+    my @input_program_lines = <$fh>;
+    close $fh;
+    $rcmd = join('', @input_program_lines);
+    $rcmd .= "\n" unless($rcmd =~ /\n\z/);
+}
+my $uses_gt = (strip_r_comments($rcmd) =~ /(?:^|[^\w.])gt\s*\(/) ? 1 : 0;
+my $uses_ggplot = (strip_r_comments($rcmd) =~ /(?:^|[^\w.])ggplot\s*\(/) ? 1 : 0;
+
+sub iterm2_helper_path($)
+{
+    my $name = shift;
+    my $home = defined $ENV{'HOME'} ? $ENV{'HOME'} : '';
+    return "$home/.iterm2/$name";
+}
+
+sub run_iterm2_helper
+{
+    my $name = shift;
+    my $path = iterm2_helper_path($name);
+    unless(-e $path) {
+        print STDERR "ERROR: '$path' is not found. Note that this feature is strictly for iTerm2 (shell integration must be installed).\n";
+        exit 2;
+    }
+    unless(-x $path) {
+        print STDERR "ERROR: '$path' is not executable.\n";
+        exit 2;
+    }
+    system {$path} $path, @_;
+    if($? == -1) {
+        print STDERR "ERROR: could not execute '$path' ($!).\n";
+        exit 2;
+    }
+    if($? & 127) {
+        print STDERR "ERROR: '$path' was killed by signal ", ($? & 127), ".\n";
+        exit 2;
+    }
+    return $? >> 8;
+}
+
+sub ensure_iterm2_is_there()
+{
+    my $exit_status = run_iterm2_helper('it2check');
+    if($exit_status == 127) {
+        print STDERR "ERROR: could not execute it2check, which is needed for this feature. Note that this feature is strictly for iTerm2 on macOS.\n";
+        exit 2;
+    }
+    if(0 < $exit_status) {
+        print STDERR "ERROR: your terminal is not iTerm2. Aborted.\n";
         exit 2;
     }
 }
@@ -84,11 +293,11 @@ sub get_a_figure_file_name()
 }
 
 my $tmp = File::Temp->new( UNLINK => 0, SUFFIX => '.r' );
-if($flag_download && !$param_image_file) {
+if($flag_download && !defined $param_image_file) {
     $param_image_file = get_a_figure_file_name();
 }
-if($param_image_file) {
-    print $tmp "file_name <- \"$param_image_file\";"
+if(defined $param_image_file) {
+    print $tmp "file_name <- ", r_string_literal($param_image_file), ";\n"
 } else {
     print $tmp <<'EOS'
 # generate a temporary file name
@@ -107,19 +316,23 @@ unless($flag_verbose) {
 print $tmp <<"EOS"
 # set the output to the temporary png file
 png(file_name)
+# 'pacman' is used to load (and, if needed, install) the required packages
+if(!requireNamespace("pacman", quietly = TRUE)) {
+    stop("plotr: the R package 'pacman' is required but not installed. Please run: install.packages(\\"pacman\\")")
+}
 # load tidyverse and ggplot2 but suppress the loading messages
 ${suppress_package_startup_message_begin}pacman::p_load(tidyverse)${suppress_package_startup_message_end}
 EOS
 ;
 
-if($rcmd =~ /gt\(\)/) {
+if($uses_gt) {
     print $tmp <<"EOS"
 ${suppress_package_startup_message_begin}pacman::p_load(gt)${suppress_package_startup_message_end}
 EOS
 ;
 }
 
-if($rcmd =~ /ggplot\(\)/) {
+if($uses_ggplot) {
     print $tmp <<"EOS"
 ${suppress_package_startup_message_begin}pacman::p_load(ggplot2)${suppress_package_startup_message_end}
 EOS
@@ -133,75 +346,38 @@ unless($flag_verbose) {
     $suppress_message_end = ')';
 }
 
-if($param_csv || $param_tsv || $flag_csv_stdin || $flag_tsv_stdin) {
+if(defined $param_csv || defined $param_tsv || $flag_csv_stdin || $flag_tsv_stdin) {
     my $function_name = "read_csv";
-    my $filename = "\"$param_csv\"";
-    my $extra_opts = '';
-    if($param_tsv || $flag_tsv_stdin) {
+    my $filename = r_string_literal($param_csv);
+    if(defined $param_tsv || $flag_tsv_stdin) {
         $function_name = "read_tsv";
-        $filename = "\"$param_tsv\"";
+        $filename = r_string_literal($param_tsv);
     }
     $filename = 'file("stdin")' if($flag_csv_stdin || $flag_tsv_stdin
         || (defined $param_csv && $param_csv eq '-')
         || (defined $param_tsv && $param_tsv eq '-'));
-    print $tmp "a <- $suppress_message_begin$function_name($filename$extra_opts)$suppress_message_end;\n";
-}
-if($flag_interactive_first || $flag_interactive_second) {
-    my ($sec, $min, $hour, $mday, $mon, $year, $wday) = localtime();
-    my $temp_file_name = ($ENV{'TMP'} || $ENV{'TMPDIR'} || "/tmp") . "/" . sprintf("%04d-%02d-%02d.r", $year + 1900, $mon + 1, $mday);
-    my $cmdline = $ENV{'EDITOR'};
-    unless(defined $cmdline && $cmdline ne '') {
-        $cmdline = 'vi';
-    }
-    $cmdline .= " " . $temp_file_name;
-    if($flag_interactive_first) {
-        unless($flag_interactive_second) {
-            # if the file already exists, rename it to a backup file name
-            if(-e $temp_file_name) {
-                my $backup_generation = 1;
-                while(1) {
-                    my $fname = $temp_file_name . "." . $backup_generation;
-                    unless(-e $fname) {
-                        rename($temp_file_name, $fname);
-                        last;
-                    }
-                    $backup_generation++;
-                }
-            }
-            # creates a new template
-            open my $fh, ">", $temp_file_name or die "ERROR: Cannot open $temp_file_name";
-            print $fh "# a <- read_csv(\"input.csv\")\n";
-            print $fh join("\n", @ARGV);
-            print $fh "\n";
-            print $fh "# assign the ggplot to g\n";
-            print $fh "# g <- ggplot()\n";
-            close $fh;
-        }
-    }
-    system $cmdline;
-    if($?) {
-        print STDERR "ERROR: an editor quits with an error.\n";
-        unless($flag_leavefile) {
-            print "rm $tmp\n" if($debug);
-            unlink $tmp unless($flag_leavefile);
-        }
-        exit 2;
-    }
-    open my $fh, "<", $temp_file_name or die "ERROR: Cannot open $temp_file_name";
-    my @input_program_lines = <$fh>;
-    $rcmd = join("\n", @input_program_lines) . "\n";
-    close $fh;
+    print $tmp "a <- $suppress_message_begin$function_name($filename)$suppress_message_end;\n";
 }
 print $tmp "$rcmd\n";
-if($rcmd =~ /ggplot/) {
+my $rcmd_without_comments = strip_r_comments($rcmd);
+# 'g' must actually be assigned somewhere in the script (and not merely
+# mentioned in a comment) before we can plot it.
+my $g_is_assigned = ($rcmd_without_comments =~ /(?:^|[^\w.\$\@])g\s*(?:<<-|<-|=(?!=))/m)
+                 || ($rcmd_without_comments =~ /(?:->>|->)\s*g(?![\w.])/);
+if($g_is_assigned && $rcmd_without_comments =~ /(?:^|[^\w.])ggplot\s*\(/) {
     print $tmp "plot(g)\n";
-}
-if($rcmd =~ /gt\(\)/) {
-    print $tmp "${suppress_message_begin}gtsave(g, file_name)${suppress_message_end}\n";
 }
 print $tmp <<'EOS'
 # suppress messages
 dont_use_value <- dev.off()
+EOS
+;
+# gtsave() must be called *after* dev.off(), otherwise the png device (which
+# writes to the very same file) would flush over the table image.
+if($g_is_assigned && $uses_gt) {
+    print $tmp "${suppress_message_begin}gtsave(g, file_name)${suppress_message_end}\n";
+}
+print $tmp <<'EOS'
 # show the png image if generated
 EOS
 ;
@@ -223,43 +399,83 @@ EOS
 EOS
 ;
 }
-unless($param_image_file) {
+unless(defined $param_image_file) {
     # remove the temporary png file generated inside the R script
     print $tmp "unlink(file_name);\n";
 }
 close $tmp;
 
+sub remove_temporary_script()
+{
+    return if($flag_leavefile);
+    print "rm $tmp\n" if($debug);
+    unlink "$tmp";
+}
+
 if($flag_showscript) {
-    system "cat $tmp\n";
+    if(open(my $fh, '<', "$tmp")) {
+        print while(<$fh>);
+        close $fh;
+    } else {
+        print STDERR "ERROR: cannot read the generated script '$tmp' ($!).\n";
+    }
+    remove_temporary_script();
     exit 0;
 }
 unless(defined $ENV{'OPENBLAS_NUM_THREADS'}) {
     $ENV{'OPENBLAS_NUM_THREADS'} = 4;
 }
+
+# Run Rscript, optionally teeing its output (stdout and stderr) into a file.
+# 'system("... | tee ...")' would have hidden Rscript's exit status.
+sub run_rscript
+{
+    my $output_file = shift;
+    my $pid = fork();
+    unless(defined $pid) {
+        print STDERR "ERROR: cannot fork ($!).\n";
+        remove_temporary_script();
+        exit 2;
+    }
+    unless($pid) { # child
+        if(defined $output_file) {
+            open(STDOUT, '>', $output_file) or exit 126;
+            open(STDERR, '>&', \*STDOUT)    or exit 126;
+        }
+        { exec {'Rscript'} 'Rscript', "$tmp"; }
+        print STDERR "ERROR: cannot execute Rscript ($!).\n";
+        exit 127;
+    }
+    waitpid($pid, 0);
+    my $rawstatus = $?;
+    if(defined $output_file && open(my $fh, '<', $output_file)) {
+        print while(<$fh>);
+        close $fh;
+    }
+    return ($rawstatus & 127) ? 128 + ($rawstatus & 127) : ($rawstatus >> 8);
+}
+
+my $r_exit_status;
 if($flag_yank) {
     ensure_iterm2_is_there();
     my $stdout_tmp = File::Temp->new( UNLINK => 0, SUFFIX => '.txt' );
-    print "Rscript $tmp 2>&1 | tee $stdout_tmp\n" if($debug);
-    system "Rscript $tmp 2>&1 | tee $stdout_tmp\n";
-    my $cmd = "~/.iterm2/it2copy $stdout_tmp";
-    print STDERR "CMDLINE: $cmd\n" if($debug);
-    system $cmd;
-    unlink $stdout_tmp unless($flag_leavefile);
+    print "Rscript $tmp > $stdout_tmp 2>&1\n" if($debug);
+    $r_exit_status = run_rscript("$stdout_tmp");
+    print STDERR "CMDLINE: ", iterm2_helper_path('it2copy'), " $stdout_tmp\n" if($debug);
+    run_iterm2_helper('it2copy', "$stdout_tmp");
+    unlink "$stdout_tmp" unless($flag_leavefile);
 } else {
     print "Rscript $tmp\n" if($debug);
-    system "Rscript $tmp\n";
+    $r_exit_status = run_rscript(undef);
 }
 
 if($flag_download) {
     ensure_iterm2_is_there();
-    my $cmd = "~/.iterm2/it2dl $param_image_file";
-    print STDERR "CMDLINE: $cmd\n" if($debug);
-    system $cmd;
+    print STDERR "CMDLINE: ", iterm2_helper_path('it2dl'), " $param_image_file\n" if($debug);
+    run_iterm2_helper('it2dl', $param_image_file);
 }
-unless($flag_leavefile) {
-    print "rm $tmp\n" if($debug);
-    unlink $tmp unless($flag_leavefile);
-}
+remove_temporary_script();
+exit $r_exit_status;
 
 
 =pod
@@ -277,7 +493,16 @@ Options:
    -C                 read CSV fron stdin
    --tsv|-t           read TSV file
    -T                 read TSV from stdin
-   --help             brief help message
+   --output|-o        write the plot into the specified image file
+   --interactive|-i   write the R script in your editor, then run it
+   --edit|-e          edit the last R script again, then run it
+   --download|-d      download the generated image file using iTerm2
+   --yank|-y          copy the output text to your local clipboard using iTerm2
+   --width|-w         the width (in pixels) of the image shown on the terminal
+   --height           the height (in pixels) of the image shown on the terminal
+   --verbose|-v       do not suppress messages from R
+   --showscript       show the generated R script and exit
+   --help|-h          brief help message
    --man              full documentation
    --leave            leave temporary files
    --debug            enable debugging output
@@ -303,6 +528,37 @@ When the filename is B<->, B<plotr> reads from stdin.
 
 Read from stdin (in TSV).
 
+=item B<--output|-o>
+
+Write the generated plot into the specified image file (instead of a temporary
+file that is removed after being shown on the terminal).
+
+=item B<--interactive|-i>
+
+Open your editor (given by the B<EDITOR> environment variable, or B<vi>) with a
+fresh script template, and run the script you wrote when the editor exits.
+The script is kept in a private directory (F<~/.cache/plotr>, or
+F<$TMPDIR/plotr-E<lt>uidE<gt>> if B<HOME> is not set; it can be overridden with
+the B<PLOTR_SCRIPT_DIR> environment variable) so that it can be edited again
+later with B<--edit>. An existing script of the same day is kept as a backup
+(with a F<.1>, F<.2>, ... suffix).
+
+=item B<--edit|-e>
+
+Open your editor with the script that was edited most recently (see
+B<--interactive>), and run it again when the editor exits. This is the way to
+fix and rerun a script that failed.
+
+=item B<--width|-w>, B<--height>
+
+Specify the width (or the height) in pixels of the image displayed on the
+terminal. It is passed to B<imgcat>. Note that B<-h> is B<--help>, not
+B<--height>.
+
+=item B<--verbose|-v>
+
+Do not suppress the messages that R, and the R packages being loaded, print.
+
 =item B<--leave>
 
 Leave temporary files. This option may help you debug the plot.
@@ -323,11 +579,11 @@ Copy the generated output (text) to your local clipboard. When you use B<--yank>
 the result will be copied to your local clipboard. This function is implemented using the function of iTerm2,
 so cannot use other terminals.
 
-=item B<-help>
+=item B<--help|-h>
 
 Print a brief help message and exits.
 
-=item B<-man>
+=item B<--man>
 
 Prints the manual page and exits.
 
@@ -339,10 +595,15 @@ B<plotr> creates a graphical plot using R, and put the image on your terminal.
 B<plotr> uses B<imgcat> and the function of iTerm2, so you need to install B<imgcat> and iTerm2 (or compatible terminals such as Wezterm) in advance.
 B<imgcat> can be installed by typing B<pip install imgcat>.
 
-Another prerequisite is B<R>. In the B<R> environment, B<plotr> uess B<tidyverse> and B<plotr>, so they both must be installed in advance.
+Another prerequisite is B<R>. In the B<R> environment, B<plotr> uses B<pacman> and B<tidyverse>,
+so they both must be installed in advance (B<pacman> is used by the generated script to load,
+and if necessary install, the other packages).
 When you use gt's table output, you need to install a couple of more packages, such as B<webshot2>.
 
 The command line arguments are basically a series of R commands.
+B<plotr> shows the plot object named B<g> (i.e. it appends B<plot(g)> to your script)
+when your script assigns a B<ggplot> object to B<g>.
+The exit status of B<plotr> is the exit status of B<Rscript>, so B<plotr ... && something> works as expected.
 
 =head1 EXAMPLE
 Read from a CSV file with a single column, and plot the histogram of it using the base R.
@@ -367,13 +628,23 @@ Load a CSV file, and show the frequency of each publisher in the descending orde
 
 =head1 TROUBLESHOOTING
 
+=over 8
+
 =item B<Is R installed?>
 
 You need to make sure R is installed and is on PATH.
 
+=item B<Is pacman installed?>
+
+The generated R script uses B<pacman::p_load> to load the required packages.
+If it is missing, the script stops with an error telling you to run
+C<install.packages("pacman")> in R.
+
 =item B<Is tidyverse installed?>
 
 You need to install tidyverse even if you do not use it on plotr.
+
+=back
 
 =cut
 

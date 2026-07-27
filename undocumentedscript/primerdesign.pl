@@ -1,6 +1,14 @@
-#!/usr/bin/env perl -w
+#!/usr/bin/env perl
+# NOTE: '#!/usr/bin/env perl -w' passes "perl -w" to env as a SINGLE argument
+#       on Linux and fails with "env: 'perl -w': No such file or directory";
+#       'use warnings' below does the same job portably.
 
 use strict;
+use warnings;
+
+use FindBin;
+use lib $FindBin::Bin;   # Primer3.pm sits next to this script and '.' is no
+                         # longer in @INC since perl 5.26.
 
 use Getopt::Long;
 use Pod::Usage;
@@ -43,13 +51,19 @@ GetOptions( 'help|?'         => \$flag_help,
 
 my $sequence = shift;
 # "GTAGTCAGTAGACNATGACNACTGACGATGCAGACNACACACACACACACAGCACACAGGTATTAGTGGGCCATTCGATCCCGACCCAAATCGATAGCTACGATGACG"
+# -man must be handled before the 'no sequence given' fallback, otherwise
+# 'primerdesign.pl --man' only prints the one-line usage.
+pod2usage(-verbose => 2) if $flag_man;
 $flag_help = 1 unless(defined $sequence);
 pod2usage(1) if $flag_help;
-pod2usage(-verbose => 2) if $flag_man;
 
 my $obj = new Primer3();
 my $primer3path = $obj->get_primer3_path();
-# print "Primer3Path $primer3path : \n";
+unless(defined $primer3path && $primer3path ne '') {
+    print STDERR "ERROR: primer3 is not installed (neither 'primer3_core' nor 'primer3' was found in PATH).\n";
+    exit 1;
+}
+print STDERR "Primer3Path $primer3path\n" if($debug);
 
 #
 my %argHash = (
@@ -60,11 +74,16 @@ my %argHash = (
 );
 
 if($param_target) {
-	if($param_target =~ /(\d+)-(\d+)/) {
+	# Anchored: '-target=chr1:10-20x' used to be silently accepted.
+	if($param_target =~ /^\s*(\d+)-(\d+)\s*$/) {
 		my $start = $1;
 		my $end   = $2;
-		$argHash{tstart} = $start;
-		$argHash{tend}   = $end;
+		if($end < $start) {
+			print STDERR "Invalid range '$param_target': the end ($end) is before the start ($start)\n";
+			exit 1;
+		}
+		$argHash{target_start} = $start;
+		$argHash{target_end}   = $end;
 		if($debug) {
 			print STDERR "Range : ${start}-${end}\n";
 		}
@@ -75,7 +94,6 @@ if($param_target) {
 	}
 }
 
-$argHash{maxn} = $param_maxn if(defined $param_maxn);
 $argHash{primer_mintm}   = $param_mintm         if(defined $param_mintm);
 $argHash{primer_maxtm}   = $param_maxtm         if(defined $param_maxtm);
 $argHash{primer_opttm}   = $param_opttm         if(defined $param_opttm);
@@ -88,18 +106,24 @@ $argHash{primer_optsize} = $param_optsize       if(defined $param_optsize);
 
 my $primers = $obj->designprimer(%argHash);
 
+sub nvl($)
+{
+	my $v = shift;
+	return defined $v ? $v : '';
+}
+
 my $error = $primers->{error};
-if($error ne '') {
-	print "ERROR=\n";
-} else {
-	unless($flag_noheader) {
-		print "#ForwardPrimer,ReversePrimer,ForwardTm,ReversePrimer,ForwardPosition,ForwardLength,ReversePosition,ReverseLength\n";
-	}
-	for(@{$primers->{primer}}){
-	    print "$_->{leftsequence},$_->{rightsequence},";
-	    print "$_->{lefttm},$_->{righttm},";
-	    print "$_->{leftposition},$_->{leftlength},$_->{rightposition},$_->{rightlength}\n";
-	}
+if(defined $error && $error ne '') {
+	print STDERR "ERROR: $error\n";
+	exit 1;
+}
+unless($flag_noheader) {
+	print "#ForwardPrimer,ReversePrimer,ForwardTm,ReverseTm,ForwardPosition,ForwardLength,ReversePosition,ReverseLength\n";
+}
+for(@{$primers->{primer} || []}){
+    print nvl($_->{leftsequence}), ",", nvl($_->{rightsequence}), ",";
+    print nvl($_->{lefttm}), ",", nvl($_->{righttm}), ",";
+    print nvl($_->{leftposition}), ",", nvl($_->{leftlength}), ",", nvl($_->{rightposition}), ",", nvl($_->{rightlength}), "\n";
 }
 
 =pod

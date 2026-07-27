@@ -9,28 +9,38 @@ or tools for bioinformatics.
 
 Installation
 ------------
-This package follows the standard installation process of waf::
+This package follows the standard installation process of waf:
 
-	$ ./waf configure
-	$ ./waf build
-	$ ./waf install
+```console
+$ ./waf configure
+$ ./waf build
+$ ./waf install
+```
 
-If you like GNU autotools-style configure, you can instead do like this::
+If you like GNU autotools-style configure, you can instead do like this:
 
-	$ ./configure
-	$ make
-	$ make install
+```console
+$ ./configure
+$ make
+$ make install
+```
 
 although these commands are just a wrapper for the former commands.
+Note that out-of-tree builds are not supported; run `./configure` from the
+top of the source tree.
 
 When you wish to use scripts that use Perl modules, you need to add
-`--enable-perl` for `waf configure`, namely::
+`--enable-perl` for `waf configure`, namely:
 
-	$ ./waf configure --enable-perl
+```console
+$ ./waf configure --enable-perl
+```
 
-or::
+or:
 
-	$ ./configure --enable-perl
+```console
+$ ./configure --enable-perl
+```
 
 You may need to be root for installing the Perl libraries.
 
@@ -44,15 +54,28 @@ List
 |convertsequence|bio|Format conversion of sequence files.|see also perldoc|
 |fixshebang|general|Fix shebang lines.|see also perldoc|
 |gcc-color|general|Color the output of gcc/g++.|not extensively used.|
-|icc-color|general|Color the output of Intel C++.|
-|mydaemon|general|Automatically set ups crontab to ensure your daemon is running. (Works without root)|
-|rep|general|Simple wrapper for different VCS such as svn/git/hg.|see also perldoc|
-|sha_scanp|general|Find duplicated files by collecting SHA-256 hashes of files in a given directory.|
-|rep|general|Repository utilitiy (one command, manage svn/cvs/git/hg at once!)|
-|gfwhere|general|Find inconsistently replicated files in GlusterFS|
-|json2csv|general|Convert JSON into CSV|
-|csv2html|general|Convert CSV into HTML|
-|split_paf|bio|Split alignments (PAF format) by looking CIGAR string|
+|icc-color|general|Color the output of Intel C++.|see also perldoc|
+|mydaemon|general|Automatically set ups crontab to ensure your daemon is running. (Works without root)||
+|rep|general|Repository utility; a single wrapper command to manage svn/cvs/git/hg at once.|see also perldoc|
+|sha_scanp|general|Find duplicated files by collecting SHA-256 hashes of files in a given directory.||
+|gfwhich|general|Show which GlusterFS hosts hold the files in the current directory, and find inconsistently replicated ("split-brain") files.|see also perldoc|
+|json2csv|general|Convert JSON into CSV||
+|csv2html|general|Convert CSV into HTML||
+|split_paf|bio|Split alignments (PAF format) by looking CIGAR string||
+|cco|general|Generate a conventional-commit message from the staged changes; can install/remove a `prepare-commit-msg` hook.|see also perldoc|
+|headtail|general|Show the first and the last few lines of each input (head and tail in one command).|see also perldoc|
+|imgcat2|general|Display images inline on terminals that support iTerm2's inline image protocol, with control over the display size.|see also doc/imgcat2.md|
+|ispcr|bio|In-silico PCR; finds the fragments a primer pair would amplify from target sequences.|needs BLAST and BioPerl; see also perldoc|
+|plotr|general|Draw a plot with R and display it on the terminal (iTerm2).|see also perldoc|
+|recompressbyxz|general|Recompress gzip/bzip2 (or plain) files with xz, verifying the round trip before the original is replaced.||
+|reduce_genome_feature|bio|Reduce genome features (GC fraction, N fraction, BED coverage, gene counts) into fixed-size bins and emit them as TSV.|`--help` for usage|
+|pbjellysummary2json|bio|Convert a PBJelly summary into JSON.||
+|quastreport2json|bio|Convert a QUAST contig report into JSON.||
+|BLASTM8Parse.pm|bio|Perl module that parses BLAST -m8 (tabular) output.|installed only with `--enable-perl`|
+
+The `undocumentedscript/` directory holds 21 further Perl files that are kept
+in the repository for reference only: they are neither built, installed, nor
+supported, and they are not covered by the list above.
 
 Licenses
 --------

@@ -1,65 +1,251 @@
-#!/usr/bin/env python
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.8"
+# dependencies = []
+# ///
 
-import os, sys
+"""Recompress gzip/bzip2 compressed files (and plain files) with xz.
+
+The order of operations is deliberately conservative:
+
+  1. the data is compressed into a freshly created temporary file,
+  2. that temporary file is decompressed again and compared byte by byte
+     against the original input,
+  3. only then does the temporary file take the place of the output and
+     the original file get removed.
+
+A failure at any step leaves the original file untouched, removes the
+temporary file and makes the program exit with a non-zero status.  An
+already existing output file is never overwritten.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+CHUNK_SIZE = 1 << 16
+
+# Suffix of the input -> command that writes the decompressed bytes of stdin
+# to stdout.  `zcat` is deliberately avoided: on macOS it is Apple gzip's
+# zcat, which only ever looks for `.Z` files.
+DECOMPRESSORS = {
+    ".gz": ["gzip", "-dc"],
+    ".bz2": ["bzip2", "-dc"],
+}
+
+XZ_COMPRESS = ["xz", "-c"]
+XZ_DECOMPRESS = ["xz", "-dc"]
+
+# Every external program this script may run.
+REQUIRED_TOOLS = ["xz", "gzip", "bzip2"]
+
 
 def file_name_looks_like_hard_to_compress_file(file_name):
     for ext in ["png", "jpg", "jpeg", "bam", "avi", "mp4", "mkv", "webm", "7z", "cab", "rar", "bcf", "bw", "bigwig", "bb", "bigbed", "srf"]:
-        if file_name.endswith("." + ext): return True
+        if file_name.endswith("." + ext):
+            return True
     return False
 
-def recompress(file_name, base_name, uncompress_command):
-    if file_name == '' or file_name == None:
-        print("ERROR (file name is empty). Skipped.\n")
+
+def remove_quietly(path):
+    """Unlink `path`, ignoring the case where it is already gone."""
+    if path is None:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+class Source(object):
+    """A readable binary stream of the original (uncompressed) bytes of a file.
+
+    `decompress_argv`, when given, is run as a filter reading the file from
+    its standard input; the file name is therefore never handed to a shell
+    nor to a program as an argument, so no quoting issue and no injection
+    can arise.
+    """
+
+    def __init__(self, file_name, decompress_argv):
+        self._file = open(file_name, "rb")
+        self._proc = None
+        if decompress_argv is None:
+            self.stream = self._file
+        else:
+            try:
+                self._proc = subprocess.Popen(decompress_argv,
+                                              stdin=self._file,
+                                              stdout=subprocess.PIPE)
+            except OSError:
+                self._file.close()
+                raise
+            self.stream = self._proc.stdout
+
+    def close(self, kill=False):
+        """Close the stream and return the exit status of the filter (0 if none)."""
+        status = 0
+        if self._proc is not None:
+            if kill:
+                self._proc.kill()
+                self._proc.wait()
+            else:
+                status = self._proc.wait()
+            self._proc.stdout.close()
+        self._file.close()
+        return status
+
+
+def streams_equal(stream_a, stream_b):
+    while True:
+        chunk_a = stream_a.read(CHUNK_SIZE)
+        chunk_b = stream_b.read(CHUNK_SIZE)
+        if chunk_a != chunk_b:
+            return False
+        if not chunk_a:
+            return True
+
+
+def compress_to_temp(file_name, decompress_argv, out_dir):
+    """Compress the contents of `file_name` with xz into a new temporary file.
+
+    Returns (temp_path, None) on success and (None, error_message) on failure.
+    """
+    handle, temp_path = tempfile.mkstemp(prefix=".recompressbyxz-",
+                                         suffix=".xz.tmp", dir=out_dir)
+    source = None
+    succeeded = False
+    try:
+        source = Source(file_name, decompress_argv)
+        with os.fdopen(handle, "wb") as out_file:
+            handle = None
+            xz = subprocess.Popen(XZ_COMPRESS, stdin=source.stream, stdout=out_file)
+            xz_status = xz.wait()
+        source_status = source.close(kill=(xz_status != 0))
+        source = None
+        if xz_status != 0:
+            return None, "xz exited with status %d" % xz_status
+        if source_status != 0:
+            return None, "%s exited with status %d" % (decompress_argv[0], source_status)
+        succeeded = True
+        return temp_path, None
+    except OSError as e:
+        return None, str(e)
+    finally:
+        if source is not None:
+            source.close(kill=True)
+        if handle is not None:
+            os.close(handle)
+        if not succeeded:
+            remove_quietly(temp_path)
+
+
+def verify_against_original(temp_path, file_name, decompress_argv):
+    """Check that `temp_path` decompresses to exactly the bytes of `file_name`.
+
+    Returns None when the two match, an error message otherwise.
+    """
+    new_source = None
+    old_source = None
+    try:
+        new_source = Source(temp_path, XZ_DECOMPRESS)
+        old_source = Source(file_name, decompress_argv)
+        identical = streams_equal(new_source.stream, old_source.stream)
+        new_status = new_source.close(kill=not identical)
+        new_source = None
+        old_status = old_source.close(kill=not identical)
+        old_source = None
+        if not identical:
+            return "the recompressed data differs from the original"
+        if new_status != 0:
+            return "xz -dc exited with status %d while re-reading the new file" % new_status
+        if old_status != 0:
+            return "%s exited with status %d while re-reading the original" % (decompress_argv[0], old_status)
+        return None
+    except OSError as e:
+        return str(e)
+    finally:
+        if new_source is not None:
+            new_source.close(kill=True)
+        if old_source is not None:
+            old_source.close(kill=True)
+
+
+def recompress(file_name, base_name, decompress_argv):
+    """Recompress `file_name` into `base_name`.xz, then remove `file_name`.
+
+    Returns 0 on success and a non-zero status on failure.
+    """
+    if not file_name:
+        print("ERROR (file name is empty). Skipped.", file=sys.stderr)
         return 1
-    if base_name == '' or base_name == None:
-        print("ERROR (base file name is empty). Skipped.\n");
+    if not base_name:
+        print("ERROR (base file name is empty). Skipped.", file=sys.stderr)
         return 1
-    if uncompress_command == '' or uncompress_command == None:
-        print("ERROR (uncompress command is empty). Skipped.\n");
+    out_name = base_name + ".xz"
+    if os.path.lexists(out_name):
+        print("ERROR ('%s' already exists). Skipped." % out_name, file=sys.stderr)
         return 1
-    if file_name == (base_name + ".xz"):
-        print("ERROR (file name is wrong). Skipped.\n")
-        return 1
+    out_dir = os.path.dirname(os.path.abspath(out_name))
+
     print("compressing...\r", end=' ')
-    # print >> sys.stderr, "%s %s | xz > %s.xz" % (uncompress_command, file_name, base_name)
-    r = os.system("%s %s | xz > %s.xz" % (uncompress_command, file_name, base_name))
-    if r != 0:
-        print(file_name, "was not compressed   ")
-        return r
-    print(file_name, "compressed. Veryfying...\r", end=' ')
-    # print >> sys.stderr, "xzcat %s.xz > %s.xz.uncompressed" % (base_name, base_name)
-    r2 = os.system("xzcat %s.xz > %s.xz.uncompressed" % (base_name, base_name))
-    if r2 != 0:
-        print(file_name, "was compressed, but not verified (1).")
-        os.unlink("%s.xz.uncompressed" % base_name)
-        return r2
-    # print >> sys.stderr, "%s %s > %s.uncompressed" % (uncompress_command, file_name, file_name)
-    r3 = os.system("%s %s > %s.uncompressed" % (uncompress_command, file_name, file_name))
-    if r3 != 0:
-        print(file_name, "was compressed, but not verified (2).")
-        os.unlink("%s.xz.uncompressed" % base_name)
-        os.unlink("%s.uncompressed" % file_name)
-        return r2
-    # print >> sys.stderr, "cmp %s.xz.uncompressed %s.uncompressed" % (base_name, file_name)
-    r4 = os.system("cmp %s.xz.uncompressed %s.uncompressed" % (base_name, file_name))
-    if r4 == 0:
-        print(file_name, "was compressed, and verified.")
-        os.unlink(file_name)
-    os.unlink("%s.xz.uncompressed" % base_name)
-    os.unlink("%s.uncompressed" % file_name)
+    sys.stdout.flush()
+    temp_path, error = compress_to_temp(file_name, decompress_argv, out_dir)
+    if error is not None:
+        remove_quietly(temp_path)
+        print("%s was not compressed (%s)." % (file_name, error), file=sys.stderr)
+        return 1
+
+    print("%s compressed. Verifying...\r" % file_name, end=' ')
+    sys.stdout.flush()
+    error = verify_against_original(temp_path, file_name, decompress_argv)
+    if error is not None:
+        remove_quietly(temp_path)
+        print("%s was compressed, but NOT verified (%s). The original is left untouched." % (file_name, error),
+              file=sys.stderr)
+        return 1
+
+    try:
+        shutil.copystat(file_name, temp_path)
+    except OSError:
+        pass  # not fatal; the data is what matters
+    if os.path.lexists(out_name):
+        # Somebody created the output while we were working.
+        remove_quietly(temp_path)
+        print("ERROR ('%s' appeared while compressing). Skipped." % out_name, file=sys.stderr)
+        return 1
+    try:
+        os.replace(temp_path, out_name)
+    except OSError as e:
+        remove_quietly(temp_path)
+        print("ERROR (could not rename the result to '%s': %s)." % (out_name, e), file=sys.stderr)
+        return 1
+    if os.path.abspath(file_name) != os.path.abspath(out_name):
+        try:
+            os.unlink(file_name)
+        except OSError as e:
+            print("%s was compressed and verified, but could not be removed (%s)." % (file_name, e),
+                  file=sys.stderr)
+            return 1
+    print("%s was compressed, and verified." % file_name)
     return 0
 
 
 def recompress_by_xz(file_names):
+    """Recompress every given file. Returns the number of failures."""
+    number_of_failures = 0
     for file_name in file_names:
-        if file_name == None or file_name == '':
+        if not file_name:
             continue
         print(file_name, end=' ')
         if not os.path.exists(file_name):
             print("does not exist. Skipped.")
+            number_of_failures += 1
             continue
         if not os.path.isfile(file_name):
             print("is not a file. Skipped.")
+            number_of_failures += 1
             continue
         if file_name.endswith(".xz"):
             print("is already an xzed file. Skipped.")
@@ -67,33 +253,38 @@ def recompress_by_xz(file_names):
         if file_name_looks_like_hard_to_compress_file(file_name):
             print("is probably incompressible. Skipped.")
             continue
-        if file_name.endswith(".gz"):
-            recompress(file_name, file_name[:-3], "zcat")
-        elif file_name.endswith(".bz2"):
-            recompress(file_name, file_name[:-4], "bzcat")
+        matched_suffix = None
+        for suffix in DECOMPRESSORS:
+            if file_name.endswith(suffix):
+                matched_suffix = suffix
+                break
+        if matched_suffix is not None:
+            base_name = file_name[:-len(matched_suffix)]
+            if recompress(file_name, base_name, DECOMPRESSORS[matched_suffix]) != 0:
+                number_of_failures += 1
         elif os.path.getsize(file_name) < 4096:
             print("is too small to gain space.")
         else:
-            print("compressing...\r", end=' ')
-            r = os.system("xz %s" % file_name)
-            if r == 0:
-                print(file_name, "compressed           ")
-            else:
-                print(file_name, "was not compressed   ")
+            if recompress(file_name, file_name, None) != 0:
+                number_of_failures += 1
+    return number_of_failures
+
 
 def ensure_tools_are_available():
-    for tool in ["xz", "xzcat", "bunzip2", "zcat"]:
-        if os.system("%s --help 2&>1 > /dev/null" % tool) != 0:
+    for tool in REQUIRED_TOOLS:
+        if shutil.which(tool) is None:
             print("ERROR %s is not available." % tool, file=sys.stderr)
             sys.exit(2)
 
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage: recompressbyxz <input file>", file=sys.stderr)
+        print("Usage: recompressbyxz <input file> ...", file=sys.stderr)
+        sys.exit(2)
     ensure_tools_are_available()
-    recompress_by_xz(sys.argv[1:])
+    if recompress_by_xz(sys.argv[1:]) != 0:
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
-
-

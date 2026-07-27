@@ -1,79 +1,77 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 use Term::ANSIColor;
 
-my @args;
-my @opts;
 my $param_num_lines_to_take = 7;
 my $flag_color = 0;
+my $flag_help  = 0;
+my @args;
+my $no_more_options = 0;
 
 for(@ARGV) {
-    if(/^-(\d+)/) {
+    if($no_more_options) {
+        push(@args, $_);
+    } elsif($_ eq '--') {
+        $no_more_options = 1;
+    } elsif(/^-(\d+)$/) {
         $param_num_lines_to_take = $1;
+        if($param_num_lines_to_take < 1) {
+            print STDERR "headtail: the number of lines must be 1 or larger (got '$_').\n";
+            exit 1;
+        }
     } elsif(/^-(c|-color)$/) {
         $flag_color = 1;
+    } elsif(/^-(h|-help)$/) {
+        $flag_help = 1;
+    } elsif($_ eq '-') {
+        push(@args, $_);
     } elsif(/^-/) {
-        push(@opts, $_);
+        print STDERR "headtail: unknown option '$_'.\n";
+        print STDERR "usage: headtail [-<number of lines>] [-c|--color] [--] [files...]\n";
+        exit 1;
     } else {
         push(@args, $_);
     }
 }
-if($param_num_lines_to_take != 10) {
-    push(@opts, "-$param_num_lines_to_take");
+
+if($flag_help) {
+    print "usage: headtail [-<number of lines>] [-c|--color] [--] [files...]\n";
+    print "\n";
+    print "  -<number>      show <number> lines at the head and at the tail (default: 7)\n";
+    print "  -c, --color    colorize the output\n";
+    print "  -h, --help     show this help\n";
+    print "  --             treat every following argument as a file name\n";
+    print "\n";
+    print "With no file (or with '-'), the standard input is read.\n";
+    exit 0;
 }
 
-if(0 < @args) { # File mode
-    my $opt_str = join(' ', @opts);
-    FILE: for my $file (@args) {
-        open my $fh, "<", $file or die "Cannot open '$file'";
-        print color('green') if($flag_color);
-        print "==> $file <==\n" unless(@args == 1);
-        print color('reset') if($flag_color);
-        my $head_lines = 0;
-        my @maybe_tail_lines;
-        while(<$fh>) {
-            if($head_lines < $param_num_lines_to_take) {
-                if($flag_color) {
-                    print color('yellow') unless($head_lines);
-                }
-                $head_lines++;
-                print;
-            } else {
-                print color('reset') if($flag_color);
-                push(@maybe_tail_lines, $_);
-                if($param_num_lines_to_take < @maybe_tail_lines) {
-                    close $fh;
-                    print ".\n.\n.\n";
-                    print color('yellow') if($flag_color);
-                    print `tail $opt_str $file`;
-                    print color('reset') if($flag_color);
-                    # print STDERR "tail $opt_str $file\n";
-                    next FILE;
-                }
-            }
-        }
-        print color('reset') if($flag_color);
-        print for(@maybe_tail_lines);
-        close $fh;
-    }
-} else { # Pipe mode
+# Show the first and the last $param_num_lines_to_take lines of $fh.
+# The tail is buffered in memory so that non-seekable inputs (pipes, process
+# substitutions, the standard input) work exactly like regular files.
+sub print_head_and_tail
+{
+    my ($fh) = @_;
     my $head_lines = 0;
-    my @maybe_tail_lines;
+    my $left_head_section = 0;
     my $already_shown_dots = 0;
-    while(<STDIN>) {
+    my @maybe_tail_lines;
+    while(<$fh>) {
         if($head_lines < $param_num_lines_to_take) {
-            if($flag_color) {
-                print color('yellow') unless($head_lines);
-            }
+            print color('yellow') if($flag_color && !$head_lines);
             $head_lines++;
             print;
         } else {
+            unless($left_head_section) {
+                $left_head_section = 1;
+                print color('reset') if($flag_color);
+            }
             if($param_num_lines_to_take <= @maybe_tail_lines) {
                 shift @maybe_tail_lines;
                 unless($already_shown_dots) {
                     $already_shown_dots = 1;
-                    print color('reset') if($flag_color);
                     print ".\n.\n.\n";
                     print color('yellow') if($flag_color);
                 }
@@ -85,6 +83,39 @@ if(0 < @args) { # File mode
     print color('reset') if($flag_color);
 }
 
+my $exit_status = 0;
+
+if(0 < @args) { # File mode
+    for my $file (@args) {
+        my $fh;
+        if($file eq '-') {
+            $fh = \*STDIN;
+        } else {
+            if(-d $file) {
+                print STDERR "headtail: '$file' is a directory.\n";
+                $exit_status = 1;
+                next;
+            }
+            unless(open $fh, '<', $file) {
+                print STDERR "headtail: cannot open '$file': $!\n";
+                $exit_status = 1;
+                next;
+            }
+        }
+        if(@args != 1) {
+            print color('green') if($flag_color);
+            print "==> $file <==\n";
+            print color('reset') if($flag_color);
+        }
+        print_head_and_tail($fh);
+        close $fh unless($file eq '-');
+    }
+} else { # Pipe mode
+    print_head_and_tail(\*STDIN);
+}
+
+exit $exit_status;
+
 =pod
 
 =head1 NAME
@@ -93,11 +124,41 @@ headtail - head & tail
 
 =head1 SYNOPSIS
 
-headtail [-#] [options...] [files...]
+headtail [-#] [-c|--color] [--] [files...]
 
 =head1 DESCRIPTION
 
 B<headtail> shows the head and the tail of given input files (or the standard input).
 
-=cut
+If an input has at most twice the requested number of lines, it is shown in
+full; otherwise the omitted middle part is indicated by three dots on their
+own lines.
 
+Inputs are read strictly sequentially, so pipes, process substitutions and the
+standard input behave exactly like regular files.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-E<lt>numberE<gt>>
+
+Show E<lt>numberE<gt> lines at the head and at the tail. The default is 7.
+
+=item B<-c>, B<--color>
+
+Colorize the output.
+
+=item B<-h>, B<--help>
+
+Show a short usage message and exit.
+
+=item B<-->
+
+Treat every following argument as a file name, even if it starts with C<->.
+
+=back
+
+A file name of C<-> means the standard input.
+
+=cut

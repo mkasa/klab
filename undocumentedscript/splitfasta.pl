@@ -1,16 +1,19 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 use Getopt::Long;
 
 my $flag_needhelp  = 0;
 my $flag_equalbase = 0;
+my $flag_force     = 0;
 
 GetOptions('help'      => \$flag_needhelp,
-	   'equalbase' => \$flag_equalbase
+	   'equalbase' => \$flag_equalbase,
+	   'force'     => \$flag_force
 	   );
 
-unless(@ARGV == 2){
+unless(@ARGV == 2 && !$flag_needhelp){
     print STDERR "Usage: splitfasta.pl [options] <fasta file> <split size>\n";
     print STDERR "    FASTA file is split into FASTA files containing at most\n";
     print STDERR "    <split size> sequences on default. When --equalbase option\n";
@@ -18,14 +21,16 @@ unless(@ARGV == 2){
     print STDERR "    bases in the given FASTA file first. Then it splits \n";
     print STDERR "    given FASTA sequences into FASTA files containing\n";
     print STDERR "    approximately (total bases) / (split size) bases.\n";
+    print STDERR "    --force overwrites existing output files; without it\n";
+    print STDERR "    splitfasta.pl refuses to clobber '<fasta file>.<n>'.\n";
     exit 1;
 }
 
 my $fastafiletobesplit = shift;
 my $splitsize = shift;
 
-if($splitsize <= 1){
-    die 'splitsize must be greater than one';
+unless($splitsize =~ /^\d+$/ && $splitsize >= 1){
+    die "split size must be a positive integer (got '$splitsize')\n";
 }
 
 print STDERR "Target FASTA file = '$fastafiletobesplit'\n";
@@ -42,37 +47,39 @@ my $number_of_bases_to_split = 0;
 if($flag_equalbase) {
     print STDERR "Equal #base mode\n";
     print STDERR "  Counting total #bases\n";
-    open FH, "< $fastafiletobesplit" or die "cannot open '$fastafiletobesplit'";
+    open(my $cfh, '<', $fastafiletobesplit) or die "cannot open '$fastafiletobesplit': $!";
     my $total_number_of_bases = 0;
     my $total_number_of_reads = 0;
-    while(<FH>){
+    while(<$cfh>){
 	if(/^>/){ # definition line
 	    $total_number_of_reads ++;
 	} else {
-	    chomp;
-	    $total_number_of_bases += length($_);
+	    # baselength() is used here too, so that this pre-count and the
+	    # count made while splitting agree on CRLF input.
+	    $total_number_of_bases += baselength($_);
 	}
     }
     print STDERR "  #sequences = $total_number_of_reads\n";
     print STDERR "  #bases     = $total_number_of_bases\n";
     $number_of_bases_to_split = int($total_number_of_bases / $splitsize);
     print STDERR "  split around ${number_of_bases_to_split}bp\n";
-    close FH;
+    close $cfh;
 } else {
     print STDERR "Equal #sequence mode\n";
 }
 
-open FH, "< $fastafiletobesplit" or die "cannot open '$fastafiletobesplit'";
+open(my $fh, '<', $fastafiletobesplit) or die "cannot open '$fastafiletobesplit': $!";
 print STDERR "Splitting...\n";
 
 my $defline;
-my $seqs;
+my $seqs    = '';
 my $fnumber = 1;
 my $numseq  = 0;
 my $numbase = 0;
-openoutputf();
+my $ofh;                      # undef until the first record is actually written
+my $current_output_filename;
 
-while(<FH>){
+while(<$fh>){
     if(/^>/){ # definition line
 	flushifany();
 	$defline = $_;
@@ -82,49 +89,58 @@ while(<FH>){
 }
 flushifany();
 closeoutputf();
-close FH;
+close $fh;
 
-sub flushifany()
+sub flushifany
 {
-    if(defined $defline){
-	if($flag_equalbase) {         # base split mode
-	    if($numbase > $number_of_bases_to_split) {
-		if($fnumber < $splitsize) {
-		    closeoutputf();
-		    openoutputf();
-		}
-	    }
+    return unless(defined $defline);
+    # The counters are updated AFTER the record has been written, so that the
+    # numbers reported by closeoutputf() describe what really went into the
+    # file that is being closed.
+    my $len = baselength($seqs);
+    if($flag_equalbase) {         # base split mode
+	if($numbase > $number_of_bases_to_split && $fnumber < $splitsize) {
+	    closeoutputf();
 	}
-	$numseq++;
-	$numbase += baselength($seqs);
-	unless($flag_equalbase) {   # sequence split mode
-	    if($numseq > $splitsize) {
-		closeoutputf();
-		$numseq++;
-		openoutputf();
-	    }
+    } else {                      # sequence split mode
+	if($numseq >= $splitsize) {
+	    closeoutputf();
 	}
-	print OFH "$defline";
-	print OFH "$seqs";
-	$defline = undef;
-	$seqs = '';
     }
+    openoutputf() unless(defined $ofh);
+    print $ofh $defline or die "cannot write to '$current_output_filename': $!";
+    print $ofh $seqs    or die "cannot write to '$current_output_filename': $!";
+    $numseq++;
+    $numbase += $len;
+    $defline = undef;
+    $seqs = '';
 }
 
-sub baselength(){
+sub baselength
+{
     my $seq = shift;
+    return 0 unless(defined $seq);
     $seq =~ s/[\r\n]//g;
     return length($seq);
 }
 
-sub openoutputf(){
-    print STDERR "Output to '$fastafiletobesplit.$fnumber'\n";
-    open OFH, "> $fastafiletobesplit.$fnumber" or die "cannot open '$fastafiletobesplit.$fnumber' for output";
+sub openoutputf
+{
+    my $fname = "$fastafiletobesplit.$fnumber";
+    if(-e $fname && !$flag_force) {
+	die "'$fname' already exists. Remove the previous output (or give --force) before running again.\n";
+    }
+    print STDERR "Output to '$fname'\n";
+    open($ofh, '>', $fname) or die "cannot open '$fname' for output: $!";
+    $current_output_filename = $fname;
 }
 
-sub closeoutputf(){
+sub closeoutputf
+{
+    return unless(defined $ofh);
     print STDERR "  $numseq sequences, $numbase bases\n";
-    close OFH;
+    close($ofh) or die "error while writing '$current_output_filename': $!";
+    $ofh = undef;
     $numseq  = 0;
     $numbase = 0;
     $fnumber++;

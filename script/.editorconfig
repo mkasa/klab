@@ -1,3 +1,20 @@
+# EditorConfig (https://editorconfig.org/)
+#
+# Stop looking for further .editorconfig files above this directory.
+root = true
+
 [*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+# Note: `indent_size` and `tab_width` are the properties the specification
+# defines; `tab_size` is not one of them and is ignored by most editors.
+indent_size = 4
+tab_width = 4
 indent_style = space
-tab_size = 4
+
+# The scripts below are indented with tabs from top to bottom. They are
+# deliberately left that way -- retabbing them would bury their history in a
+# whitespace-only diff -- so the four-space rule above must not apply to them.
+[{BLASTM8Parse.pm,convertsequence,fixshebang,icc-color,ispcr,mydaemon,pbjellysummary2json,split_paf}]
+indent_style = tab

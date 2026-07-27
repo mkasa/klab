@@ -1,7 +1,10 @@
 #!/usr/bin/env perl
 
 use strict;
+use warnings;
 
+use FindBin;
+use lib $FindBin::Bin;
 use Getopt::Long;
 use Pod::Usage;
 use Bio::Seq;
@@ -49,10 +52,15 @@ print STDERR "Least length required for repeat span : $param_leastBasesToDeclare
 print STDERR "Least length required for alignment   : $param_leastBasesRequiredForAlignemnt bp\n";
 print STDERR "Maximam width of diagonal             : $param_maxdiagonal bp\n";
 
-if($param_outputfilename) {
-    open OFH, "> $param_outputfilename" or die "Cannot open '$param_outputfilename'";
+my $ofh;
+if(defined $param_outputfilename) {
+    open($ofh, '>', $param_outputfilename) or die "Cannot open '$param_outputfilename': $!";
     print STDERR "File name to output list              : $param_outputfilename\n";
 }
+# -match writes whole BLAST -m8 lines. They must not be mixed into the plain
+# read-name stream produced by -unique/-nohit/-repeat/-ambiguous, so they go to
+# the -list file whenever one was given.
+my $matchfh = defined $ofh ? $ofh : \*STDOUT;
 
 my %readName2SequenceLength;
 my @readNames;
@@ -76,53 +84,69 @@ my $numAmbiguousSequences  = 0;
 my $numUniqueSequences     = 0;
 my $numRepetitiveSequences = 0;
 my $numTotalSequences      = 0;
-my $indexReadNamePointer   = 0;
 
-open FH, "< $blastM8ResultFileName" or die "Cannot open '$blastM8ResultFileName";
+open(FH, '<', $blastM8ResultFileName) or die "Cannot open '$blastM8ResultFileName': $!";
 my $currentQueryName = undef;
 my @currentQueryMatches;
+# Which query IDs the m8 file accounted for. The m8 file is NOT assumed to
+# list the queries in FASTA order, nor exactly once each.
+my %isQueryAccountedFor;
 
 while(<FH>) {
     chomp;
+    next if(/^\s*$/ or /^\s*#/);
     my $parsedBLASTM8Obj = parseBLASTM8ResultLine($_);
     my $queryID = $parsedBLASTM8Obj->{qid};
     my $alignmentLength = $parsedBLASTM8Obj->{alignlen};
+    unless(defined $queryID && defined $alignmentLength) {
+	print STDERR "WARNING: skipping malformed BLAST -m8 line: $_\n";
+	next;
+    }
     next unless($alignmentLength >= $param_leastBasesRequiredForAlignemnt);
-    if($currentQueryName ne $queryID) {
+    if(!defined $currentQueryName || $currentQueryName ne $queryID) {
 	processOneQueryID($currentQueryName, \@currentQueryMatches, \%readName2SequenceLength) if(defined $currentQueryName);
 	@currentQueryMatches = ();
         $currentQueryName = $queryID;
-	processNoHitQueryID($readNames[$indexReadNamePointer++]) while($indexReadNamePointer < @readNames && $readNames[$indexReadNamePointer] ne $queryID);
-	$indexReadNamePointer++ if($indexReadNamePointer < @readNames);
+	if($isQueryAccountedFor{$queryID}) {
+	    print STDERR "WARNING: query '$queryID' occurs in more than one block of '$blastM8ResultFileName'.\n";
+	    print STDERR "         Each block is classified separately; sort the file by query ID to avoid this.\n";
+	}
+	$isQueryAccountedFor{$queryID} = 1;
     }
     push(@currentQueryMatches, $parsedBLASTM8Obj);
-    my $mst = @currentQueryMatches;
 }
 processOneQueryID($currentQueryName, \@currentQueryMatches, \%readName2SequenceLength) if(defined $currentQueryName);
-processNoHitQueryID($readNames[$indexReadNamePointer++]) while($indexReadNamePointer < @readNames);
+close FH;
 
-sub processNoHitQueryID($) {
+# Everything in the query FASTA that the m8 file never mentioned is a no-hit.
+for my $readName (@readNames) {
+    next if($isQueryAccountedFor{$readName});
+    processNoHitQueryID($readName);
+}
+
+sub processNoHitQueryID {
     my $queryID = shift;
+    $numTotalSequences++;
     print "$queryID\n" if($flag_outputnohit);
-    print OFH "$queryID\tNOHIT\n" if($param_outputfilename);
+    print {$ofh} "$queryID\tNOHIT\n" if(defined $ofh);
     $numNoHitSequences++;
 }
 
-sub processOneQueryID($$$){
+sub processOneQueryID {
     my $readName = shift;
     my $refArrayOfMatchesOfEachRead = shift;
     my $readName2SequenceLength = shift;
 
-    $numTotalSequences++;
     my @readcoverage;
     unless(exists $readName2SequenceLength->{$readName}) {
 	print STDERR "WARNING: not found '$readName'. Maybe you specified wrong file.\n";
 	return;
     }
+    $numTotalSequences++;
     if(@{$refArrayOfMatchesOfEachRead} == 0) {
-        $numNoHitSequences++; 
+        $numNoHitSequences++;
 	print "$readName\n" if($flag_outputnohit);
-	print OFH "$readName\tNOHIT\n" if($param_outputfilename);
+	print {$ofh} "$readName\tNOHIT\n" if(defined $ofh);
         return;
     }
     my $readLength = $readName2SequenceLength->{$readName};
@@ -168,14 +192,15 @@ sub processOneQueryID($$$){
 	    $maxs = $s;
 	}
     }
-    print STDERR "l = $maxl, s = $maxs\n" if ($debug);
-    my $isUnique     = $param_leastBasesRequiredForAlignemnt <= $maxl;
+    print STDERR "l = $maxl, s = ", (defined $maxs ? $maxs : 'n/a'), "\n" if ($debug);
+    # -lunique (not -lalign) is the threshold that declares a read unique.
+    my $isUnique     = $param_leastBasesToDeclareUnique <= $maxl;
     my $isRepetitive = 0;
     {
         my $s = -1;
         my $l = 0;
         for(my $i = 0; $i < $readLength; $i++) {
-            if(!(ref($readcoverage[$i]) eq 'HASH') && $readcoverage[$i] > 1) {
+            if(defined $readcoverage[$i] && !(ref($readcoverage[$i]) eq 'HASH') && $readcoverage[$i] > 1) {
                 $s = $i if($l == 0);
                 $l++;
             } else {
@@ -193,23 +218,29 @@ sub processOneQueryID($$$){
     if($isUnique && !$isRepetitive) { # further examination
 	my %numOccurence;
 	{
-	    my @fhashes;
+	    # Collect the distinct matches that uniquely cover at least one base,
+	    # in the order in which they first appear along the read. Hash
+	    # references cannot be deduplicated with sort()/'!=', so use a
+	    # 'seen' hash keyed on the stringified reference.
+	    my %isAlreadySeen;
 	    for(my $i = 0; $i < $readLength; $i++) {
-		push(@fhashes, $readcoverage[$i]) if(ref($readcoverage[$i]) eq 'HASH');
-		$numOccurence{$readcoverage[$i]}++;
+		my $c = $readcoverage[$i];
+		next unless(ref($c) eq 'HASH');
+		$numOccurence{$c}++;
+		push(@fhashkeys, $c) unless($isAlreadySeen{$c}++);
 	    }
-	    @fhashkeys = unique(sort @fhashes);
         }
 	if(@fhashkeys > 1) {
-	    my $fpointer = 0;
-	    $fpointer++ while($fpointer < @fhashkeys && $numOccurence{$fhashkeys[$fpointer]} < $param_leastBasesToDeclareUnique);
-	    if($fpointer + 1 < @fhashkeys) {
-		my $fhash = $fhashkeys[$fpointer];
+	    # Only matches that uniquely cover at least -lunique bases are
+	    # significant; a one base island must not demote the read.
+	    my @significant = grep { $numOccurence{$_} >= $param_leastBasesToDeclareUnique } @fhashkeys;
+	    if(@significant > 1) {
+		my $fhash = $significant[0];
 		my $ftarget_sequence = $fhash->{sid};
 		my $fisplusstrand    = $fhash->{sstart} < $fhash->{send};
 		my $fdiagonal        = $fhash->{sstart} + ($fisplusstrand ? - $fhash->{qstart} : + $fhash->{qstart});
-		for($fpointer++ ;$fpointer < @fhashkeys; $fpointer++) {
-		    my $h = $fhashkeys[$fpointer];
+		for(my $fpointer = 1; $fpointer < @significant; $fpointer++) {
+		    my $h = $significant[$fpointer];
 		    my $htarget_sequence = $h->{sid};
 		    my $hisplusstarnd    = $h->{sstart} < $h->{send};
 		    my $hdiagonal        = $h->{sstart} + ($hisplusstarnd ? - $h->{qstart} : + $h->{qstart});
@@ -226,32 +257,36 @@ sub processOneQueryID($$$){
     if(!$isUnique && !$isRepetitive) {
 	$numNoHitSequences++;
 	print "$readName\n" if($flag_outputnohit);
-	print OFH "$readName\tNOHIT\n" if($param_outputfilename);
+	print {$ofh} "$readName\tNOHIT\n" if(defined $ofh);
     } elsif($isUnique && !$isRepetitive) {
         $numUniqueSequences++;
 	print "$readName\n" if($flag_outputunique);
-	print OFH "$readName\tUNIQUE\n" if($param_outputfilename);
-	if($param_outputfilename) {
+	print {$ofh} "$readName\tUNIQUE\n" if(defined $ofh);
+	if($flag_outputmatches) {
 	    for(@fhashkeys){
-		print createBLASTM8Line($_), "\tUNIQUE\n";
+		print {$matchfh} createBLASTM8Line($_), "\tUNIQUE\n";
 	    }
 	}
     } elsif(!$isUnique && $isRepetitive) {
         $numRepetitiveSequences++;
 	print "$readName\n" if($flag_outputrepetitive);
-	print OFH "$readName\tREPEAT\n" if($param_outputfilename);
-	if($param_outputfilename) {
-	    print createBLASTM8Line($_), "\tREPEAT\n" for(@{$refArrayOfMatchesOfEachRead});
+	print {$ofh} "$readName\tREPEAT\n" if(defined $ofh);
+	if($flag_outputmatches) {
+	    print {$matchfh} createBLASTM8Line($_), "\tREPEAT\n" for(@{$refArrayOfMatchesOfEachRead});
 	}
     } else {
         # print STDERR join(',', @readcoverage), "\n";
         $numAmbiguousSequences++;
 	print "$readName\n" if($flag_outputambiguous);
-	print OFH "$readName\tAMBIGUOUS\n" if($param_outputfilename);
-	if($param_outputfilename) {
-	    print createBLASTM8Line($_), "\tAMBIGUOUS\n" for(@{$refArrayOfMatchesOfEachRead});
+	print {$ofh} "$readName\tAMBIGUOUS\n" if(defined $ofh);
+	if($flag_outputmatches) {
+	    print {$matchfh} createBLASTM8Line($_), "\tAMBIGUOUS\n" for(@{$refArrayOfMatchesOfEachRead});
 	}
     }
+}
+
+if(defined $ofh) {
+    close($ofh) or die "Cannot write '$param_outputfilename': $!";
 }
 
 print STDERR "\nOf all $numTotalSequences, \n";
@@ -259,24 +294,6 @@ print STDERR "\tNo hit     : $numNoHitSequences\n";
 print STDERR "\tUnique     : $numUniqueSequences\n";
 print STDERR "\tRepetitive : $numRepetitiveSequences\n";
 print STDERR "\tAmbiguous  : $numAmbiguousSequences\n";
-
-sub unique(@)
-{
-    return @_ if(@_ <= 1);
-    my @returnValues;
-    my $prevValue = $_[0];
-    push(@returnValues, $prevValue);
-    my $cursor = 1;
-    while($cursor < @_) {
-	my $thisValue = $_[$cursor];
-	if($thisValue != $prevValue) {
-	    push(@returnValues, $_[$cursor]);
-	    $prevValue = $thisValue;
-	}
-	$cursor++;
-    }
-    return @returnValues;
-}
 
 =pod
 
@@ -350,6 +367,8 @@ When -list=filename option is given, a classification (nohit/repeat/ambiguous/li
 =item B<-match>
 
 When -match option is given, BLAST -m8 matches are output. Only difference between the input and the output is that if the sequence has unique match, non-unique matches are filtered out.
+The matches are written to the file given by B<-list> if that option is used, and to the standard output otherwise, so that they are never interleaved with
+the plain sequence names printed by B<-unique>/B<-nohit>/B<-repeat>/B<-ambiguous>.
 
 =back
 

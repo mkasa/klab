@@ -1,5 +1,21 @@
 [flake8]
-ignore =
+# Every Python program in script/ is extensionless (they are installed onto
+# PATH under their bare names), so flake8's default "*.py" collection pattern
+# would skip all of them and this config would be inert.
+# Keep this list in sync with the Python shebangs in script/. Patterns are
+# matched against the whole path, hence both the bare and the "*/" form.
+filename =
+    *.py,
+    csv2html, */csv2html,
+    json2csv, */json2csv,
+    recompressbyxz, */recompressbyxz,
+    reduce_genome_feature, */reduce_genome_feature,
+    sha_scanp, */sha_scanp,
+    split_paf, */split_paf
+
+# 'ignore' would REPLACE pycodestyle's default ignore list
+# (E121,E123,E126,E226,E24,E704,W503,W504); 'extend-ignore' adds to it.
+extend-ignore =
     # Indent
     E127, E203, E124, E121, E241, E128, E221,
     # Multiple imports
@@ -17,3 +33,9 @@ ignore =
     F405,
     # Unused _ variable
     F841,
+    # Tab indentation (script/split_paf is tab-indented throughout)
+    W191,
+
+# E501 is ignored above, so this only affects the doc-length check (W505);
+# it is kept to make the project's intent explicit.
+max-line-length = 200

@@ -13,38 +13,57 @@ import csv
 from Bio import SeqIO
 
 
+# All four sub-commands emit the very same TSV layout:
+#
+#     #seq_id  start  end  value
+#
+# where `start` and `end` are 1-based and INCLUSIVE (i.e. the bin covers the
+# bases start..end, both ends included) and `end` is clamped to the length of
+# the sequence whenever the length is known.  `value` is a fraction in [0, 1]
+# for --fastagc/--fastan/--bed and a plain gene count for --gffgene.
+COORD_COMMENT = ("# coordinates are 1-based and inclusive;"
+                 " end is clamped to the sequence length")
+HEADER = "#seq_id\tstart\tend\tvalue"
+
+
 def reduce_fasta(fasta_file_name,
                  type_str,
                  minimum_length_to_output,
                  bin_size=1000000):
     """
         Cut the input file into 1-Mb chunks and collect the feature metrics,
-        such as the number of Ns or GC% in each 1-Mb chunk.
+        such as the fraction of Ns or the GC fraction in each 1-Mb chunk.
         The binsize is by default 1 Mb, but can be configured by bin_size.
         Contigs shorter than minimum_length_to_output will be ignored.
         type_str can be "N" or "GC".
-            When type_str is "N", the output is the number of Ns in each bin.
-            When type_str is "GC", the output is the GC% in each bin.
+            When type_str is "N", the output is the fraction of Ns in the bin
+            (i.e., a number between 0 and 1, not a count and not a percentage).
+            When type_str is "GC", the output is the GC fraction in the bin
+            (i.e., a number between 0 and 1, not a percentage).
+        The counting is case-insensitive, so soft-masked (lower-case) bases
+        are counted just like upper-case bases.
     """
+    if type_str not in ("GC", "N"):
+        print("Error: unknown type_str: {}".format(type_str),
+              file=sys.stderr)
+        sys.exit(1)
+    letters = "GC" if type_str == "GC" else "N"
     # show header
-    print("#seq_id\tstart\tend\tvalue")
+    print(COORD_COMMENT)
+    print(HEADER)
     for record in SeqIO.parse(fasta_file_name, "fasta"):
         seq_name = record.id
         seq = record.seq
         if minimum_length_to_output <= len(seq):
             for s in range(0, len(seq), bin_size):
-                chunk_seq = seq[s:s+bin_size]
-                if type_str == "GC":
-                    value = chunk_seq.count("G") + chunk_seq.count("C")
-                elif type_str == "N":
-                    value = chunk_seq.count("N")
-                else:
-                    print("Error: unknown type_str: {}".format(type_str))
-                    sys.exit(1)
+                chunk_seq = str(seq[s:s + bin_size]).upper()
+                value = 0
+                for letter in letters:
+                    value += chunk_seq.count(letter)
                 end_pos = min(len(seq), s + bin_size)
                 print("{}\t{}\t{}\t{}".format(seq_name,
-                                              s,
-                                              end_pos - 1,
+                                              s + 1,
+                                              end_pos,
                                               value / (end_pos - s)))
 
 
@@ -59,77 +78,142 @@ def parse_fa_idx_file(file_name):
     retval = {}
     with open(file_name, "r") as f:
         for cols in csv.reader(f, delimiter="\t"):
+            if len(cols) < 3:
+                continue
             seq_name = cols[0]
             seq_len = int(cols[1])
             byte_offset = int(cols[2])
             retval[seq_name] = {"seq_len": seq_len, "byte_offset": byte_offset}
-            # print(f"{seq_name=}, {seq_len=}")
     return retval
+
+
+def bins_for_length(seq_len, bin_size):
+    return (seq_len + bin_size - 1) // bin_size
 
 
 def reduce_gffgene(gff_file_name, bin_size, faidx_file_name):
     """ cut the input GFF file into 1-Mb chunks
         and count the number of genes in each chunk.
         when a gene overlaps with multiple chunks,
-        all overlaps chunks will be counted.
+        all overlapping chunks will be counted.
+        GFF coordinates are 1-based and inclusive; comment/directive lines
+        (such as the mandatory '##gff-version 3' first line) are skipped.
     """
     # show header for output TSV
-    print("#seq_id\tstart\tend\tvalue")
+    print(COORD_COMMENT)
+    print(HEADER)
     retval = {}
+    seq_lens = {}
     seqname_2_faidx_record = parse_fa_idx_file(faidx_file_name)
     for seqname, faidx_record in seqname_2_faidx_record.items():
         seq_len = faidx_record["seq_len"]
-        retval[seqname] = [0] * ((seq_len + bin_size - 1) // bin_size)
+        seq_lens[seqname] = seq_len
+        retval[seqname] = [0] * bins_for_length(seq_len, bin_size)
     with open(gff_file_name, "r") as f:
-        for cols in csv.reader(f, delimiter="\t"):
-            if cols[2] == "gene":
-                seq_id = cols[0]
+        for line_no, line in enumerate(f, start=1):
+            if not line.strip() or line.startswith("#"):
+                continue
+            cols = next(csv.reader([line.rstrip("\n")], delimiter="\t"))
+            if len(cols) < 9:
+                # not a well-formed GFF feature line; ignore it silently
+                continue
+            if cols[2] != "gene":
+                continue
+            seq_id = cols[0]
+            try:
                 start = int(cols[3])
                 end = int(cols[4])
-                start_bin = start // bin_size
-                end_bin = (end + bin_size - 1) // bin_size
-                if seq_id not in retval:
-                    retval[seq_id] = []
-                if len(retval[seq_id]) <= end_bin:
-                    retval[seq_id] += [0] * (end_bin + 1 - len(retval[seq_id]))
-                for i in range(start_bin, end_bin + 1):
-                    retval[seq_id][i] += 1
+            except ValueError:
+                raise click.ClickException(
+                    "{}:{}: non-numeric coordinates: {}".format(
+                        gff_file_name, line_no, line.rstrip("\n")))
+            if start > end:
+                start, end = end, start
+            # GFF is 1-based inclusive -> 0-based bin indices
+            start_bin = (start - 1) // bin_size
+            end_bin = (end - 1) // bin_size
+            if start_bin < 0:
+                raise click.ClickException(
+                    "{}:{}: coordinate must be >= 1: {}".format(
+                        gff_file_name, line_no, line.rstrip("\n")))
+            if seq_id not in retval:
+                retval[seq_id] = []
+            if len(retval[seq_id]) <= end_bin:
+                retval[seq_id] += [0] * (end_bin + 1 - len(retval[seq_id]))
+            for i in range(start_bin, end_bin + 1):
+                retval[seq_id][i] += 1
     for seq_id, vs in retval.items():
+        seq_len = seq_lens.get(seq_id)
         for i, v in enumerate(vs):
+            end_pos = (i + 1) * bin_size
+            if seq_len is not None:
+                end_pos = min(end_pos, seq_len)
             print("{}\t{}\t{}\t{}".format(seq_id,
                                           i * bin_size + 1,
-                                          (i + 1) * bin_size,
+                                          end_pos,
                                           v))
 
 
 def reduce_bed(bed_file_name, bin_size, faidx_file_name):
     """ cut the input BED file into 1-Mb chunks
-        and collect the feature counts per base.
+        and collect the fraction of bases covered by the features.
+        BED coordinates are 0-based half-open; BED files have no header,
+        so every non-comment line is treated as a feature.
     """
     # show header for output TSV
-    print("#seq_id\tstart\tend\tvalue")
+    print(COORD_COMMENT)
+    print(HEADER)
     retval = {}
     seqname_2_faidx_record = parse_fa_idx_file(faidx_file_name)
     for seqname, faidx_record in seqname_2_faidx_record.items():
         seq_len = faidx_record["seq_len"]
-        retval[seqname] = [0] * ((seq_len + bin_size - 1) // bin_size)
+        retval[seqname] = [0] * bins_for_length(seq_len, bin_size)
     with open(bed_file_name, "r") as f:
-        _ = f.readline()  # Skip header
-        for cols in csv.reader(f, delimiter="\t"):
+        for line_no, line in enumerate(f, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") \
+                    or stripped.startswith("track") \
+                    or stripped.startswith("browser"):
+                continue
+            cols = next(csv.reader([line.rstrip("\n")], delimiter="\t"))
+            if len(cols) < 3:
+                raise click.ClickException(
+                    "{}:{}: a BED line must have at least 3 columns: {}".format(
+                        bed_file_name, line_no, line.rstrip("\n")))
             seq_id = cols[0]
-            start = int(cols[1])
-            end = int(cols[2])
-            # print(f'{seq_id=}, {start=}, {end=}')
+            try:
+                start = int(cols[1])
+                end = int(cols[2])
+            except ValueError:
+                raise click.ClickException(
+                    "{}:{}: non-numeric coordinates: {}".format(
+                        bed_file_name, line_no, line.rstrip("\n")))
+            if seq_id not in retval:
+                raise click.ClickException(
+                    "{}:{}: sequence '{}' is not in the faidx file: {}".format(
+                        bed_file_name, line_no, seq_id, line.rstrip("\n")))
+            count_array = retval[seq_id]
+            if start < 0 or end < start:
+                raise click.ClickException(
+                    "{}:{}: invalid interval {}..{}: {}".format(
+                        bed_file_name, line_no, start, end,
+                        line.rstrip("\n")))
             ss = start
             while ss < end:
-                step_size = min(end - ss, bin_size)
-                retval[seq_id][ss // bin_size] += step_size
-                # print(f'  Adding {step_size} to [{ss // bin_size}]')
-                ss += step_size
+                bin_index = ss // bin_size
+                if bin_index >= len(count_array):
+                    raise click.ClickException(
+                        "{}:{}: interval {}..{} runs past the end of '{}': "
+                        "{}".format(bed_file_name, line_no, start, end,
+                                    seq_id, line.rstrip("\n")))
+                # step to the next BIN BOUNDARY (or to the end of the feature)
+                next_boundary = (bin_index + 1) * bin_size
+                step_end = min(end, next_boundary)
+                count_array[bin_index] += step_end - ss
+                ss = step_end
     for seqname, faidx_record in seqname_2_faidx_record.items():
         seq_len = faidx_record["seq_len"]
         count_array = retval[seqname]
-        # print(f"{seqname=}, lsize = {len(count_array)}, {bin_size=}")
         for i in range(len(count_array)):
             start_pos = i * bin_size
             local_bin_size = min(bin_size, seq_len - start_pos)
@@ -143,23 +227,31 @@ def reduce_bed(bed_file_name, bin_size, faidx_file_name):
 @click.command()
 @click.option('--gffgene', is_flag=True, help='reduce gffgene file')
 @click.option('--bed', is_flag=True, help='reduce bed file')
-@click.option('--fastagc', is_flag=True, help='reduce fasta file and calculate GC%')  # noqa: E501
-@click.option('--fastan', is_flag=True, help='reduce fasta file and calculate N%')  # noqa: E501
+@click.option('--fastagc', is_flag=True, help='reduce fasta file and calculate the GC fraction (0..1)')  # noqa: E501
+@click.option('--fastan', is_flag=True, help='reduce fasta file and calculate the N fraction (0..1)')  # noqa: E501
 @click.option('--minsize', default=1000000, help='minimum size of the sequence to reduce')  # noqa: E501
 @click.option('--binsize', default=1000000, help='bin size')
-@click.option('--faidx', help='specify faidx')
+@click.option('--faidx', help='specify faidx (required for --gffgene and --bed)')  # noqa: E501
 @click.argument('input_file')
 def main(input_file, gffgene, bed, fastagc, fastan, minsize, binsize, faidx):
+    if binsize <= 0:
+        raise click.UsageError("--binsize must be a positive integer")
     if fastagc:
         reduce_fasta(input_file, "GC", minsize, binsize)
     elif fastan:
         reduce_fasta(input_file, "N", minsize, binsize)
     elif gffgene:
+        if not faidx:
+            raise click.UsageError("--faidx is required when --gffgene is given")  # noqa: E501
         reduce_gffgene(input_file, binsize, faidx)
     elif bed:
+        if not faidx:
+            raise click.UsageError("--faidx is required when --bed is given")
         reduce_bed(input_file, binsize, faidx)
     else:
-        print("Error: no input file type specified")
+        raise click.UsageError(
+            "no input file type specified; give one of "
+            "--fastagc, --fastan, --gffgene or --bed")
 
 
 if __name__ == "__main__":
@@ -176,21 +268,36 @@ reduce_genome_feature - reduce genome feature into 1-Mb chunks and output the ov
 
 =head1 SYNOPSIS
 
-mydaemon [options] 
+reduce_genome_feature [--fastagc|--fastan|--gffgene|--bed] [--minsize N] [--binsize N] [--faidx FILE] <input file>
 
 Options:
-   -help            brief help message
-   -man             full documentation
+
+   --help           brief help message
+   --fastagc        read a FASTA file and output the GC fraction (0..1) of each bin
+   --fastan         read a FASTA file and output the N  fraction (0..1) of each bin
+   --gffgene        read a GFF file and output the number of genes overlapping each bin
+   --bed            read a BED file and output the fraction (0..1) of bases covered in each bin
+   --minsize N      ignore contigs shorter than N (--fastagc/--fastan only; default 1000000)
+   --binsize N      bin size in bases (default 1000000)
+   --faidx FILE     samtools faidx file; required for --gffgene and --bed
 
 =head1 OPTIONS
 
 =over 8
 
-=item B<-help>
+=item B<--help>
 
 Print a brief help message and exits.
 
 =back
+
+=head1 OUTPUT
+
+A TSV with the columns C<seq_id>, C<start>, C<end> and C<value>.
+C<start> and C<end> are 1-based and inclusive, and C<end> is clamped to the
+length of the sequence when the length is known.  C<value> is a fraction
+between 0 and 1 for C<--fastagc>, C<--fastan> and C<--bed>, and a gene count
+for C<--gffgene>.
 
 =head1 DESCRIPTION
 
@@ -200,4 +307,3 @@ data, which is usually calculated for every 1-Mb chunk.
 
 =cut
 """
-
