@@ -9,9 +9,9 @@
 # Term::ANSIColor, Carp, Cwd, FileHandle, Fcntl, FindBin, ...) are deliberately
 # omitted; core-ness was checked with Module::CoreList.
 #
-# The in-repo modules -- BLASTM8Parse, BLASTCSVParse, MiscLib, Primer3,
-# ParallelExec -- are LOCAL and are resolved through `use lib $FindBin::Bin`.
-# They are not CPAN distributions and must never be listed here.
+# The in-repo modules -- BLASTM8Parse, Primer3 and ParallelExec -- are LOCAL and
+# are resolved through `use lib $FindBin::Bin`.  They are not CPAN distributions
+# and must never be listed here.
 #
 #
 # USAGE
