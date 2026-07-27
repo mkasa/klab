@@ -1,9 +1,13 @@
-use strict;
-use warnings;
-
-# NOTE: this file intentionally does NOT declare a 'package'; parallelExecute()
-#       and friends are defined directly in the caller's namespace (main::).
-#       Adding a package here would break every existing caller.
+# ParallelExec.pm - run a list of shell command lines in parallel, either
+# through Sun Grid Engine (tge_make) or locally through zsh.
+#
+#   use ParallelExec qw(parallelExecute);
+#   my %ret = parallelExecute('cmd1', 'cmd2', 'cmd3');
+#
+# Nothing is exported by default; import exactly the subs you use, or call
+# them fully qualified as ParallelExec::parallelExecute(...). The latter is
+# what a caller that loads this module with 'require' (rather than 'use')
+# has to do, because 'require' never runs import().
 #
 # NOTE: TGEW.pm (Sun Grid Engine wrapper) is loaded lazily, only when we are
 #       about to decide whether the SGE backend can be used. It used to be a
@@ -11,9 +15,23 @@ use warnings;
 #       therefore the SMP backend impossible to use - on any machine without
 #       TGEW installed.
 
+package ParallelExec;
+
+use strict;
+use warnings;
+
 use File::Temp;
 use File::Spec;
 use FileHandle;
+use Exporter 'import';
+
+our @EXPORT_OK = qw(
+    parallelExecute
+    parallelExecute_SGE
+    parallelExecute_SMP
+    removeIOTags
+);
+our %EXPORT_TAGS = ( all => [ @EXPORT_OK ] );
 
 # Quote a string for /bin/sh.
 sub _shell_quote($)

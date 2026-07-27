@@ -91,17 +91,44 @@ def hash_files_parallel(path_iter, num_threads, eskip):
             yield collect(in_flight.popleft())
 
 
+def normalize_base_dir(dir_path):
+    """ Canonicalize the directory given on the command line.
+
+        os.path.realpath() makes the path absolute, drops a trailing slash,
+        collapses '.'/'..' components and resolves symbolic links, so that
+        'dir', 'dir/', './dir', '/abs/path/to/dir' and a symlink pointing at
+        it all yield exactly the same base. Because the whole scan is driven
+        by this canonical base, the same file always gets the same database
+        key no matter how the directory was spelled on the command line. """
+    return os.path.realpath(dir_path)
+
+
+def database_key(full_path, dir_path):
+    """ The primary key of a row in the database.
+
+        It is the path of the file relative to the scanned directory
+        (the directory given on the command line), so 'a.b.c' stays 'a.b.c'
+        and nested files keep their sub-directory prefix. dir_path is
+        expected to be already canonicalized by normalize_base_dir(), in
+        which case the result never starts with './' and never contains a
+        redundant '..' component.
+
+        A file can still end up outside the base directory when the scan
+        follows a symbolic link that points upwards (--followsymlink).
+        Such a file is kept, with a '..'-prefixed key, rather than being
+        silently dropped: --add exists to record hashes, and losing a hash
+        is worse than an ugly key. A warning is printed so that the user
+        knows the key is not a plain relative path. """
+    rel_path = os.path.relpath(full_path, dir_path)
+    if rel_path == os.pardir or rel_path.startswith(os.pardir + os.sep):
+        print("Warning: '{}' is outside the scanned directory '{}'; "
+              "storing it as '{}'".format(full_path, dir_path, rel_path), file=sys.stderr)
+    return rel_path
+
+
 def generate_full_and_relative_path(dir_path, root, fname):
     full_path = os.path.join(root, fname)
-    rel_path = os.path.relpath(full_path, dir_path)
-    return full_path, rel_path
-
-
-def database_key(full_path):
-    """ The primary key of a row in the database.
-        It is the absolute path of the file so that files with the same relative
-        path but under different scanned directories do not overwrite each other. """
-    return os.path.abspath(full_path)
+    return full_path, database_key(full_path, dir_path)
 
 
 def walk_scan_files(dir_path, followsymlink, debug, stats):
@@ -151,7 +178,8 @@ def add_files(db_file, dir_path, followsymlink, eskip, show_summary, num_threads
             continue
         print("Adding '{}': {}".format(rel_path, hex_digest), file=sys.stderr)
         num_files += 1
-        cursor.execute('''INSERT OR REPLACE INTO files VALUES (?, ?)''', (database_key(full_path), hex_digest))
+        # rel_path is already the database key (see database_key()).
+        cursor.execute('''INSERT OR REPLACE INTO files VALUES (?, ?)''', (rel_path, hex_digest))
         uncommited_file_count += 1
         if 80 <= uncommited_file_count:
             connection.commit()
@@ -267,6 +295,11 @@ def main(add, search, remove, eskip, summary, new, count, exclude, threads, debu
     if not os.access(dir_path, os.R_OK):
         print('Directory is not readable: %s' % dir_path)
         sys.exit(1)
+    # Canonicalize the base directory before the scan so that every database
+    # key is relative to one single spelling of the scanned directory.
+    dir_path = normalize_base_dir(dir_path)
+    if debug:
+        print('base directory: {}'.format(dir_path), file=sys.stderr)
     if threads is None:
         threads = os.cpu_count() or 1
     if threads < 1:
@@ -330,11 +363,44 @@ First, you scan through a directory to create database of SHA-256 hashes of file
 B<sha_scanp> --add E<lt>DB fileE<gt> E<lt>input directoryE<gt>
 
 The database is in SQLite3 format so you can view it using any SQLite3 clients.
-If the database file already exists, it simply adds new hashes into the database, so you can
-put hashes from different directories together in a single database file.
-Each row is keyed by the B<absolute> path of the file, so two files that share the same
-name (or the same path relative to the scanned directory) but live under different
-directories are stored as two distinct rows.
+If the database file already exists, it simply adds new hashes into the database.
+
+Each row is keyed by the path of the file B<relative to the directory given on the command
+line>. Scanning F</home/me/photos> that contains F<2024/IMG_0001.jpg> stores the key
+F<2024/IMG_0001.jpg>, not the absolute path and not the bare base name. The key never
+starts with F<./> and, for files genuinely under the scanned directory, never contains a
+F<..> component.
+
+The directory argument is canonicalized (made absolute, with a trailing slash, F<.>, F<..>
+and symbolic links resolved) before the scan, so C<dir>, C<dir/>, C<./dir>, C<../foo/dir>,
+the absolute path of the directory and a symbolic link pointing at it all produce exactly
+the same keys. Consequently, re-scanning the same tree updates the existing rows in place
+instead of creating near-duplicate rows.
+
+=head2 LIMITATION: keys collide across different directories
+
+Because the key is relative to the scanned directory, B<hashes from different directories
+cannot safely be accumulated in a single database file>. If F</photos/a> and F</photos/b>
+both contain F<IMG_0001.jpg>, scanning both into one database yields a single row keyed
+F<IMG_0001.jpg>: the second scan silently overwrites the hash recorded by the first
+(the insert is an C<INSERT OR REPLACE>). The hash of the earlier file is then simply gone
+from the database, and C<--search> will report that file as unknown.
+
+This is a deliberate trade-off in favour of short, human-readable, relocation-independent
+keys. If you need to keep several directories on record, B<use one database file per
+scanned directory>. Note that C<--search>, C<--remove> and the duplicate detection match on
+the B<hash> only and never on the key, so within one scanned tree the collision affects
+only which name is reported as the matching file, not whether a duplicate is detected.
+
+=head2 Databases created by older versions
+
+An earlier version of B<sha_scanp> keyed rows by the B<absolute> path of the file, and the
+version before that stored a corrupted key (every C<.> was stripped from the path). Keys
+written by those versions do not match the keys written by this version. Such databases are
+not migrated automatically and there is no upgrade path: B<rebuild them from scratch> with
+C<--add>. The stored hashes themselves stay valid, so C<--search> and C<--remove> keep
+working against an old database; only the reported name of the matching file and any
+in-place update of an existing row are affected.
 
 Next, you want to see whether files in a specified directory match to the already-scanned files
 in the database.

@@ -1,19 +1,31 @@
+# BLASTM8Parse.pm - parse BLAST -m8 (a.k.a. -outfmt 6/7, tabular) output.
+#
+# Nothing is exported by default; import exactly the subs you use, or call
+# them fully qualified as BLASTM8Parse::parseBLASTM8ResultLine(...).
+#
+# use BLASTM8Parse qw(parseBLASTM8ResultFile);
+#
 # my @matches = parseBLASTM8ResultFile("blastm8.txt");
 # for(@matches) {
 #   my $query_id   = $_->{qid};
 #   my $subject_id = $_->{sid};
 #   ... so on.
 # }
-#
-# NOTE: this file intentionally does NOT declare a 'package'. All the subs
-#       below are injected into the caller's namespace (usually main::).
-#       See the note in the repository review notes about the namespace
-#       collision risk this implies.
+
+package BLASTM8Parse;
 
 use strict;
 use warnings;
 
 use Carp;
+use Exporter 'import';
+
+our @EXPORT_OK = qw(
+	parseBLASTM8ResultFile
+	parseBLASTM8ResultLine
+	createBLASTM8Line
+);
+our %EXPORT_TAGS = ( all => [ @EXPORT_OK ] );
 
 sub parseBLASTM8ResultFile($) {
     my $m8file = shift;

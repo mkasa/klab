@@ -6,7 +6,15 @@ MiscLib.pm - Miscellaneous library
 
 =head1 SYNOPSIS
 
-	use MiscLib;
+	# Nothing is exported by default; ask for the names you use.
+	use MiscLib qw(assert max min unique getExecutablePath isWindows
+	               printAndExecute tolower toupper islower isupper
+	               get_canonical_path_name get_trunk_file_name get_dir_name
+	               get_windows_path get_unix_path get_absolute_path);
+	# ...or, if you really want all of them,
+	# use MiscLib qw(:all);
+	# Any sub can also be called fully qualified without importing anything,
+	# e.g. MiscLib::max(1, 2, 3).
 
 	my $a = 3;
 	assert($a == 3, "a must be 3"); # croak unless $a == 3
@@ -69,17 +77,42 @@ MiscLib.pm - Miscellaneous library
 B<MiscLib.pm> have various useful functions. Please see the synopsis to
 understand the usage.
 
+Every sub lives in the C<MiscLib> namespace and nothing is exported unless
+the caller asks for it, so importing C<min>/C<max> from here is an explicit,
+visible decision that cannot silently clash with L<List::Util>'s.
+
 =cut
 
-# NOTE: this file intentionally does NOT declare a 'package'; every sub below
-#       is defined directly in the caller's namespace (normally main::).
-#       Beware of collisions with other modules that export subs of the same
-#       name (e.g. List::Util's min/max): whichever is loaded last wins.
+package MiscLib;
+
 use strict;
 use warnings;
 
 use Carp;
 use Cwd;
+use Exporter 'import';
+
+our @EXPORT_OK = qw(
+	assert
+	max
+	min
+	unique
+	ensureExecutable
+	getExecutablePath
+	isWindows
+	printAndExecute
+	islower
+	isupper
+	tolower
+	toupper
+	get_canonical_path_name
+	get_trunk_file_name
+	get_dir_name
+	get_windows_path
+	get_unix_path
+	get_absolute_path
+);
+our %EXPORT_TAGS = ( all => [ @EXPORT_OK ] );
 
 sub assert($$)
 {

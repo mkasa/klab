@@ -8,9 +8,8 @@ use lib $FindBin::Bin;
 use Getopt::Long;
 use Pod::Usage;
 use Bio::Seq;
-use Bio::Seq::SeqWithQuality;
 use Bio::SeqIO;
-use BLASTM8Parse;
+use BLASTM8Parse qw(parseBLASTM8ResultLine createBLASTM8Line);
 
 my $flag_man     = 0;
 my $flag_help    = 0;
