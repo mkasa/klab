@@ -80,7 +80,7 @@ static ostream& operator << (ostream& os, const vector<char>& v)
 static string sep_comma(size_t val)
 {
     char buf[32];
-    sprintf(buf, "%lu", val);
+    snprintf(buf, sizeof(buf), "%lu", val);
     string retval;
     size_t offset = (3 - strlen(buf) % 3) % 3;
     for(char* p = buf; *p; p++) {
