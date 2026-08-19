@@ -206,7 +206,7 @@ sub pull($)
         my @s = capture("git", "remote");
         if($?) { report_vcs_error("git remote"); return; }
         if(@s > 0) {
-            dosh("git pull");
+            dosh("git pull --rebase");
         } else {
             print "It looks like a local repository.\n";
         }
