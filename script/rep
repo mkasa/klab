@@ -54,6 +54,9 @@ if($command eq 'list')    { cmd_list(); exit 0; }
 if($command eq 'pull')    { cmd_pull(); exit 0; }
 if($command eq 'pullall') { cmd_pullall(); exit 0; }
 if($command eq 'pullall_child') { my $dir = shift; cmd_pullall_child($dir); exit 0; }
+if($command eq 'fetch')   { cmd_fetch(); exit 0; }
+if($command eq 'fetchall') { cmd_fetchall(); exit 0; }
+if($command eq 'fetchall_child') { my $dir = shift; cmd_fetchall_child($dir); exit 0; }
 if($command eq 'stat' || $command eq 'status') {
     cmd_status(); exit 0;
 }
@@ -203,7 +206,7 @@ sub pull($)
         my @s = capture("git", "remote");
         if($?) { report_vcs_error("git remote"); return; }
         if(@s > 0) {
-            dosh("git pull");
+            dosh("git pull --rebase");
         } else {
             print "It looks like a local repository.\n";
         }
@@ -231,6 +234,34 @@ sub pull($)
         }
     } else {
         print STDERR cl('red') . "ERROR: Internal error (pull)." . cl('reset') . "\n";
+        exit 3;
+    }
+}
+
+sub fetch($)
+{
+    my $type = shift;
+    if($type eq 'git') {
+        my @s = capture("git", "remote");
+        if($?) { report_vcs_error("git remote"); return; }
+        if(@s > 0) {
+            dosh("git fetch");
+        } else {
+            print "It looks like a local repository.\n";
+        }
+    } elsif($type eq 'cvs' || $type eq 'svn' || $type eq 'rcs') {
+        print "Nothing to do\n";
+    } elsif($type eq 'hg') {
+        # 'hg pull' without -u only adds changesets to the local repository,
+        # so it is safe even when the working copy has modified files.
+        my @s = capture("hg", "paths");
+        if(!$? && grep { m|^default\s*=| } @s) {
+            dosh("hg pull");
+        } else {
+            print "It looks like a local repository.\n";
+        }
+    } else {
+        print STDERR cl('red') . "ERROR: Internal error (fetch)." . cl('reset') . "\n";
         exit 3;
     }
 }
@@ -334,6 +365,12 @@ sub cmd_pull
     pull($type);
 }
 
+sub cmd_fetch
+{
+    my $type = get_repo_type_of_current_dir();
+    fetch($type);
+}
+
 sub cmd_status
 {
     my $type = get_repo_type_of_current_dir();
@@ -388,6 +425,62 @@ sub cmd_pullall
             my $type = get_repo_type($dirname);
             if(defined $type) {
                 push(@parallel_commands, sq($0) . " pullall_child " . sq($dirname));
+            } else {
+                print "unknown\t$dirname\n";
+            }
+        }
+        gnu_parallel(@parallel_commands);
+    }
+}
+
+sub cmd_fetchall_sub($$)
+{
+    my $dirname = shift;
+    my $base_dir = shift;
+    my $type = get_repo_type($dirname);
+    if(defined $type) {
+        if(chdir $dirname) {
+            print cl('green') . "$type" . cl('reset') . "\t$dirname\t";
+            fetch($type);
+            unless(chdir $base_dir) {
+                print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
+                print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
+                exit 3;
+            }
+        } else {
+            print cl('red') . "denied" . cl('reset') . "\t$dirname\n";
+        }
+    } else {
+        print "unknown\t$dirname\n";
+    }
+}
+
+sub cmd_fetchall_child
+{
+    my $dirname = shift;
+    unless(defined $dirname) {
+        print STDERR "ERROR: fetchall_child requires a directory name.\n";
+        exit 1;
+    }
+    my $base_dir = Cwd::getcwd();
+    cmd_fetchall_sub($dirname, $base_dir);
+}
+
+sub cmd_fetchall
+{
+    my @dirnames = <*>;
+    my $base_dir = Cwd::getcwd();
+    my $is_gnu_parallel_available = is_gnu_parallel_available();
+    unless($is_gnu_parallel_available && !$flag_noparallel) {
+        for my $dirname (@dirnames) {
+            cmd_fetchall_sub($dirname, $base_dir);
+        }
+    } else {
+        my @parallel_commands;
+        for my $dirname (@dirnames) {
+            my $type = get_repo_type($dirname);
+            if(defined $type) {
+                push(@parallel_commands, sq($0) . " fetchall_child " . sq($dirname));
             } else {
                 print "unknown\t$dirname\n";
             }
@@ -726,6 +819,8 @@ Commands:
    list                 list the repositories directly under the current directory
    pull                 pull from the remote origin (for DVCS only)
    pullall              do `pull' for the repositories directly under the current directory
+   fetch                fetch from the remote origin without updating the working copy (for DVCS only)
+   fetchall             do `fetch' for the repositories directly under the current directory
    stat/status          check the change status
    statall              do `stat' for the repositories directly under the current directory
    outgoing             check if the outgoing changes exist (for DVCS only)
