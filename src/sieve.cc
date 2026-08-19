@@ -8,10 +8,8 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdlib>
-#include <ctime>
+#include <random>
 #include <getopt.h>
-#include <sys/time.h>
-#include <unistd.h>
 
 using namespace std;
 
@@ -32,21 +30,14 @@ static void print_usage(ostream& os)
 	os << "being taken. The default (no -p/-c) is to take 50% of the lines.\n";
 }
 
-// Seed drand48() with something that differs between two invocations started
-// within the same second (time(NULL) alone does not).
-static void seed_random()
+// A single random_device word (32 bits) would limit the engine to 2^32
+// distinct sequences; seed_seq over eight words keeps the seed space large
+// enough that no realistic sample subset is unreachable.
+static std::mt19937_64 make_random_engine()
 {
-	struct timeval tv;
-	if(gettimeofday(&tv, NULL) != 0) {
-		tv.tv_sec  = static_cast<long>(time(NULL));
-		tv.tv_usec = 0;
-	}
-	// Unsigned arithmetic: wrap-around is well defined, signed overflow is not.
-	unsigned long seed = static_cast<unsigned long>(tv.tv_sec);
-	seed ^= static_cast<unsigned long>(tv.tv_usec) * 1000003UL;
-	seed ^= static_cast<unsigned long>(getpid()) * 7919UL;
-	seed ^= static_cast<unsigned long>(reinterpret_cast<size_t>(&tv)); // stack address (ASLR)
-	srand48(static_cast<long>(seed & 0x7fffffffUL));
+	std::random_device rd;
+	std::seed_seq seq{rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd()};
+	return std::mt19937_64(seq);
 }
 
 int do_sieve(int argc, char *argv[], int optind, long long param_percent, long long param_lines)
@@ -86,8 +77,9 @@ int do_sieve(int argc, char *argv[], int optind, long long param_percent, long l
 	// (number of lines still to take) / (number of lines still to look at).
 	// This picks each of the C(lines, take_lines) subsets with equal
 	// probability, so every single line is taken with probability
-	// take_lines/lines.
-	seed_random();
+	// take_lines/lines. The comparison is done on integers (not on a random
+	// double against a threshold), so that probability is exact.
+	std::mt19937_64 rng = make_random_engine();
 	long long remaining_lines = lines;
 	long long remaining_take  = take_lines;
 	for(int i = optind; i < argc; i++) {
@@ -101,7 +93,7 @@ int do_sieve(int argc, char *argv[], int optind, long long param_percent, long l
 		}
 		while(getline(fin, tmp)) {
 			if(remaining_lines <= 0) break; // the input grew since the counting pass
-			if(0 < remaining_take && drand48() * remaining_lines < static_cast<double>(remaining_take)) {
+			if(0 < remaining_take && std::uniform_int_distribution<long long>(0, remaining_lines - 1)(rng) < remaining_take) {
 				cout << tmp << "\n";
 				remaining_take--;
 			}
