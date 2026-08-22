@@ -18,7 +18,9 @@ def configure(conf):
         conf.check_perl_ext_devel()
     conf.check_python_version((3,8,0))
     conf.check_cxx(lib='z', header_name='zlib.h', uselib_store='ZLIB', mandatory=True)
-    conf.env.append_unique('CXXFLAGS', ['-O2', '-DVERSION_STRING="' + VERSION + '"'])
+    # Apple clang (and older gcc) default to C++98 when no -std= is given,
+    # which rejects the C++11 <random> code in src/sieve.cc.
+    conf.env.append_unique('CXXFLAGS', ['-std=c++17', '-O2', '-DVERSION_STRING="' + VERSION + '"'])
     # src/sqlite3.c is compiled as C, so it needs its own optimization flags;
     # without these the SQLite amalgamation is built with no optimization at all.
     conf.env.append_unique('CFLAGS', ['-O2'])
