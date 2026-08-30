@@ -16,6 +16,9 @@ my $flag_help       = 0;
 my $flag_man        = 0;
 my $flag_noparallel = 0;
 
+# Options before the subcommand belong to rep itself; anything after the
+# subcommand is left in @ARGV so it can be passed through to the underlying VCS.
+Getopt::Long::Configure("require_order");
 GetOptions("debug"      => \$flag_debug,
            "help"       => \$flag_help,
            "man"        => \$flag_man,
@@ -44,16 +47,16 @@ if($flag_help || (defined $command && $command =~ /^help$/i)) {
 pod2usage(-verbose => 2, -exitval => 0, -input => \*DATA) if($flag_man || (defined $command && $command =~ /^man$/i));
 
 unless(defined $command) {
-    print STDERR "Usage: rep <command> [options]\n";
+    print STDERR "Usage: rep [options] <command> [vcs-options]\n";
     print STDERR "rep -help, or rep -man to get more information.\n";
     exit 0;
 }
 
 if($command eq 'which')   { cmd_which(); exit 0; }
 if($command eq 'list')    { cmd_list(); exit 0; }
-if($command eq 'pull')    { cmd_pull(); exit 0; }
-if($command eq 'pullall') { cmd_pullall(); exit 0; }
-if($command eq 'pullall_child') { my $dir = shift; cmd_pullall_child($dir); exit 0; }
+if($command eq 'pull')    { cmd_pull(@ARGV); exit 0; }
+if($command eq 'pullall') { cmd_pullall(@ARGV); exit 0; }
+if($command eq 'pullall_child') { my $dir = shift; cmd_pullall_child($dir, @ARGV); exit 0; }
 if($command eq 'fetch')   { cmd_fetch(); exit 0; }
 if($command eq 'fetchall') { cmd_fetchall(); exit 0; }
 if($command eq 'fetchall_child') { my $dir = shift; cmd_fetchall_child($dir); exit 0; }
@@ -134,6 +137,12 @@ sub dosh($)
 	return 0;
 }
 
+# Quote a list of strings for a POSIX shell and join them with spaces.
+sub shell_quote
+{
+    return join(' ', map { sq($_) } @_);
+}
+
 # Tells the repository type of $dir itself (the ancestors of $dir are NOT
 # looked at; see get_repo_type_ancestor() for that).
 sub get_repo_type($)
@@ -199,21 +208,22 @@ sub report_vcs_error($)
     return;
 }
 
-sub pull($)
+sub pull
 {
-    my $type = shift;
+    my ($type, @vcs_options) = @_;
+    my $opts = @vcs_options ? " " . shell_quote(@vcs_options) : "";
     if($type eq 'git') {
         my @s = capture("git", "remote");
         if($?) { report_vcs_error("git remote"); return; }
         if(@s > 0) {
-            dosh("git pull --rebase");
+            dosh("git pull --rebase$opts");
         } else {
             print "It looks like a local repository.\n";
         }
     } elsif($type eq 'cvs') {
-        dosh("cvs up");
+        dosh("cvs up$opts");
     } elsif($type eq 'svn') {
-        dosh("svn up");
+        dosh("svn up$opts");
     } elsif($type eq 'rcs') {
         print "Nothing to do\n";
     } elsif($type eq 'hg') {
@@ -227,7 +237,7 @@ sub pull($)
             } elsif(0 < $rs) {
                 print "You have modifiled files.\n";
             } else {
-                dosh("hg pull -u");
+                dosh("hg pull -u$opts");
             }
         } else {
             print "It looks like a local repository.\n";
@@ -361,8 +371,9 @@ sub gnu_parallel
 
 sub cmd_pull
 {
+    my @vcs_options = @_;
     my $type = get_repo_type_of_current_dir();
-    pull($type);
+    pull($type, @vcs_options);
 }
 
 sub cmd_fetch
@@ -377,15 +388,16 @@ sub cmd_status
     status($type);
 }
 
-sub cmd_pullall_sub($$)
+sub cmd_pullall_sub
 {
     my $dirname = shift;
     my $base_dir = shift;
+    my @vcs_options = @_;
     my $type = get_repo_type($dirname);
     if(defined $type) {
         if(chdir $dirname) {
             print cl('green') . "$type" . cl('reset') . "\t$dirname\t";
-            pull($type);
+            pull($type, @vcs_options);
             unless(chdir $base_dir) {
                 print cl('red') . "ERROR: Could not come back to '$base_dir'\n";
                 print "       You removed the directory, or changed the permission during execution?" . cl('reset') . "\n";
@@ -406,25 +418,27 @@ sub cmd_pullall_child
         print STDERR "ERROR: pullall_child requires a directory name.\n";
         exit 1;
     }
+    my @vcs_options = @_;
     my $base_dir = Cwd::getcwd();
-    cmd_pullall_sub($dirname, $base_dir);
+    cmd_pullall_sub($dirname, $base_dir, @vcs_options);
 }
 
 sub cmd_pullall
 {
+    my @vcs_options = @_;
     my @dirnames = <*>;
     my $base_dir = Cwd::getcwd();
     my $is_gnu_parallel_available = is_gnu_parallel_available();
     unless($is_gnu_parallel_available && !$flag_noparallel) {
         for my $dirname (@dirnames) {
-            cmd_pullall_sub($dirname, $base_dir);
+            cmd_pullall_sub($dirname, $base_dir, @vcs_options);
         }
     } else {
         my @parallel_commands;
         for my $dirname (@dirnames) {
             my $type = get_repo_type($dirname);
             if(defined $type) {
-                push(@parallel_commands, sq($0) . " pullall_child " . sq($dirname));
+                push(@parallel_commands, sq($0) . " pullall_child " . shell_quote($dirname, @vcs_options));
             } else {
                 print "unknown\t$dirname\n";
             }
@@ -806,7 +820,12 @@ rep - code repository manager for SVN/Mercurial/git
 
 =head1 SYNOPSIS
 
-rep <command> [options]
+rep [options] <command> [vcs-options]
+
+Options given before <command> are interpreted by rep itself.
+For `pull' and `pullall', options given after the command are passed
+through verbatim to the underlying version control system
+(e.g., `rep pull --rebase' runs `git pull --rebase' in a git repository).
 
 Options:
    -help                brief help message
@@ -817,8 +836,8 @@ Commands:
    man                  see the manual
    which                print the type of version control system for the current directory
    list                 list the repositories directly under the current directory
-   pull                 pull from the remote origin (for DVCS only)
-   pullall              do `pull' for the repositories directly under the current directory
+   pull [vcs-options]   pull from the remote origin (for DVCS only); extra options are passed to the underlying VCS
+   pullall [vcs-options] do `pull' for the repositories directly under the current directory
    fetch                fetch from the remote origin without updating the working copy (for DVCS only)
    fetchall             do `fetch' for the repositories directly under the current directory
    stat/status          check the change status
